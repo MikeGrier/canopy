@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "your-crate-name"
+name = "canopy"
 version = "0.1.0"

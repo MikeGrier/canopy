@@ -1,10 +1,10 @@
-# crate-template
+# canopy
 
 A template repository for building and publishing a Rust crate on crates.io.
 
 ## What this template includes
 
-- A Cargo workspace with one placeholder library crate at `crates/your-crate-name`
+- A Cargo workspace with one placeholder library crate at `crates/canopy`
 - GitHub Actions CI for formatting, clippy, tests, MSRV checks, and CodeQL
 - `release-please` automation for changelog, tags, and release PRs
 - A publish workflow that pushes the crate to crates.io from `v*` tags
@@ -14,14 +14,9 @@ A template repository for building and publishing a Rust crate on crates.io.
 
 Before your first real release, replace the placeholder values below:
 
-1. Rename the crate directory `crates/your-crate-name` if desired.
-2. Update `your-crate-name` in:
-   - `Cargo.toml`
-   - `crates/your-crate-name/Cargo.toml`
-   - `release-please-config.json`
-3. Replace the example metadata URLs, author, and documentation settings in `Cargo.toml`.
-4. Replace the placeholder library code with your actual crate implementation.
-5. Set the repository secrets required for releases:
+1. Replace the example author in `Cargo.toml`.
+2. Replace the placeholder library code with your actual crate implementation.
+3. Set the repository secrets required for releases:
    - `RELEASE_PLEASE_TOKEN`
    - `CARGO_REGISTRY_TOKEN`
 

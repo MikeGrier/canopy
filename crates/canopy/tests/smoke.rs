@@ -1,4 +1,4 @@
-use your_crate_name as _;
+use canopy as _;
 
 #[test]
 fn crate_builds_for_integration_tests() {}

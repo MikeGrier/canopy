@@ -12,6 +12,6 @@ mod tests {
 
     #[test]
     fn greeting_includes_name() {
-        assert_eq!(greeting("your-crate-name"), "hello from your-crate-name");
+        assert_eq!(greeting("canopy"), "hello from canopy");
     }
 }
