@@ -1,0 +1,16 @@
+# Copyright (c) Michael Grier.
+
+[package]
+name = "test-timers"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The one way test code reaches a timer the lint disallows (D484, D485). Dev-dependency only."
+
+[dependencies]
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "time", "test-util"] }

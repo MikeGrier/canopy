@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Mike Grier
+# Copyright (c) Michael Grier.
 
 [package]
 name = "canopy"
@@ -9,11 +9,19 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation.workspace = true
+publish.workspace = true
+documentation = "https://docs.rs/canopy"
 readme = "README.md"
-description = "Durable, transactional hierarchical name-value store based on filesystem primitives."
-keywords = ["template", "crate"]
-categories = ["development-tools"]
+description = "A durable tree-document store with quorum replication and atomic transactions."
+exclude = ["PLANS.md", "COMPLETED-CHECKLIST.md", "COMPLETED-PLANS.md", "DESIGN-NOTES.md"]
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+acadia.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tracing = "0.1"
+
+[dev-dependencies]
+test-timers = { path = "../test-timers" }
+komorebi = { path = "../komorebi" }

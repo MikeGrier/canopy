@@ -1,0 +1,6 @@
+# Copyright (c) Michael Grier.
+
+[toolchain]
+channel = "1.98"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

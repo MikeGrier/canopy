@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Mike Grier
+
+[package]
+name = "canopy-lock-holder"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Test fixture: holds a canopy store root's lock until killed (D116). Not published."
+
+[[bin]]
+name = "canopy-lock-holder"
+path = "src/main.rs"
+
+[dependencies]
+acadia.workspace = true
+canopy = { path = "../canopy" }
+
+[dev-dependencies]
+test-timers = { path = "../test-timers" }

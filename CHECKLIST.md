@@ -1,10 +1,8 @@
 # Checklist
 
-Use this file for the open work needed to turn this template into your actual
-crate project. Replace these items with project-specific milestones.
+## M1 -- Publishing readiness
 
-- [x] Rename the placeholder crate to `canopy`.
-- [ ] Update the remaining package metadata (author, description, keywords).
-- [ ] Replace the example library code with the real implementation.
-- [x] Update the release configuration and repository URLs.
-- [ ] Confirm CI and crates.io publishing secrets are configured.
+- [ ] **PUB-1** -- Configure the `RELEASE_PLEASE_TOKEN` and `CARGO_REGISTRY_TOKEN`
+  repository secrets.
+- [ ] **PUB-2** -- Confirm the `canopy` and `acadia` crate names are available on
+  crates.io.

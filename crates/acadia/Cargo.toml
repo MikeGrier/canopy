@@ -1,0 +1,24 @@
+# Copyright (c) Michael Grier.
+
+[package]
+name = "acadia"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+documentation = "https://docs.rs/acadia"
+description = "The filesystem seam under canopy: a specified Vfs contract with OS, in-memory, and fault-injecting backends."
+exclude = ["DESIGN-NOTES.md"]
+
+[dependencies]
+cap-std = "4.0"
+cap-fs-ext = "4.0"
+
+# Only for the `flock` behind `OsFs::lock_exclusive` (D116); std exposes no
+# advisory-lock call. Windows needs no crate -- the exclusion is the share mode.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.176"
