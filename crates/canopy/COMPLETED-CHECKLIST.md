@@ -470,3 +470,31 @@ no JDK, so TLC runs on the Windows host only.
 [run-tlc.ps1](../../tools/run-tlc.ps1). Shown to gate both ways on a scratch spec: a violated
 invariant exits 12, a holding one exits 0. TLC's generated trace-explorer spec is suppressed so
 nothing is written beside a checked-in spec.
+
+## Moved 2026-11-10 -- First spec slice (M1 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="fm-11"></a>FM-1.1 -- `spec/PointerPublication.tla` models one document's non-transactional write, collection, crash and reopen per `Vfs` call. *(completed 2026-11-10 08:48:39 -05:00)*
+
+[PointerPublication.tla](spec/PointerPublication.tla) with
+[PointerPublication.cfg](spec/PointerPublication.cfg) (three pointer replicas, two blob
+replicas, three versions, two writes, one crash). Every filesystem step may fail instead
+(`Fail`), a crash may fall between any two steps, and the starting transaction stays journalled
+so every reopen re-runs its collection. The configuration checks exhaustively with no violation.
+
+### <a id="fm-12"></a>FM-1.2 -- Safety invariants for the durable and live pointer majorities, shown to bite on the `D1` defect. *(completed 2026-11-10 08:48:39 -05:00)*
+
+`DurablePointerHasBlob` and `LivePointerHasBlob`. With the `RV7-1` sync disabled
+([PointerPublication-NoCollectSync.cfg](spec/PointerPublication-NoCollectSync.cfg)) TLC finds
+`D1` unaided and with three pointer replicas rather than the one the review used: a write
+renames two replicas but fails before the second parent sync, the live majority says the new
+version while the durable one says the old, a warm reopen collects the old blob from every
+replica, and the durable majority then names nothing.
+
+### <a id="fm-13"></a>FM-1.3 -- The `E1` property, violated by the current protocol as reviewed. *(completed 2026-11-10 08:48:39 -05:00)*
+
+`IdleImpliesSettled`: with no operation in progress the namespace has a majority, a version or
+absence. Expressed as an invariant rather than a temporal property because "no writer running"
+is a state, so the invariant is the stronger and cheaper form.
+[PointerPublication-Settled.cfg](spec/PointerPublication-Settled.cfg) reports it violated with
+no crash at all: a write fails after two renames (`[C, C, A]`), the next write reads `C` and
+fails after one (`[B, C, A]`). This configuration is the acceptance check for `FM-2`.

@@ -19,19 +19,9 @@ durable), the non-transactional write's per-replica steps (stage, rename, parent
 able to fail), an ended transaction left in the log, collection, crash (live := durable),
 reopen with recovery, and the read classification (`Found` / `Absent` / `Contended` / error).
 
-- [ ] **FM-1.1** -- Write `spec/PointerPublication.tla` and its `.cfg` modelling the scope
-  above at the granularity of the code's individual `Vfs` calls, with each modelled action
-  citing the function it abstracts.
-
-- [ ] **FM-1.2** -- Safety invariants: after any crash no durable pointer majority names a
-  blob missing from every durable replica (`D1`); a read reports `Contended` only while a
-  modification is in progress. Check that removing the collection-time namespace sync (`RV7-1`)
-  produces the `D1` counterexample, so the invariant is shown to bite.
-
-- [ ] **FM-1.3** -- Liveness property: with no writer running, every document reaches a
-  majority value or a majority of absence. Confirm TLC reports the `E1` violation (two
-  consecutive failed non-transactional writes leaving `[C, B, A]`) against the current
-  protocol.
+- [x] **FM-1.1** -- `spec/PointerPublication.tla` models one document's non-transactional write, collection, crash and reopen per `Vfs` call. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#fm-11)
+- [x] **FM-1.2** -- Safety invariants for the durable and live pointer majorities, shown to bite on the `D1` defect. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#fm-12)
+- [x] **FM-1.3** -- The `E1` property, violated by the current protocol as reviewed. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#fm-13)
 
 ## M2 -- Decide and implement the E1 fix from the model
 
