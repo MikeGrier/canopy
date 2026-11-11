@@ -17,7 +17,7 @@ use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, VfsErrorKind, When};
 fn a_second_open_of_a_held_root_is_refused() {
     let (vfs, store) = fresh_store();
 
-    let refused = Store::open(Arc::clone(&vfs), store.root().to_path_buf())
+    let refused = Store::open_unsourced(Arc::clone(&vfs), store.root().to_path_buf())
         .expect_err("a held root refuses a second writer");
 
     match refused {
@@ -39,11 +39,11 @@ fn open_propagates_non_locking_errors_from_lock_acquisition() {
     );
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).unwrap();
     drop(store);
     gate.open();
 
-    match Store::open(vfs, root) {
+    match Store::open_unsourced(vfs, root) {
         Err(StoreError::Vfs(error)) => assert_eq!(error.kind(), VfsErrorKind::Other),
         other => panic!("expected Vfs(Other), got {other:?}"),
     }
@@ -60,7 +60,7 @@ fn init_over_a_held_root_is_refused() {
     // can refuse it.
     let _held = vfs.lock_exclusive(&root.join(LOCK_NAME)).unwrap();
 
-    let refused = Store::init(Arc::clone(&vfs), root.clone(), test_config())
+    let refused = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config())
         .expect_err("a held root refuses an init as well");
 
     match refused {
@@ -78,7 +78,7 @@ fn init_over_an_occupied_root_leaves_no_lock_file() {
     vfs.create_dir_all(&root).unwrap();
     vfs.write(&root.join("data.txt"), b"not a store").unwrap();
 
-    let refused = Store::init(Arc::clone(&vfs), root.clone(), test_config())
+    let refused = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config())
         .expect_err("an occupied root is refused");
 
     assert!(
@@ -100,7 +100,7 @@ fn init_after_a_released_init_is_refused_as_already_initialized() {
     let root = store.root().to_path_buf();
     drop(store);
 
-    let refused = Store::init(Arc::clone(&vfs), root, test_config())
+    let refused = Store::init_unsourced(Arc::clone(&vfs), root, test_config())
         .expect_err("an initialized root refuses a second init");
     assert!(
         matches!(refused, StoreError::AlreadyInitialized { .. }),
@@ -116,13 +116,14 @@ fn dropping_the_store_releases_the_root() {
 
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&vfs), root).expect("the root is free once released");
+    let reopened =
+        Store::open_unsourced(Arc::clone(&vfs), root).expect("the root is free once released");
     drop(reopened);
 }
 
-/// The lock is released by the **last** handle, not the first. `Store` is `Clone` and
-/// `WriteMonitor` owns a clone, so releasing on the first drop would hand the root away
-/// while a writer was still using it.
+/// The lock is released by the **last** handle, not the first. `Store` is `Clone` and a
+/// clone handed to another thread is still a writer, so releasing on the first drop would
+/// hand the root away while a writer was still using it.
 #[test]
 fn a_clone_keeps_the_root_held() {
     let (vfs, store) = fresh_store();
@@ -130,16 +131,16 @@ fn a_clone_keeps_the_root_held() {
     let clone = store.clone();
 
     drop(store);
-    let refused = Store::open(Arc::clone(&vfs), root.clone())
+    let refused = Store::open_unsourced(Arc::clone(&vfs), root.clone())
         .expect_err("one handle remains, so the root is still held");
     assert!(matches!(refused, StoreError::RootInUse { .. }));
 
     drop(clone);
-    drop(Store::open(Arc::clone(&vfs), root).expect("the last handle released it"));
+    drop(Store::open_unsourced(Arc::clone(&vfs), root).expect("the last handle released it"));
 }
 
 /// A clone does not re-acquire. If it did, the store would deadlock against itself the
-/// moment a `WriteMonitor` was spawned -- which is every production path.
+/// moment a handle was cloned for another thread.
 #[test]
 fn cloning_a_store_does_not_re_acquire() {
     let (_vfs, store) = fresh_store();
@@ -161,7 +162,7 @@ fn distinct_roots_are_independently_locked() {
     let second_root = PathBuf::from("another-shire");
     vfs.create_dir_all(&second_root).expect("create root");
 
-    let second = Store::init(Arc::clone(&vfs), second_root, test_config())
+    let second = Store::init_unsourced(Arc::clone(&vfs), second_root, test_config())
         .expect("a different root is not excluded by the first's lock");
 
     assert_ne!(first.root(), second.root());
@@ -174,10 +175,13 @@ fn a_failed_open_leaves_the_root_free() {
     let (vfs, root) = fresh_root();
 
     // No marker yet, so this fails validation -- before the lock is even taken.
-    let refused = Store::open(Arc::clone(&vfs), root.clone()).expect_err("not a shire");
+    let refused = Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect_err("not a shire");
     assert!(matches!(refused, StoreError::NotAShire { .. }));
 
-    drop(Store::init(Arc::clone(&vfs), root, test_config()).expect("the root was not poisoned"));
+    drop(
+        Store::init_unsourced(Arc::clone(&vfs), root, test_config())
+            .expect("the root was not poisoned"),
+    );
 }
 
 /// `open` must not litter: a directory that turns out not to be a store gets no lock file.
@@ -186,7 +190,7 @@ fn a_failed_open_leaves_the_root_free() {
 fn a_refused_open_drops_no_lock_file_into_a_non_store() {
     let (vfs, root) = fresh_root();
 
-    Store::open(Arc::clone(&vfs), root.clone()).expect_err("not a shire");
+    Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect_err("not a shire");
 
     let entries = vfs.read_dir(&root).expect("read root");
     assert!(
@@ -209,7 +213,9 @@ fn the_lock_file_remains_after_release_and_does_not_wedge_the_root() {
         "the file is left behind on release"
     );
 
-    drop(Store::open(Arc::clone(&vfs), root).expect("a leftover lock file wedges nothing"));
+    drop(
+        Store::open_unsourced(Arc::clone(&vfs), root).expect("a leftover lock file wedges nothing"),
+    );
 }
 
 /// Clones of one store are one writer: two of them racing a create-if-absent of the same
@@ -228,7 +234,7 @@ fn clones_racing_a_conditional_create_commit_exactly_once() {
                 thread::spawn(move || {
                     barrier.wait();
                     store
-                        .update_document(
+                        .update_document_as(
                             Swap::conditional_absent(
                                 name("contended"),
                                 document,

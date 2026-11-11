@@ -3,7 +3,7 @@
 Crate-local design notes for the filesystem seam (D55/D56). The shared decision register lives
 in `DESIGN-NOTES.md` at the root of the originating repository (not imported here); this file
 elaborates the decisions that land in this crate rather than re-deciding them. Names such
-as `bungo` and `canopy-core` are crates in that repository.
+as `canopy` and `canopy-core` are crates in that repository.
 
 ## D300 -- Anchored Artifact Reads
 
@@ -133,7 +133,7 @@ write your own `Vfs` decorator in your crate.**
 
 This is not a style preference; it is what [D107](../../DESIGN-NOTES.md) was written to settle.
 Three consumer crates each independently hand-wrote a decorator -- `StagedRenameFaultVfs` in
-`bungo`, `EngineStateWriteFaultVfs` and `ReadHookVfs` in `canopy-core` -- and every one of them spent
+`canopy`, `EngineStateWriteFaultVfs` and `ReadHookVfs` in `canopy-core` -- and every one of them spent
 most of its length delegating thirteen `Vfs` methods verbatim in order to change the behaviour of
 exactly one. Each also re-invented a path-matching rule, and each matched paths in a slightly
 different way. That cost was paid three times for one missing capability, and none of the three
@@ -276,3 +276,46 @@ A decorator that reappears in a consumer crate should be read as a bug report ag
 - **`OsFs::read_at` refuses a directory before looking at the range.** Unix opens a directory
   for reading, so an empty or past-the-end read would otherwise succeed on one; it now reports
   `IsADirectory`, as `MemFs` does.
+
+## MemFs directory sync costs what changed, 2026-11-10
+
+A `MemFs` directory sync reconciles only the entries whose live state may differ from the
+durable one, so its cost follows what changed since that directory's last sync, not the
+directory's size. Reconciling every entry made a store that syncs a partition root after
+creating each shard quadratic in the number of shards: the content-store scale tests spent
+most of their time inside `MemFs::fsync`, not in the store.
+
+- **The invariant.** For every live directory, its durable directory differs from it only in
+  the names recorded for it in `Inner::dirty`, or the record is "all" and nothing is assumed.
+  A directory with no record matches its durable directory exactly. Recording a name that did
+  not change costs a no-op reconcile; missing one loses that change on a crash. So the rule is
+  to record conservatively: every operation that changes a live directory's entries (create,
+  write or append of a new file, remove, rename on both sides) records the name in its parent.
+- **Wholesale replacement records "all".** A durable directory that is created, reset by a
+  replacement mark, or replaced by a materialized carried snapshot no longer differs from its
+  live directory by any recorded set, so it and (for a snapshot) every directory beneath it are
+  marked "all". A directory a sync gives a new, empty durable copy is marked "all" too.
+- **Records are dropped only by the sync that satisfies them**, after it has succeeded, and by
+  a crash, after which live equals durable. Records under a removed or renamed directory are
+  discarded; both paths of a directory rename are replacement-marked, so their next sync
+  starts from empty and reconciles every entry regardless.
+- **Carried syncs do not consume records.** A sync into a carried snapshot leaves the durable
+  tree untouched, and the snapshot's materialization marks its subtree "all".
+- **The full reconcile stays as the oracle.** `MemFs::with_full_directory_sync` (test only)
+  ignores the records and reconciles every entry. A seeded differential test replays identical
+  random operation sequences, crashes included, against both and requires identical results,
+  identical crash survivors, and consistent reference counts; a test-only counter of examined
+  entries pins the cost bound itself. Removing the record a rename makes in its destination
+  parent fails the differential test, so it detects under-recording rather than only
+  agreeing with itself.
+
+## MemFs fork, 2026-11-10
+
+`MemFs::fork` returns an independent filesystem holding a copy of the original's whole state:
+both trees, both data maps, and the bookkeeping that decides what a crash keeps (unnamed
+directories, carried snapshots, replacement marks, change records, reference counts). A fork
+therefore survives a crash exactly as its original would have at the moment of forking, and
+neither ever observes the other's later changes. Locks are deliberately not copied: a lock
+belongs to its holder rather than to the stored tree, the same reason a crash does not
+release one. Its purpose is fixtures: a store populated once can be handed to every test as a
+private copy instead of being rebuilt per test.

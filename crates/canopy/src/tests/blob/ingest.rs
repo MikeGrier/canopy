@@ -41,7 +41,7 @@ fn blob_path(root: &std::path::Path, index: usize, name: &BlobName, width: usize
 #[test]
 fn ingest_returns_the_digest_it_computed_over_what_it_wrote() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let body = b"the body bytes";
     let name = ingest(&store, body, "n1");
@@ -59,7 +59,7 @@ fn the_stored_bytes_hash_to_the_name_they_were_stored_under() {
     // The property that makes a blob self-validating (`D315`): the name is checkable
     // against the content without reference to anything else.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"self-validating", "n1");
     let width = store.shard_width();
@@ -78,7 +78,7 @@ fn a_source_read_in_many_chunks_hashes_the_same_as_one_read() {
     // The single pass is over the caller's stream, not over a buffer canopy assembled --
     // so how the stream chooses to deliver its bytes must not change the digest.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
     let dribbled = ingest(&store, &body, "n1");
@@ -121,7 +121,7 @@ fn a_source_read_in_many_chunks_hashes_the_same_as_one_read() {
 #[test]
 fn an_empty_body_ingests_to_the_empty_digest() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"", "n1");
     assert_eq!(name.digest(), ContentDigest::of(b""));
@@ -139,7 +139,7 @@ fn an_empty_body_ingests_to_the_empty_digest() {
 fn a_blob_spanning_many_chunks_is_replicated_byte_for_byte() {
     let (vfs, root) = fresh_root();
     let config = test_config().with_blob_replica_count(3).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), config).expect("init");
 
     // Several whole chunks and a ragged remainder, so every copy boundary is exercised.
     let body: Vec<u8> = (0..(3 * 64 * 1024 + 17) as u32)
@@ -180,7 +180,7 @@ fn replicating_a_staged_blob_never_reads_it_whole() {
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
     let config = test_config().with_blob_replica_count(2).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), config).expect("init");
 
     let body: Vec<u8> = (0..(2 * 64 * 1024 + 5) as u32).map(|i| i as u8).collect();
     let name = ingest(&store, &body, "n1");
@@ -194,7 +194,7 @@ fn every_replica_is_present_and_byte_identical_before_ingest_returns() {
     // a name could be published while a copy is still missing.
     let (vfs, root) = fresh_root();
     let config = test_config().with_blob_replica_count(4).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), config).expect("init");
 
     let body = b"replicated";
     let name = ingest(&store, body, "n1");
@@ -215,7 +215,7 @@ fn an_even_replica_count_is_honoured() {
     // Blobs are verified rather than voted on, so parity means nothing here (`D316`).
     let (vfs, root) = fresh_root();
     let config = test_config().with_blob_replica_count(2).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), config).expect("init");
 
     let name = ingest(&store, b"two copies", "n1");
     let width = store.shard_width();
@@ -229,7 +229,7 @@ fn an_even_replica_count_is_honoured() {
 #[test]
 fn a_blob_lands_under_its_shard_and_the_shard_is_a_prefix_of_the_name() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"sharded", "n1");
     let width = store.shard_width();
@@ -252,7 +252,7 @@ fn init_creates_the_blob_partitions_but_no_shard_directories() {
     // Shards are created lazily, so an empty store carries 1024 absent directories
     // rather than 1024 empty ones (`D322`).
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     for index in 0..store.blob_replica_count() {
         let partition = root.join(BLOB_TREE_DIR).join(format!("p{index}"));
@@ -271,7 +271,7 @@ fn identical_content_at_the_same_path_lands_on_the_same_name() {
     // Why `D315`'s cleanup is a set difference: a rewrite of identical content is the
     // same blob, so "delete the old one" would delete the new one.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let first = ingest(&store, b"same", "n1");
     let second = ingest(&store, b"same", "n2");
@@ -289,7 +289,7 @@ fn a_new_version_does_not_disturb_the_old_blob() {
     // Blobs are immutable (`D314`): a second version is a second file, and removing the
     // first is a separate act scheduled as `CVS-8`.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let old = ingest(&store, b"old", "n1");
     let new = ingest(&store, b"new", "n2");
@@ -305,7 +305,7 @@ fn different_documents_with_identical_content_get_different_blobs() {
     // `D315`: blobs are never shared, and the owner hash is what enforces it rather than
     // merely intending it.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let a = store
         .ingest_blob(
@@ -344,7 +344,7 @@ fn different_documents_with_identical_content_get_different_blobs() {
 #[test]
 fn a_successful_ingest_leaves_no_staging_behind() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     ingest(&store, b"clean up", "n1");
 
     for index in 0..store.blob_replica_count() {
@@ -367,7 +367,7 @@ fn a_failing_source_is_reported_as_the_callers_failure_and_commits_nothing() {
     }
 
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let error = store
         .ingest_blob(
@@ -411,7 +411,7 @@ fn a_reused_nonce_after_a_failure_does_not_concatenate_two_bodies() {
     }
 
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let _ = store.ingest_blob(
         &node_of("TICKETS/A"),

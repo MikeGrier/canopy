@@ -2,10 +2,10 @@
 
 //! The in-process half of "a store root has one writer" (`D41`, `D116`).
 //!
-//! The OS lock excludes a second *process*. Within one process, every `Store` clone and
-//! every `WriteMonitor` spawned from one shares this gate, so their writes are serialized
-//! too: a check-then-write (a conditional swap, a monitor's read-modify-write) cannot be
-//! interleaved with another writer's. The gate is re-entrant per thread, because the
+//! The OS lock excludes a second *process*. Within one process, every `Store` clone shares
+//! this gate, so their writes are serialized too: a check-then-write (a conditional swap, a
+//! read-modify-write `transform`) cannot be interleaved with another writer's. The gate is
+//! re-entrant per thread, because the
 //! public write verbs call one another (a transaction ingests blobs and writes pointers),
 //! and it is granted in arrival order, so a busy writer cannot starve another.
 
@@ -43,6 +43,17 @@ impl WriterGate {
 
     pub(crate) fn is_unresolved(&self) -> bool {
         self.unresolved.load(Ordering::Acquire)
+    }
+
+    /// How many nested entries the calling thread holds; zero when another thread, or none,
+    /// holds the gate.
+    pub(crate) fn held_depth(&self) -> usize {
+        let holder = self.holder.lock().unwrap_or_else(PoisonError::into_inner);
+        if holder.owner == Some(thread::current().id()) {
+            holder.depth
+        } else {
+            0
+        }
     }
 
     /// Blocks until the calling thread holds the gate; nested entries do not block.

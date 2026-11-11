@@ -2,15 +2,10 @@
 
 //! `CVS-23` integration test: the non-transactional write path reaches both trees (`D332`).
 //!
-//! `CVS-14` wired blob ingest and pointer writes into `apply_transaction` only. canopy's other
-//! write path -- `write_document_replicated`, reached through [`WriteMonitor::write`] and
-//! [`WriteMonitor::conditional_write`] -- journals nothing and, until this item, wrote nothing
-//! to the content store or the namespace. Callers drive it on their hot paths, so `CVS-19`
-//! would have lost every document written that way.
-//!
-//! The tests go through the **monitor**, not the store, because that is the surface the
-//! callers actually use: a test that called `write_document_replicated` directly would prove
-//! the primitive was wired and say nothing about whether the path in production reaches it.
+//! canopy's write path outside the commit log, `write_document_replicated`, journals nothing.
+//! Callers drive it on their hot paths, so it must reach both the content store and the
+//! namespace just as a logged commit does, or a traversal of the namespace would lose every
+//! document written that way. The tests go through the public verb a caller uses.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, ShireId, Store,
-    StoreError, WriteMonitor,
+    StoreError, StoreOptions, Swap,
 };
 
 fn node() -> NodePath {
@@ -34,8 +29,16 @@ fn body(text: &str) -> DocumentBody {
     DocumentBody::new(text.as_bytes().to_vec())
 }
 
-/// A monitor over a fresh store, plus the backend for inspecting what landed.
-fn monitored() -> (Arc<dyn Vfs>, WriteMonitor) {
+/// Options drawing nonces `N0`, `N1`, ... .
+fn options() -> StoreOptions {
+    let next = AtomicU64::new(0);
+    StoreOptions::with_nonce_source(move || {
+        Nonce::new(&format!("N{}", next.fetch_add(1, Ordering::Relaxed))).unwrap()
+    })
+}
+
+/// A fresh store, plus the backend for inspecting what landed.
+fn fresh() -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
@@ -43,14 +46,10 @@ fn monitored() -> (Arc<dyn Vfs>, WriteMonitor) {
         vfs.clone(),
         root,
         GenesisConfig::new(ShireId::new("cvs23-shire").unwrap(), 3),
+        options(),
     )
     .expect("init");
-    let next = AtomicU64::new(0);
-    let monitor = WriteMonitor::spawn(store, move || {
-        Nonce::new(&format!("N{}", next.fetch_add(1, Ordering::Relaxed))).unwrap()
-    })
-    .expect("spawn");
-    (vfs, monitor)
+    (vfs, store)
 }
 
 /// What the namespace resolves the document to, following its pointer into the blob tree.
@@ -92,23 +91,20 @@ fn blob_count(vfs: &Arc<dyn Vfs>, store: &Store) -> usize {
 }
 
 #[test]
-fn a_monitor_write_is_reachable_through_the_namespace() {
-    // The gap this item closed: before it, this document existed only in the partition tree
-    // and `CVS-19` would have lost it.
-    let (_vfs, monitor) = monitored();
-    monitor
-        .write(node(), doc(), body("v1"))
+fn an_unlogged_write_is_reachable_through_the_namespace() {
+    let (_vfs, store) = fresh();
+    store
+        .write_document_replicated(node(), &doc(), &body("v1"))
         .expect("the write commits");
 
     assert_eq!(
-        via_namespace(monitor.store()).as_deref(),
+        via_namespace(&store).as_deref(),
         Some(b"v1".as_slice()),
-        "a monitor write did not reach the content store and the namespace"
+        "an unlogged write did not reach the content store and the namespace"
     );
     // And the namespace enumerates it, so a traversal of the new tree sees it too.
     assert!(
-        monitor
-            .store()
+        store
             .list_documents()
             .expect("enumeration")
             .contains(&(node(), doc())),
@@ -117,20 +113,24 @@ fn a_monitor_write_is_reachable_through_the_namespace() {
 }
 
 #[test]
-fn a_conditional_write_reaches_both_trees_too() {
-    // The other monitor entry point, and the one that would have been easy to miss
-    // because it goes through a different function in the monitor.
-    let (_vfs, monitor) = monitored();
-    monitor
-        .write(node(), doc(), body("v1"))
+fn a_compare_and_set_over_an_unlogged_write_reaches_both_trees_too() {
+    let (_vfs, store) = fresh();
+    store
+        .write_document_replicated(node(), &doc(), &body("v1"))
         .expect("the seed commits");
 
-    monitor
-        .conditional_write(node(), doc(), body("v2"), body("v1").digest())
+    let commit = store
+        .update_document(Swap::conditional(
+            node(),
+            doc(),
+            body("v2"),
+            body("v1").digest(),
+        ))
         .expect("the conditional write is accepted");
+    assert!(commit.is_committed());
 
     assert_eq!(
-        via_namespace(monitor.store()).as_deref(),
+        via_namespace(&store).as_deref(),
         Some(b"v2".as_slice()),
         "a conditional write did not reach the new trees"
     );
@@ -141,21 +141,18 @@ fn overwriting_does_not_strand_the_version_it_replaced() {
     // The leak this path would otherwise have on the **success** path, not merely after a
     // crash: without a collection, every overwrite would leave the previous blob behind
     // forever. On the ledger's hot path that is unbounded growth.
-    let (vfs, monitor) = monitored();
+    let (vfs, store) = fresh();
     for generation in 1..=5 {
-        monitor
-            .write(node(), doc(), body(&format!("v{generation}")))
+        store
+            .write_document_replicated(node(), &doc(), &body(&format!("v{generation}")))
             .expect("the write commits");
         assert_eq!(
-            blob_count(&vfs, monitor.store()),
-            monitor.store().blob_replica_count(),
+            blob_count(&vfs, &store),
+            store.blob_replica_count(),
             "generation {generation} left a superseded blob behind"
         );
     }
-    assert_eq!(
-        via_namespace(monitor.store()).as_deref(),
-        Some(b"v5".as_slice())
-    );
+    assert_eq!(via_namespace(&store).as_deref(), Some(b"v5".as_slice()));
 }
 
 #[test]
@@ -181,16 +178,17 @@ fn the_pointer_never_names_a_blob_that_is_not_there() {
             vfs.clone(),
             root,
             GenesisConfig::new(ShireId::new("cvs23-shire").unwrap(), 3),
+            options(),
         )
         .expect("init");
 
         store
-            .write_document_replicated(node(), &doc(), &body("v1"), &Nonce::new("SEED").unwrap())
+            .write_document_replicated(node(), &doc(), &body("v1"))
             .expect("the unfaulted seed write commits");
 
         gate.open();
         if store
-            .write_document_replicated(node(), &doc(), &body("v2"), &Nonce::new("T2").unwrap())
+            .write_document_replicated(node(), &doc(), &body("v2"))
             .is_err()
         {
             faulted += 1;
@@ -224,37 +222,33 @@ fn an_empty_body_round_trips() {
     // Zero bytes is still a body: it has a digest, it is ingested, and the pointer names it.
     // The failure this guards is treating an empty body as an absent one somewhere along the
     // write, which would read back as a document that was never written.
-    let (_vfs, monitor) = monitored();
-    monitor
-        .write(node(), doc(), DocumentBody::new(Vec::new()))
+    let (_vfs, store) = fresh();
+    store
+        .write_document_replicated(node(), &doc(), &DocumentBody::new(Vec::new()))
         .expect("the write commits");
 
-    assert_eq!(
-        via_namespace(monitor.store()).as_deref(),
-        Some(b"".as_slice())
-    );
+    assert_eq!(via_namespace(&store).as_deref(), Some(b"".as_slice()));
 }
 
 #[test]
 fn a_node_holds_multiple_documents_independently() {
     // Two documents under one node share a node directory in the namespace but have distinct
     // path hashes, so neither write may disturb the other's pointer or blob.
-    let (_vfs, monitor) = monitored();
+    let (_vfs, store) = fresh();
     let other = DocumentName::new("ENGINE").expect("a valid document name");
-    monitor
-        .write(node(), doc(), body("the record"))
+    store
+        .write_document_replicated(node(), &doc(), &body("the record"))
         .expect("the write commits");
-    monitor
-        .write(node(), other.clone(), body("pid+start"))
+    store
+        .write_document_replicated(node(), &other, &body("pid+start"))
         .expect("the write commits");
 
-    let store = monitor.store();
     assert_eq!(
-        canopy::read_once(store, &node(), &doc()).expect("read"),
+        canopy::read_once(&store, &node(), &doc()).expect("read"),
         Some(body("the record"))
     );
     assert_eq!(
-        canopy::read_once(store, &node(), &other).expect("read"),
+        canopy::read_once(&store, &node(), &other).expect("read"),
         Some(body("pid+start"))
     );
 }

@@ -114,22 +114,17 @@ impl Store {
     /// new body in all N partitions atomically. An unconditional [`Swap::new`] always
     /// commits; a conditional [`Swap::conditional`] commits only when the current quorum
     /// body's digest matches the expected value (the D54 compare-and-set) and is
-    /// otherwise [`Rejected`](TransactionOutcome::Rejected) with nothing touched. `txn`
-    /// is the caller-supplied transaction id (D61); canopy mints no tokens of its own.
+    /// otherwise [`Rejected`](TransactionOutcome::Rejected) with nothing touched.
     ///
     /// This is the generic store surface's single-document write verb; the multi-document
     /// sibling is [`apply_transaction`](Store::apply_transaction). Anything domain-specific
     /// belongs to the caller, layered on top (D54).
-    pub fn update_document(
-        &self,
-        swap: Swap,
-        txn: &Nonce,
-    ) -> Result<TransactionOutcome, StoreError> {
-        self.apply_transaction(&SwapSet::single(swap), txn)
+    pub fn update_document(&self, swap: Swap) -> Result<Commit, StoreError> {
+        self.apply_transaction(&SwapSet::single(swap))
     }
 
     /// Atomically applies `swaps` as one D53 transaction, journaled to the commit log
-    /// (TXN-2).
+    /// (TXN-2), under a nonce drawn from the store's source and claimed for the transaction.
     ///
     /// The two-phase apply (D53/D8):
     /// 1. **Preconditions.** Every conditional swap's expected digest (the D54
@@ -147,12 +142,11 @@ impl Store {
     /// 5. **End.** An `end` record records completion and the transaction's staging
     ///    trees are swept.
     ///
-    /// `txn` is the caller-supplied transaction id (D61): it names both the log
-    /// records and the per-transaction staging directories, as canopy mints no tokens
-    /// of its own. Multi-document all-or-nothing is exactly what the log buys: a
-    /// crash after the `prepare` fsync rolls the transaction forward, before it rolls
-    /// back -- but that recovery replay is TXN-4; TXN-2 lands the forward apply and
-    /// makes it idempotent so the replay can drive it.
+    /// The nonce names both the log records and the per-transaction staging directories, and
+    /// is reported in the returned [`Commit`]. Multi-document all-or-nothing is exactly what
+    /// the log buys: a crash after the `prepare` fsync rolls the transaction forward, before
+    /// it rolls back. When this is the outermost write on the calling thread, the commit log
+    /// is emptied before the writer gate is released.
     ///
     /// # A failure is rolled back when it can be, and fences the store when it cannot
     ///
@@ -162,7 +156,33 @@ impl Store {
     /// point, so every handle to this store then refuses writes with
     /// [`StoreError::RecoveryRequired`] and leaves the journal untouched until the store is
     /// reopened and recovery has finished it.
-    pub fn apply_transaction(
+    pub fn apply_transaction(&self, swaps: &SwapSet) -> Result<Commit, StoreError> {
+        let _writer = self.writable()?;
+        let mut claim = self.claim_fresh_nonce()?;
+        let result = self.apply_transaction_as(swaps, claim.nonce());
+        if self.recovery_required() {
+            claim.keep();
+        }
+        let outcome = result?;
+        let nonce = claim.nonce().clone();
+        drop(claim);
+        self.settle_log();
+        Ok(Commit::new(outcome, nonce))
+    }
+
+    /// [`update_document`](Store::update_document) under the caller's `txn`, unclaimed.
+    #[cfg(test)]
+    pub(crate) fn update_document_as(
+        &self,
+        swap: Swap,
+        txn: &Nonce,
+    ) -> Result<TransactionOutcome, StoreError> {
+        self.apply_transaction_as(&SwapSet::single(swap), txn)
+    }
+
+    /// [`apply_transaction`](Store::apply_transaction) under `txn`, which the caller has
+    /// claimed or, in a test, chosen; the commit log is left as the transaction wrote it.
+    pub(crate) fn apply_transaction_as(
         &self,
         swaps: &SwapSet,
         txn: &Nonce,
@@ -170,10 +190,16 @@ impl Store {
         // Held from the precondition checks through the last phase, so no other writer in
         // this process can change what the checks saw before the transaction lands.
         let _writer = self.writable()?;
+        // One modification for the whole transaction, so no sampler sees it settled between
+        // swaps; dropped after any fence below is set, so an unresolved one stays odd.
+        let _modifying = self.begin_modification();
         let mut began = false;
         let result = self.apply_transaction_gated(swaps, txn, &mut began);
         if result.is_err() && began && !matches!(self.rollback_unprepared(txn), Ok(true)) {
             self.writer.mark_unresolved();
+        }
+        if let Ok(TransactionOutcome::Committed) = &result {
+            self.report_committed(swaps);
         }
         result
     }
@@ -248,6 +274,12 @@ impl Store {
 
         let log = self.commit_log();
 
+        // A transaction id the log already holds belongs to another transaction, whose records
+        // and staging this one would otherwise merge with. Refused before `began` is set, so
+        // nothing of that transaction is rolled back on this one's account.
+        if log.read()?.iter().any(|record| record.txn() == txn) {
+            return Err(StoreError::NonceCollision { nonce: txn.clone() });
+        }
         // Phase 2: begin, then ingest every write's body into the content store. A removal
         // ingests nothing: there is no body to place, and the pointer it takes must stay in
         // place until after the commit point. It also means a crash before `prepare` needs

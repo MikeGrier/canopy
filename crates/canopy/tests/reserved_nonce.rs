@@ -11,9 +11,13 @@ use std::sync::Arc;
 
 use acadia::{OsFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store, Swap,
-    SwapSet, TransactionOutcome,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store, StoreOptions,
+    Swap, SwapSet, TransactionOutcome,
 };
+
+/// The nonces the commit test draws, in order: every reserved device name, then `con`, which
+/// folds to the first of them.
+const RESERVED: [&str; 6] = ["CON", "prn", "Aux", "NUL", "COM1", "LPT9"];
 
 /// A unique scratch directory on the real filesystem, removed on drop.
 struct TempRoot(PathBuf);
@@ -39,34 +43,42 @@ fn transactions_named_by_reserved_device_names_commit_and_leave_no_staging() {
     let root = TempRoot::new("commit");
     let vfs: Arc<dyn Vfs> = Arc::new(OsFs::new());
     let config = GenesisConfig::new(ShireId::new("reserved-nonce").unwrap(), 0);
-    let store = Store::init(Arc::clone(&vfs), root.0.clone(), config).expect("init");
+    let mut nonces = RESERVED
+        .iter()
+        .chain(&["con"])
+        .map(|raw| Nonce::new(raw).unwrap())
+        .collect::<Vec<_>>()
+        .into_iter();
+    let options = StoreOptions::with_nonce_source(move || nonces.next().unwrap());
+    let store = Store::init(Arc::clone(&vfs), root.0.clone(), config, options).expect("init");
     let node = NodePath::parse("tickets").unwrap();
 
-    for (index, raw) in ["CON", "prn", "Aux", "NUL", "COM1", "LPT9"]
-        .iter()
-        .enumerate()
-    {
+    for (index, raw) in RESERVED.iter().enumerate() {
         let document = DocumentName::new(&format!("doc{index}")).unwrap();
         let body = DocumentBody::new(format!("written under {raw}").into_bytes());
         let swaps = SwapSet::single(Swap::new(&node, document.clone(), body.clone()));
-        let outcome = store
-            .apply_transaction(&swaps, &Nonce::new(raw).unwrap())
+        let commit = store
+            .apply_transaction(&swaps)
             .unwrap_or_else(|error| panic!("nonce {raw}: {error}"));
-        assert_eq!(outcome, TransactionOutcome::Committed, "nonce {raw}");
+        assert_eq!(commit.nonce(), &Nonce::new(raw).unwrap());
+        assert_eq!(
+            commit.outcome(),
+            &TransactionOutcome::Committed,
+            "nonce {raw}"
+        );
         assert_eq!(
             store.read_document(&node, &document).unwrap(),
             Read::Found(body)
         );
     }
 
-    // `con` folds to `CON`, the same nonce; it commits a second write over the same staging
-    // name without colliding with anything the first left behind.
+    // `con` folds to `CON`, the same nonce. Each write emptied the log and released its claim,
+    // so the id is free again, and the second write reuses the same staging name without
+    // colliding with anything the first left behind.
     let document = DocumentName::new("doc0").unwrap();
     let body = DocumentBody::new(b"rewritten under con".to_vec());
     let swaps = SwapSet::single(Swap::new(&node, document.clone(), body.clone()));
-    store
-        .apply_transaction(&swaps, &Nonce::new("con").unwrap())
-        .expect("lowercase con");
+    store.apply_transaction(&swaps).expect("lowercase con");
     assert_eq!(
         store.read_document(&node, &document).unwrap(),
         Read::Found(body)

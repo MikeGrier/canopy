@@ -10,7 +10,7 @@ use super::*;
 #[test]
 fn a_read_returns_the_bytes_that_were_ingested() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let name = ingest(&store, b"round trip", "n1");
     let read = store.read_blob(&reference(&store, &name)).expect("read");
@@ -25,7 +25,7 @@ fn a_read_derives_nothing_and_enumerates_nothing() {
     // for a document it has never seen still finds the blob. If the read recomputed
     // anything from the node and document names, it could not -- it is not given them.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let name = ingest(&store, b"no derivation", "n1");
     let path = name.relative_path(store.shard_width());
@@ -43,7 +43,7 @@ fn a_corrupt_replica_is_identified_by_itself_and_the_read_falls_through() {
     // another replica, no vote. Corrupting a majority changes nothing, which is the
     // property a quorum read does not have.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"one good copy", "n1");
     let width = store.shard_width();
@@ -70,7 +70,7 @@ fn a_read_stops_at_the_first_copy_that_verifies() {
     // finds its preferred replica intact never touches the others -- including ones that
     // are corrupt. There is no fan-out (`D316`).
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"first choice", "n1");
     let width = store.shard_width();
@@ -92,7 +92,7 @@ fn a_read_stops_at_the_first_copy_that_verifies() {
 #[test]
 fn a_missing_replica_is_stepped_over_and_reported_separately_from_a_corrupt_one() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"mixed faults", "n1");
     let width = store.shard_width();
@@ -126,7 +126,7 @@ fn every_replica_corrupt_is_reported_apart_from_every_replica_missing() {
     // The two failures have different remedies, so the error distinguishes them rather
     // than collapsing both into "unavailable".
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     let width = store.shard_width();
 
     let rotted = ingest(&store, b"all rotted", "n1");
@@ -166,7 +166,7 @@ fn verification_costs_no_extra_read_because_the_expectation_is_in_the_name() {
     // from the reference it was handed, so a read of a blob whose file has been replaced
     // fails on content rather than on some second lookup.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"expected", "n1");
     let reference = reference(&store, &name);
@@ -190,7 +190,7 @@ fn selection_is_stable_within_an_epoch() {
     // The reason the epoch is coarse: two reads of one document inside a write window
     // must not land on different replicas and see the value move backwards.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let name = ingest(&store, b"stable", "n1");
     let reference = reference(&store, &name);
@@ -210,7 +210,7 @@ fn selection_moves_on_when_the_epoch_does_and_sweeps_every_replica() {
     // Rotation is what makes every read a probe: without it, verification would re-check
     // the same copy forever and a rotted replica would survive until the next scrub.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let name = ingest(&store, b"swept", "n1");
     let reference = reference(&store, &name);
@@ -232,7 +232,7 @@ fn selection_moves_on_when_the_epoch_does_and_sweeps_every_replica() {
 fn two_documents_do_not_all_prefer_the_same_replica() {
     // Selection is spread by the path hash, so load does not pile onto one partition.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let mut served = std::collections::BTreeSet::new();
     for i in 0..32 {
@@ -263,7 +263,7 @@ fn clones_of_a_store_share_one_epoch() {
     // Clones are one store, not several: a private counter per clone would never reach an
     // epoch boundary and rotation would stop sweeping.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     let clone = store.clone();
 
     let before = store.blob_epoch();
@@ -284,7 +284,7 @@ fn a_reference_whose_shard_disagrees_with_its_name_is_refused() {
     // and the name carry the same information, so a disagreement means the reference was
     // assembled wrongly or damaged in transit.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     let name = ingest(&store, b"cross-checked", "n1");
 
     let wrong = format!("ZZ/{}", name.file_name());
@@ -301,7 +301,7 @@ fn a_reference_whose_shard_disagrees_with_its_name_is_refused() {
 #[test]
 fn a_reference_round_trips_through_its_path() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     let name = ingest(&store, b"round trip", "n1");
 
     let path = name.relative_path(store.shard_width());
@@ -313,13 +313,13 @@ fn a_reference_round_trips_through_its_path() {
 #[test]
 fn a_repair_naming_a_replica_the_store_does_not_have_is_refused() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     let name = ingest(&store, b"in range", "n1");
     let count = store.blob_replica_count();
 
     for (missing, corrupt) in [(vec![count], vec![]), (vec![], vec![count + 3])] {
         let refused = store
-            .repair_blob(
+            .repair_blob_as(
                 &reference(&store, &name),
                 b"in range",
                 &missing,
@@ -354,14 +354,14 @@ fn a_sequestered_copy_survives_a_crash() {
     let vfs: Arc<dyn Vfs> = mem.clone();
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     let name = ingest(&store, b"good bytes", "n1");
     let width = store.shard_width();
     vfs.write(&blob_path(&root, 1, &name, width), b"rotten")
         .unwrap();
 
     let outcome = store
-        .repair_blob(
+        .repair_blob_as(
             &reference(&store, &name),
             b"good bytes",
             &[],
@@ -405,7 +405,7 @@ fn a_blob_repair_is_visible_to_the_modification_count_while_and_after_it_runs() 
     ));
     let root = PathBuf::from("repair-count");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let _ = handle.set(store.clone());
     let name = ingest(&store, b"good bytes", "n1");
     vfs.remove_file(&blob_path(&root, 1, &name, store.shard_width()))
@@ -414,7 +414,7 @@ fn a_blob_repair_is_visible_to_the_modification_count_while_and_after_it_runs() 
     let before = store.modifications();
     gate.open();
     let outcome = store
-        .repair_blob(
+        .repair_blob_as(
             &reference(&store, &name),
             b"good bytes",
             &[1],
@@ -453,7 +453,7 @@ fn a_failed_blob_repair_still_moves_the_count_and_leaves_it_settled() {
     ));
     let root = PathBuf::from("repair-fails");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let name = ingest(&store, b"good bytes", "n1");
     vfs.remove_file(&blob_path(&root, 1, &name, store.shard_width()))
         .unwrap();
@@ -461,7 +461,7 @@ fn a_failed_blob_repair_still_moves_the_count_and_leaves_it_settled() {
     let before = store.modifications();
     gate.open();
     store
-        .repair_blob(
+        .repair_blob_as(
             &reference(&store, &name),
             b"good bytes",
             &[1],
@@ -495,7 +495,7 @@ fn a_repair_at_another_shard_width_is_refused_before_anything_moves() {
 
     for width in [1, store.shard_width() + 1] {
         let foreign = crate::BlobRef::new(name, width).unwrap();
-        let refused = store.repair_blob(&foreign, b"good bytes", &[1], &[0], &nonce_of("r1"));
+        let refused = store.repair_blob_as(&foreign, b"good bytes", &[1], &[0], &nonce_of("r1"));
         assert!(
             matches!(
                 refused,

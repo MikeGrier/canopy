@@ -54,7 +54,7 @@ fn seeded(
     Pointer,
 ) {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     let node = node_of("TICKETS/A");
     let document = doc_of("record.json");
     let pointer = pointer_for(&node, &document, body);
@@ -121,7 +121,7 @@ fn a_successful_write_leaves_no_staging_behind() {
 #[test]
 fn init_creates_the_namespace_partitions() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     for index in 0..store.pointer_replica_count() {
         let partition = root.join(NAMESPACE_TREE_DIR).join(format!("p{index}"));
         assert!(vfs.metadata(&partition).unwrap().is_dir());
@@ -400,7 +400,7 @@ fn names(children: &Children) -> (Vec<String>, Vec<String>) {
 #[test]
 fn children_are_documents_and_child_nodes_distinguished() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     place(&store, "TICKETS", "a.json", "n1");
     place(&store, "TICKETS", "b.json", "n2");
@@ -415,7 +415,7 @@ fn children_are_documents_and_child_nodes_distinguished() {
 #[test]
 fn children_are_sorted_so_a_walk_is_deterministic() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     for (i, name) in ["z.json", "m.json", "a.json"].iter().enumerate() {
         place(&store, "TICKETS", name, &format!("n{i}"));
@@ -430,7 +430,7 @@ fn a_node_that_exists_nowhere_lists_empty_rather_than_erroring() {
     // A node is not a durable object in its own right, so "no children" and "no such
     // node" are the same fact; inventing a distinction would invent state.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let children = store
         .list_children(node_of("NEVER/WRITTEN"))
@@ -444,7 +444,7 @@ fn traversal_unions_across_replicas_rather_than_taking_a_majority() {
     // an entry that is *real*; dropping it because it is not yet everywhere would hide a
     // document from a caller enumerating the store.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     place(&store, "TICKETS", "everywhere.json", "n1");
 
     // A document present on exactly one replica -- a minority of one.
@@ -467,7 +467,7 @@ fn traversal_reports_a_document_once_even_when_replicas_disagree_about_its_value
     // Presence is what a traversal answers; which pointer is current is a different
     // question, and `read_pointer` is what answers it.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     place(&store, "TICKETS", "a.json", "n1");
 
     let node = node_of("TICKETS");
@@ -484,7 +484,7 @@ fn traversal_reports_a_document_once_even_when_replicas_disagree_about_its_value
 fn reserved_dotfiles_and_foreign_entries_are_skipped() {
     // A foreign tree must not derail a traversal.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     place(&store, "TICKETS", "real.json", "n1");
 
     let dir = root
@@ -504,7 +504,7 @@ fn reserved_dotfiles_and_foreign_entries_are_skipped() {
 #[test]
 fn every_document_in_the_namespace_is_enumerable() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let placed = [
         ("TICKETS", "a.json"),
@@ -537,7 +537,7 @@ fn every_document_in_the_namespace_is_enumerable() {
 #[test]
 fn an_empty_namespace_enumerates_to_nothing() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     assert!(store.list_documents().unwrap().is_empty());
 }
 
@@ -546,7 +546,7 @@ fn an_empty_namespace_enumerates_to_nothing() {
 #[test]
 fn a_document_may_not_take_a_name_a_child_node_already_holds() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     place(&store, "TICKETS/A", "inner.json", "n1");
 
     // `A` is a child node of `TICKETS`, so it cannot also be a document there.
@@ -565,7 +565,7 @@ fn a_document_may_not_take_a_name_a_child_node_already_holds() {
 #[test]
 fn a_node_may_not_be_created_beneath_a_document() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     place(&store, "TICKETS", "a", "n1");
 
     // `TICKETS/A` is a document, so nothing may live beneath it.
@@ -582,7 +582,7 @@ fn a_node_may_not_be_created_beneath_a_document() {
 fn a_collision_reports_the_shallowest_offending_prefix() {
     // A deeper report would name a directory that only failed because of this one.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
     place(&store, "TICKETS", "a", "n1");
 
     let node = node_of("TICKETS/A/B/C");
@@ -598,7 +598,7 @@ fn a_collision_reports_the_shallowest_offending_prefix() {
 fn a_refused_write_leaves_nothing_behind() {
     // The check runs before any staging, so a refusal costs no fsync.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     place(&store, "TICKETS/A", "inner.json", "n1");
 
     let node = node_of("TICKETS");
@@ -655,7 +655,7 @@ fn first_replica_per_read(rounds: usize) -> Vec<usize> {
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).expect("create root");
-    let store = Store::init(vfs.clone(), root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root, test_config()).expect("init");
     let node = node_of("TICKETS/A");
     let document = doc_of("record.json");
     store
@@ -822,7 +822,7 @@ fn a_writer_paused_between_replicas_is_never_mistaken_for_no_writer() {
     ));
     let root = PathBuf::from("paused");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root, test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
     let node = name("tickets");
     let document = doc("record");
     let _ = handle.set(store.clone());
@@ -895,7 +895,7 @@ fn a_create_that_has_reached_a_minority_reads_as_absent_until_the_majority_lands
     let node = node_of("TICKETS/A");
     let document = doc_of("record.json");
     store
-        .write_document_replicated(&node, &document, &body(b"created"), &nonce_of("n1"))
+        .write_document_replicated_as(&node, &document, &body(b"created"), &nonce_of("n1"))
         .expect("seed");
     let root = store.root().to_path_buf();
 
@@ -1003,7 +1003,7 @@ fn a_pointer_repair_from_an_obsolete_report_writes_nothing() {
     let node = name("tickets");
     let d = doc("record");
     store
-        .write_document_replicated(&node, &d, &body(b"v1"), &nonce("w1"))
+        .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
     let entry = namespace_root(&store, 0).join("TICKETS").join("RECORD");
     vfs.remove_file(&entry).unwrap();
@@ -1011,10 +1011,10 @@ fn a_pointer_repair_from_an_obsolete_report_writes_nothing() {
     assert_eq!(obsolete.missing(), [0]);
 
     store
-        .write_document_replicated(&node, &d, &body(b"v2"), &nonce("w2"))
+        .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .unwrap();
     let outcome = store
-        .repair_pointer(&node, &d, &obsolete, &nonce("r1"))
+        .repair_pointer_as(&node, &d, &obsolete, &nonce("r1"))
         .unwrap();
 
     assert!(outcome.is_noop(), "an obsolete report repaired {outcome:?}");
@@ -1028,14 +1028,14 @@ fn a_pointer_repair_restores_what_is_still_missing() {
     let node = name("tickets");
     let d = doc("record");
     store
-        .write_document_replicated(&node, &d, &body(b"v1"), &nonce("w1"))
+        .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
     let entry = namespace_root(&store, 1).join("TICKETS").join("RECORD");
     vfs.remove_file(&entry).unwrap();
     let report = store.read_pointer(&node, &d).unwrap();
 
     let outcome = store
-        .repair_pointer(&node, &d, &report, &nonce("r1"))
+        .repair_pointer_as(&node, &d, &report, &nonce("r1"))
         .unwrap();
 
     assert_eq!(outcome.replaced(), [1]);
@@ -1069,26 +1069,27 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
     let config = GenesisConfig::new(ShireId::new("removal-sync").unwrap(), 0)
         .with_pointer_replica_count(1)
         .unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), config).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), config).unwrap();
     let node = name("tickets");
     let d = doc("record");
     store
-        .update_document(Swap::new(&node, d.clone(), body(b"v1")), &nonce("w1"))
+        .update_document_as(Swap::new(&node, d.clone(), body(b"v1")), &nonce("w1"))
         .unwrap();
 
     gate.open();
     store
-        .update_document(Swap::remove(&node, d.clone()), &nonce("w2"))
+        .update_document_as(Swap::remove(&node, d.clone()), &nonce("w2"))
         .expect_err("the removal's parent sync fails after `prepare`");
     gate.close();
     assert!(store.recovery_required());
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&vfs), root.clone()).expect("recovery completes");
+    let reopened =
+        Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect("recovery completes");
     drop(reopened);
     faulty.inner().simulate_crash();
 
-    let after = Store::open(vfs, root).expect("reopen after the crash");
+    let after = Store::open_unsourced(vfs, root).expect("reopen after the crash");
     assert_eq!(after.read_body(&node, &d).unwrap(), None);
 }
 
@@ -1098,7 +1099,7 @@ fn a_pointer_repair_is_visible_to_the_modification_count() {
     let node = name("tickets");
     let d = doc("record");
     store
-        .write_document_replicated(&node, &d, &body(b"v1"), &nonce("w1"))
+        .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
     vfs.remove_file(&namespace_root(&store, 2).join("TICKETS").join("RECORD"))
         .unwrap();
@@ -1106,7 +1107,7 @@ fn a_pointer_repair_is_visible_to_the_modification_count() {
 
     let before = store.modifications();
     let outcome = store
-        .repair_pointer(&node, &d, &report, &nonce("r1"))
+        .repair_pointer_as(&node, &d, &report, &nonce("r1"))
         .unwrap();
     let after = store.modifications();
 
@@ -1125,18 +1126,18 @@ fn an_obsolete_pointer_repair_leaves_the_count_alone() {
     let node = name("tickets");
     let d = doc("record");
     store
-        .write_document_replicated(&node, &d, &body(b"v1"), &nonce("w1"))
+        .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
     vfs.remove_file(&namespace_root(&store, 0).join("TICKETS").join("RECORD"))
         .unwrap();
     let obsolete = store.read_pointer(&node, &d).unwrap();
     store
-        .write_document_replicated(&node, &d, &body(b"v2"), &nonce("w2"))
+        .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .unwrap();
 
     let before = store.modifications();
     store
-        .repair_pointer(&node, &d, &obsolete, &nonce("r1"))
+        .repair_pointer_as(&node, &d, &obsolete, &nonce("r1"))
         .unwrap();
     assert!(Store::undisturbed(before, store.modifications()));
 }
@@ -1169,11 +1170,11 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
     let config = GenesisConfig::new(ShireId::new("collect-durable").unwrap(), 0)
         .with_pointer_replica_count(1)
         .unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), config).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), config).unwrap();
     let node = name("tickets");
     let d = doc("record");
     store
-        .update_document(Swap::new(&node, d.clone(), body(b"v1")), &nonce("w1"))
+        .update_document_as(Swap::new(&node, d.clone(), body(b"v1")), &nonce("w1"))
         .unwrap();
     assert!(
         !store.commit_log_is_empty().unwrap(),
@@ -1182,15 +1183,15 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
 
     gate.open();
     store
-        .write_document_replicated(&node, &d, &body(b"v2"), &nonce("w2"))
+        .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .expect_err("the pointer's parent sync fails after the rename");
     gate.close();
     drop(store);
 
-    drop(Store::open(Arc::clone(&vfs), root.clone()).expect("recovery re-collects w1"));
+    drop(Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect("recovery re-collects w1"));
     faulty.inner().simulate_crash();
 
-    let after = Store::open(vfs, root).expect("reopen after the crash");
+    let after = Store::open_unsourced(vfs, root).expect("reopen after the crash");
     let read = after
         .read_body(&node, &d)
         .expect("the durable pointer's blob survived");

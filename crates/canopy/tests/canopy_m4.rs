@@ -65,8 +65,8 @@ fn single(b: &DocumentBody) -> SwapSet {
 fn an_fsync_failure_mid_commit_aborts_apply_and_reopen_recovers() {
     let script = Script::new().fail_commit_fsync(0, &node(), Fault::io_error(), When::Once);
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v2")), &nonce("t1"))
+    let err = chaos
+        .apply(&store, &single(&body("v2")), &nonce("t1"))
         .unwrap_err();
     assert!(matches!(err, StoreError::Vfs(_)));
     // The prepare record is durable, so recovery rolls the transaction forward.
@@ -81,8 +81,8 @@ fn an_fsync_failure_mid_commit_aborts_apply_and_reopen_recovers() {
 fn failing_begin_leaves_the_log_empty_and_commits_nothing() {
     let script = Script::new().fail_begin(Fault::io_error());
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v")), &nonce("t"))
+    let err = chaos
+        .apply(&store, &single(&body("v")), &nonce("t"))
         .unwrap_err();
     assert!(matches!(err, StoreError::CommitLog(_)));
     // A failed `begin` append persists nothing, so the log is absent or empty.
@@ -98,8 +98,8 @@ fn failing_begin_leaves_the_log_empty_and_commits_nothing() {
 fn failing_prepare_rolls_the_transaction_back_on_reopen() {
     let script = Script::new().fail_prepare(Fault::io_error());
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v2")), &nonce("t"))
+    let err = chaos
+        .apply(&store, &single(&body("v2")), &nonce("t"))
         .unwrap_err();
     assert!(matches!(err, StoreError::CommitLog(_)));
     // Only `begin` reached the log, so recovery rolls back: nothing is committed.
@@ -111,8 +111,8 @@ fn failing_prepare_rolls_the_transaction_back_on_reopen() {
 fn failing_the_prepare_fsync_rolls_forward_on_reopen() {
     let script = Script::new().fail_prepare_fsync(Fault::io_error());
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v2")), &nonce("t"))
+    let err = chaos
+        .apply(&store, &single(&body("v2")), &nonce("t"))
         .unwrap_err();
     assert!(matches!(err, StoreError::CommitLog(_)));
     // The `prepare` bytes were appended before its fsync failed, so the commit point
@@ -128,8 +128,8 @@ fn failing_the_prepare_fsync_rolls_forward_on_reopen() {
 fn failing_end_still_lands_the_transaction_via_recovery() {
     let script = Script::new().fail_end(Fault::io_error());
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v2")), &nonce("t"))
+    let err = chaos
+        .apply(&store, &single(&body("v2")), &nonce("t"))
         .unwrap_err();
     assert!(matches!(err, StoreError::CommitLog(_)));
     // Every swap committed before `end` failed; recovery re-runs the idempotent
@@ -146,8 +146,8 @@ fn the_same_script_is_deterministic_across_runs() {
     fn run() -> (bool, Option<DocumentBody>) {
         let script = Script::new().fail_prepare(Fault::io_error());
         let (chaos, store) = Chaos::open(3, script);
-        let aborted = store
-            .apply_transaction(&single(&body("v2")), &nonce("t"))
+        let aborted = chaos
+            .apply(&store, &single(&body("v2")), &nonce("t"))
             .is_err();
         let recovered = chaos.reopen(store).unwrap();
         let landed = read_once(&recovered, &node(), &doc()).unwrap();
@@ -164,8 +164,8 @@ fn the_same_script_is_deterministic_across_runs() {
 #[test]
 fn a_corrupt_log_tail_makes_recovery_surface_a_typed_error() {
     let (chaos, store) = Chaos::open_clean(3);
-    store
-        .apply_transaction(&single(&body("v1")), &nonce("t1"))
+    chaos
+        .apply(&store, &single(&body("v1")), &nonce("t1"))
         .unwrap();
 
     // What the earlier transaction committed, as it stands before the corruption. The log
@@ -190,8 +190,8 @@ fn a_corrupt_log_tail_makes_recovery_surface_a_typed_error() {
 #[test]
 fn a_torn_log_tail_is_discarded_and_recovery_completes_idempotently() {
     let (chaos, store) = Chaos::open_clean(3);
-    store
-        .apply_transaction(&single(&body("v1")), &nonce("t1"))
+    chaos
+        .apply(&store, &single(&body("v1")), &nonce("t1"))
         .unwrap();
 
     // A crash mid-append leaves an unterminated trailing line (no newline): the
@@ -212,8 +212,8 @@ fn a_corrupt_tail_over_a_prepared_transaction_refuses_rather_than_forcing_conver
     // committed: a transaction recovery would otherwise roll forward and end.
     let script = Script::new().fail_end(Fault::io_error());
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v")), &nonce("t1"))
+    let err = chaos
+        .apply(&store, &single(&body("v")), &nonce("t1"))
         .unwrap_err();
     assert!(matches!(err, StoreError::CommitLog(_)));
 
@@ -235,12 +235,12 @@ fn a_corrupt_tail_over_a_prepared_transaction_refuses_rather_than_forcing_conver
 
 #[test]
 fn a_read_error_during_recovery_surfaces_a_typed_error() {
-    // Store creation never reads the log and the clean apply only appends, so the
-    // reopen's recovery read is the first matching log read; `Once` faults it.
-    let script = Script::new().fail_log_read(Fault::io_error(), When::Once);
+    // Store creation never reads the log and the clean apply reads it twice (see
+    // `Script::fail_log_read`), so the reopen's recovery read is the third.
+    let script = Script::new().fail_log_read(Fault::io_error(), When::OnCall(3));
     let (chaos, store) = Chaos::open(3, script);
-    store
-        .apply_transaction(&single(&body("v1")), &nonce("t1"))
+    chaos
+        .apply(&store, &single(&body("v1")), &nonce("t1"))
         .unwrap();
 
     let err = chaos.reopen(store).unwrap_err();
@@ -265,9 +265,7 @@ fn a_rename_fault_during_recovery_surfaces_a_typed_error_then_a_retry_converges(
     let script = Script::new().fail_swap_rename(0, &txn, &doc(), Fault::io_error(), When::Times(2));
     let (chaos, store) = Chaos::open(3, script);
 
-    let err = store
-        .apply_transaction(&single(&body("v")), &txn)
-        .unwrap_err();
+    let err = chaos.apply(&store, &single(&body("v")), &txn).unwrap_err();
     assert!(matches!(err, StoreError::Vfs(_)));
 
     // Recovery hits the rename fault and surfaces a typed error -- the process stays
@@ -291,8 +289,8 @@ fn recovery_is_idempotent_across_repeated_reopens() {
     // so the first reopen rolls the transaction forward.
     let script = Script::new().fail_commit_fsync(0, &node(), Fault::io_error(), When::Once);
     let (chaos, store) = Chaos::open(3, script);
-    let err = store
-        .apply_transaction(&single(&body("v2")), &nonce("t1"))
+    let err = chaos
+        .apply(&store, &single(&body("v2")), &nonce("t1"))
         .unwrap_err();
     assert!(matches!(err, StoreError::Vfs(_)));
 

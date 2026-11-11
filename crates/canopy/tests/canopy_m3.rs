@@ -29,8 +29,8 @@ use std::sync::Arc;
 
 use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, MemFs, Vfs, VfsErrorKind, When};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, Swap, SwapSet,
-    WriteMonitor, read_once,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreOptions, Swap,
+    SwapSet, read_once,
 };
 
 /// The store root, created before init like the LAY-8 harness.
@@ -65,13 +65,22 @@ fn genesis(count: usize) -> GenesisConfig {
         .unwrap()
 }
 
+/// Options drawing nonces `N1`, `N2`, ... .
+fn options() -> StoreOptions {
+    let mut n: u64 = 0;
+    StoreOptions::with_nonce_source(move || {
+        n += 1;
+        Nonce::new(&format!("N{n}")).unwrap()
+    })
+}
+
 /// A fresh `count`-partition store on a plain in-memory filesystem, plus the shared
 /// backend handle for reopening it.
 fn fresh_store(count: usize) -> (Arc<MemFs>, Store) {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
     vfs.create_dir_all(&PathBuf::from(ROOT)).unwrap();
-    let store = Store::init(mem.clone(), PathBuf::from(ROOT), genesis(count)).unwrap();
+    let store = Store::init(mem.clone(), PathBuf::from(ROOT), genesis(count), options()).unwrap();
     (mem, store)
 }
 
@@ -82,7 +91,13 @@ fn faulty_store(count: usize, policy: FaultPolicy) -> (Arc<FaultyFs<MemFs>>, Sto
     let faulty = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&PathBuf::from(ROOT)).unwrap();
-    let store = Store::init(faulty.clone(), PathBuf::from(ROOT), genesis(count)).unwrap();
+    let store = Store::init(
+        faulty.clone(),
+        PathBuf::from(ROOT),
+        genesis(count),
+        options(),
+    )
+    .unwrap();
     (faulty, store)
 }
 
@@ -114,7 +129,7 @@ fn blob_staging_dir(index: usize) -> PathBuf {
 /// The caller must have dropped the previous handle: since `D116` a root has one writer, and
 /// a "reopen" that kept the old handle alive was never a restart.
 fn reopen(vfs: Arc<dyn Vfs>) -> Store {
-    Store::open(vfs, PathBuf::from(ROOT)).unwrap()
+    Store::open(vfs, PathBuf::from(ROOT), options()).unwrap()
 }
 
 #[test]
@@ -135,9 +150,7 @@ fn a_crash_after_prepare_rolls_the_whole_transaction_forward() {
         (0..DOCS).map(|i| Swap::new(node_name(i), doc.clone(), body_of(&format!("body-{i}")))),
     )
     .unwrap();
-    let txn = Nonce::new("txnforward").unwrap();
-
-    store.apply_transaction(&swaps, &txn).unwrap_err();
+    store.apply_transaction(&swaps).unwrap_err();
 
     // Reopen: recovery replays the prepared swap set, rolling every document forward
     // to every partition.
@@ -183,9 +196,7 @@ fn a_crash_before_prepare_rolls_the_whole_transaction_back() {
         (0..DOCS).map(|i| Swap::new(node_name(i), doc.clone(), body_of(&format!("body-{i}")))),
     )
     .unwrap();
-    let txn = Nonce::new("txnback").unwrap();
-
-    store.apply_transaction(&swaps, &txn).unwrap_err();
+    store.apply_transaction(&swaps).unwrap_err();
 
     // Reopen: recovery rolls the begun-but-unprepared transaction back -- no committed
     // copy exists for any document.
@@ -211,13 +222,7 @@ fn a_cleanly_applied_transaction_reopens_idempotently() {
         (0..DOCS).map(|i| Swap::new(node_name(i), doc.clone(), body_of(&format!("body-{i}")))),
     )
     .unwrap();
-    let txn = Nonce::new("txnclean").unwrap();
-    assert!(
-        store
-            .apply_transaction(&swaps, &txn)
-            .unwrap()
-            .is_committed()
-    );
+    assert!(store.apply_transaction(&swaps).unwrap().is_committed());
 
     // Reopen twice: recovery sees the ended transaction and only sweeps residue,
     // keeping every committed body across repeated opens.
@@ -240,27 +245,31 @@ fn a_cleanly_quiesced_restart_reads_an_empty_log() {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
     vfs.create_dir_all(&PathBuf::from(ROOT)).unwrap();
-    let store = Store::init(mem.clone(), PathBuf::from(ROOT), genesis(PARTITIONS)).unwrap();
-    let mut n: u64 = 0;
-    let monitor = WriteMonitor::spawn(store, move || {
-        n += 1;
-        Nonce::new(&format!("N{n}")).unwrap()
-    })
+    let store = Store::init(
+        mem.clone(),
+        PathBuf::from(ROOT),
+        genesis(PARTITIONS),
+        options(),
+    )
     .unwrap();
     let doc = doc_name();
     for i in 0..DOCS {
-        monitor
-            .write(node_name(i), doc.clone(), body_of(&format!("body-{i}")))
+        store
+            .update_document(Swap::new(
+                node_name(i),
+                doc.clone(),
+                body_of(&format!("body-{i}")),
+            ))
             .unwrap();
     }
 
-    // The single writer resets the log at each quiescent moment, so once the last write
-    // has drained the journal is empty (or never materialised).
+    // Each write empties the log before releasing the writer gate, so once the last write
+    // has returned the journal is empty.
     match mem.read(&PathBuf::from(ROOT).join(LOG_NAME)) {
         Ok(bytes) => assert!(bytes.is_empty(), "log not empty at quiescence"),
         Err(e) => assert_eq!(e.kind(), VfsErrorKind::NotFound),
     }
-    drop(monitor);
+    drop(store);
 
     // Reopen: an empty log is the O(1) fast path -- recovery skips replay and every
     // document is intact.

@@ -11,8 +11,8 @@ use crate::read::{Contended, Contention, Read};
 impl Store {
     /// Writes `body` as the document named `document` at `node`, without a transaction.
     ///
-    /// `nonce` must be unique to this write; the caller supplies it, as canopy mints no
-    /// tokens of its own (`D61`).
+    /// The write is made under a nonce drawn from the store's source and claimed for it, and
+    /// the nonce is returned.
     ///
     /// # It writes both trees, and journals neither (`D332`)
     ///
@@ -36,9 +36,28 @@ impl Store {
         node: impl Into<NodePath>,
         document: &DocumentName,
         body: &DocumentBody,
+    ) -> Result<Nonce, StoreError> {
+        let _writer = self.writable()?;
+        let claim = self.claim_fresh_nonce()?;
+        self.write_document_replicated_as(node, document, body, claim.nonce())?;
+        let nonce = claim.nonce().clone();
+        drop(claim);
+        self.settle_log();
+        Ok(nonce)
+    }
+
+    /// [`write_document_replicated`](Store::write_document_replicated) under `nonce`, which
+    /// the caller has claimed or, in a test, chosen.
+    pub(crate) fn write_document_replicated_as(
+        &self,
+        node: impl Into<NodePath>,
+        document: &DocumentName,
+        body: &DocumentBody,
         nonce: &Nonce,
     ) -> Result<(), StoreError> {
         let _writer = self.writable()?;
+        // One modification from ingest through collection (`D335`).
+        let _modifying = self.begin_modification();
         let node = node.into();
 
         // Before the blob is ingested: a write the namespace will refuse must not leave a
@@ -55,6 +74,7 @@ impl Store {
         // path rather than only after a crash (`D328`). The keep-set is read from the
         // namespace, which this write has just settled for its own document.
         self.collect_document_blobs(&node, document)?;
+        self.report_written(&node, document, body);
         Ok(())
     }
 

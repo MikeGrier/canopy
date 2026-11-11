@@ -498,3 +498,88 @@ is a state, so the invariant is the stronger and cheaper form.
 [PointerPublication-Settled.cfg](spec/PointerPublication-Settled.cfg) reports it violated with
 no crash at all: a write fails after two renames (`[C, C, A]`), the next write reads `C` and
 fails after one (`[B, C, A]`). This configuration is the acceptance check for `FM-2`.
+
+## Moved 2026-11-10 -- Deciding the `STRANDED-VOTE` guard (M2 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="fm-21"></a>FM-2.1 -- Four candidate guards modelled and checked; resolving before each write and a durable publication record both hold. *(completed 2026-11-10 12:27:58 -05:00)*
+
+The guards are selected by the `Fix` constant in
+[PointerPublication.tla](spec/PointerPublication.tla), one configuration each. Resolving only when
+the live replicas disagree fails (live unanimity hides a durable split), and a process-memory
+fence fails (reopen clears it). The comparison, with costs, is the decision "Guards against
+`STRANDED-VOTE`, compared in the model" in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+## Moved 2026-11-10 -- Write surface onto `Store` (M2 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="ws-1"></a>WS-1 -- `WriteMonitor` inventoried: the writer gate covers everything but the off-latency repair drain, which alone needs a thread. *(completed 2026-11-10 13:13:48 -05:00)*
+
+The capability table and the callers are recorded under "What `WriteMonitor` provides, and what
+each part needs" in the decision "The public write surface belongs on `Store`" in
+[DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+## Moved 2026-11-10 -- Model several processes (M3 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="odi-1"></a>ODI-1 -- Writers of different versions: schema versions with one-way exclusive upgrades, attachment in the contract, and a diagnostic registry of attached handles. *(completed 2026-11-10 14:56:41 -05:00)*
+
+Decided in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store"; the three
+ends considered and the reasoning are in
+[DESIGN-SESSION-2026-11-10-multi-process.md](design-sessions/DESIGN-SESSION-2026-11-10-multi-process.md).
+
+## Moved 2026-11-10 -- Write surface onto `Store`, continued (M2 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="ws-2"></a>WS-2 -- The `Store` surface decided: logged, unlogged, read, management and repair verbs, an optimistic `snapshot`, read-only callback views, and a feed of every write. *(completed 2026-11-10 15:10:02 -05:00)*
+
+Recorded under "Choices made for the surface" in the decision "The public write surface belongs
+on `Store`" in [DESIGN-NOTES.md](DESIGN-NOTES.md); the discussion that reached it is in
+[DESIGN-SESSION-2026-11-10-multi-process.md](design-sessions/DESIGN-SESSION-2026-11-10-multi-process.md).
+
+### <a id="ws-3"></a>WS-3 -- The decided surface added to `Store`: source-drawn nonces under durable claims, logged verbs, read-only callback views, an optimistic `snapshot`, the outermost-holder log reset, the commit feed and a random source behind `random-nonce`. *(completed 2026-11-10 18:05:29 -05:00)*
+
+The verbs are added beside the ones that take a nonce per call, under interim names (`update`,
+`apply`, `write_replicated`, `drain_repair_backlog`), because moving the existing callers is
+WS-4's work; WS-4 carries the convergence onto the decided names. The claim mechanics, the
+outermost-holder reset, and the correction that a captured clone's write lands at once (the
+writer gate is re-entrant per thread) are recorded under "Choices made for the surface" in
+[DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+Two behaviours reached the existing verbs and their tests, because they are properties of the
+store rather than of the new surface: a `begin` whose transaction id the commit log already
+holds is refused for every transaction, so seeding helpers that reused one nonce were given
+distinct ones and a reserved-name test empties the log before reusing `CON`; and the apply now
+reads the log once before `begin`, so a recovery-read fault test targets the second log read.
+A forced collision on each nonce-named artifact -- a held claim, a dead claim, blob staging,
+namespace staging, a recorded transaction id, a quarantine name -- is refused with the orphan
+left byte-for-byte intact.
+
+### <a id="ws-4"></a>WS-4 -- Every caller moved to the `Store` surface: public writes draw claimed nonces from the source, `init`/`open` take `StoreOptions`, the building blocks are crate-private, and `WriteMonitor` is removed. *(completed 2026-11-10 18:29:09 -05:00)*
+
+The decisions this item settled -- removing the monitor rather than hiding it, and keeping the
+explicit-nonce verbs only as crate-private test internals -- are recorded under "Choices made
+for the surface" in [DESIGN-NOTES.md](DESIGN-NOTES.md), and the monitor's own decision (ECAT-12)
+carries a superseding banner.
+
+The monitor's tests were ported to the `Store` verbs in `src/tests/verbs.rs`, behaviour for
+behaviour, except three that tested the actor itself: dropping it, its `Debug` and error
+types, and the idle-time repair drain, which the decided surface replaces with the explicit
+`repair_reported_damage`. Integration tests that must name a nonce -- to place a fault on a
+staging path, or to use a reserved device name -- do it through the store's source; the chaos
+harness gained a queue-fed source for that.
+
+Two integration tests needed a populated commit log after a successful write, which the
+outermost write now empties: one replays two ended transactions and gets its log by making the
+truncation fail, and the recovery-read fault test counts the two log reads a clean apply now
+makes. The content-store scale tests drive `ingest_blob` and `retain_blobs` directly, so they
+moved into the unit tests; where they should live is WS-5's decision.
+
+### <a id="ws-5"></a>WS-5 -- The content-store scale tests stay unit tests at full scale, with a 2 s budget for their module. *(completed 2026-11-10 20:05:06 -05:00)*
+
+They had run far over the 1 s unit-test budget. Two fixes in acadia removed most of the cost:
+`MemFs` directory syncs became proportional to what changed[^mf-1], and each test now opens a
+`MemFs::fork` of a store populated once per replica count[^mf-2]. A profile of what remained
+found it spread across the ingest path with no hotspot, and the engineer accepted the
+remaining overrun with a 2 s budget for this module. The decision is in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "The content-store scale tests are unit tests with a 2 s
+budget".
+
+[^mf-1]: `MF-1` in [COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#mf-1)
+[^mf-2]: `MF-2` in [COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#mf-2)

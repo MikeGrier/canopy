@@ -15,13 +15,20 @@ readme = "README.md"
 description = "A durable tree-document store with quorum replication and atomic transactions."
 exclude = ["PLANS.md", "COMPLETED-CHECKLIST.md", "COMPLETED-PLANS.md", "DESIGN-NOTES.md"]
 
+[features]
+# A nonce source drawing 128 bits from the operating system's entropy source, for embedders
+# who do not supply their own.
+random-nonce = ["dep:getrandom"]
+
 [dependencies]
 acadia.workspace = true
+getrandom = { version = "0.3", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tracing = "0.1"
 
 [dev-dependencies]
+getrandom = "0.3"
 test-timers = { path = "../test-timers" }
 komorebi = { path = "../komorebi" }

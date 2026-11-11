@@ -12,12 +12,15 @@
 
 use super::*;
 
-/// Seeds a committed document through the transactional path.
+/// Seeds a committed document through the transactional path, under a nonce no other seed
+/// uses: the commit log refuses a transaction id it already holds.
 fn seed(store: &Store, node: &NodePath, document: &DocumentName, bytes: &[u8]) {
+    static SEEDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seed = SEEDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::new(node, document.clone(), body(bytes))),
-            &nonce("seed"),
+            &nonce(&format!("seed{seed}")),
         )
         .expect("seed");
 }
@@ -187,7 +190,7 @@ fn an_empty_node_is_removed_from_every_partition() {
     seed(&store, &node, &d, b"v1");
     // Empty it, so the node itself is all that remains.
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, d.clone())),
             &nonce("empty"),
         )
@@ -198,7 +201,7 @@ fn an_empty_node_is_removed_from_every_partition() {
     );
 
     let outcome = store
-        .apply_transaction(&remove_node(&node), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&node), &nonce("t1"))
         .expect("apply");
     assert_eq!(outcome, TransactionOutcome::Committed);
     assert!(!node_exists(&_vfs, &store, &node));
@@ -224,7 +227,7 @@ fn the_last_document_and_its_node_go_in_one_transaction() {
     let swaps = SwapSet::with_node_removals([Swap::remove(&node, d.clone())], [node.clone()])
         .expect("valid");
     let outcome = store
-        .apply_transaction(&swaps, &nonce("t1"))
+        .apply_transaction_as(&swaps, &nonce("t1"))
         .expect("apply");
 
     assert_eq!(outcome, TransactionOutcome::Committed);
@@ -239,7 +242,7 @@ fn a_node_still_holding_a_document_is_refused() {
     seed(&store, &node, &doc("record.json"), b"v1");
 
     let outcome = store
-        .apply_transaction(&remove_node(&node), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&node), &nonce("t1"))
         .expect("apply");
 
     assert_eq!(
@@ -268,7 +271,7 @@ fn a_node_still_holding_a_child_node_is_refused() {
     seed(&store, &name("record/aa"), &doc("record.json"), b"v1");
 
     let outcome = store
-        .apply_transaction(&remove_node(&name("record")), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&name("record")), &nonce("t1"))
         .expect("apply");
 
     assert_eq!(
@@ -304,7 +307,7 @@ fn a_node_and_its_child_go_in_one_transaction_in_either_order() {
         let swaps =
             SwapSet::with_node_removals([Swap::remove(&child, d.clone())], removals).unwrap();
         let outcome = store
-            .apply_transaction(&swaps, &nonce("t1"))
+            .apply_transaction_as(&swaps, &nonce("t1"))
             .expect("apply");
 
         assert_eq!(outcome, TransactionOutcome::Committed);
@@ -322,7 +325,7 @@ fn a_child_removed_alongside_its_parent_must_itself_be_empty() {
 
     let swaps = SwapSet::with_node_removals([], [parent.clone(), child.clone()]).unwrap();
     let outcome = store
-        .apply_transaction(&swaps, &nonce("t1"))
+        .apply_transaction_as(&swaps, &nonce("t1"))
         .expect("apply");
 
     assert!(outcome.is_rejected());
@@ -338,7 +341,7 @@ fn a_node_holding_only_an_unrecognized_entry_is_refused_before_begin() {
     let d = doc("record.json");
     seed(&store, &node, &d, b"v1");
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, d.clone())),
             &nonce("e"),
         )
@@ -353,7 +356,7 @@ fn a_node_holding_only_an_unrecognized_entry_is_refused_before_begin() {
     .unwrap();
 
     let outcome = store
-        .apply_transaction(&remove_node(&node), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&node), &nonce("t1"))
         .expect("apply");
 
     assert_eq!(
@@ -382,7 +385,7 @@ fn the_rejection_names_everything_that_would_remain() {
     seed(&store, &name("record/child"), &doc("record.json"), b"v1");
 
     let outcome = store
-        .apply_transaction(&remove_node(&node), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&node), &nonce("t1"))
         .expect("apply");
 
     let TransactionOutcome::Rejected { expected, .. } = outcome else {
@@ -414,7 +417,7 @@ fn a_document_this_transaction_writes_keeps_the_node_from_being_removed() {
     )
     .expect("a sibling write is allowed");
     let outcome = store
-        .apply_transaction(&swaps, &nonce("t1"))
+        .apply_transaction_as(&swaps, &nonce("t1"))
         .expect("apply");
 
     assert!(outcome.is_rejected(), "RECORD still holds its document");
@@ -432,7 +435,7 @@ fn removing_an_absent_node_succeeds() {
     // a crash between apply and `end` unrecoverable.
     let (_vfs, store) = fresh_store();
     let outcome = store
-        .apply_transaction(&remove_node(&name("never/existed")), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&name("never/existed")), &nonce("t1"))
         .expect("apply");
     assert_eq!(outcome, TransactionOutcome::Committed);
 }
@@ -444,12 +447,12 @@ fn a_node_removal_is_idempotent_when_applied_twice() {
     let d = doc("record.json");
     seed(&store, &node, &d, b"v1");
     store
-        .apply_transaction(&SwapSet::single(Swap::remove(&node, d)), &nonce("empty"))
+        .apply_transaction_as(&SwapSet::single(Swap::remove(&node, d)), &nonce("empty"))
         .expect("empty the node");
 
     for txn in ["t1", "t2"] {
         let outcome = store
-            .apply_transaction(&remove_node(&node), &nonce(txn))
+            .apply_transaction_as(&remove_node(&node), &nonce(txn))
             .expect("apply");
         assert_eq!(outcome, TransactionOutcome::Committed, "pass {txn}");
         assert!(!node_exists(&_vfs, &store, &node));
@@ -471,7 +474,7 @@ fn a_rejected_node_removal_leaves_the_whole_transaction_undone() {
     // The seed already wrote its own transaction, so "no log record" means no *new* one.
     let before = store.commit_log().read().unwrap().len();
     let outcome = store
-        .apply_transaction(&swaps, &nonce("t1"))
+        .apply_transaction_as(&swaps, &nonce("t1"))
         .expect("apply");
 
     assert!(outcome.is_rejected());
@@ -497,14 +500,14 @@ fn removing_a_node_leaves_its_siblings_alone() {
     seed(&store, &going, &d, b"v1");
     seed(&store, &staying, &d, b"v1");
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&going, d.clone())),
             &nonce("empty"),
         )
         .expect("empty the node");
 
     store
-        .apply_transaction(&remove_node(&going), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&going), &nonce("t1"))
         .expect("apply");
 
     assert!(!node_exists(&_vfs, &store, &going));
@@ -521,11 +524,11 @@ fn removing_a_child_node_leaves_its_parent_behind() {
     let d = doc("record.json");
     seed(&store, &child, &d, b"v1");
     store
-        .apply_transaction(&SwapSet::single(Swap::remove(&child, d)), &nonce("empty"))
+        .apply_transaction_as(&SwapSet::single(Swap::remove(&child, d)), &nonce("empty"))
         .expect("empty the node");
 
     store
-        .apply_transaction(&remove_node(&child), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&child), &nonce("t1"))
         .expect("apply");
 
     assert!(!node_exists(&_vfs, &store, &child));
@@ -546,17 +549,17 @@ fn a_removed_node_can_be_written_again() {
     let d = doc("record.json");
     seed(&store, &node, &d, b"v1");
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, d.clone())),
             &nonce("empty"),
         )
         .expect("empty the node");
     store
-        .apply_transaction(&remove_node(&node), &nonce("t1"))
+        .apply_transaction_as(&remove_node(&node), &nonce("t1"))
         .expect("remove");
 
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::new(&node, d.clone(), body(b"v2"))),
             &nonce("t2"),
         )
@@ -577,7 +580,7 @@ fn recovery_rolls_forward_a_prepared_node_removal() {
     let d = doc("record.json");
     seed(&store, &node, &d, b"v1");
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, d.clone())),
             &nonce("empty"),
         )
@@ -619,7 +622,7 @@ fn recovery_rolls_back_a_begun_but_unprepared_node_removal() {
     let d = doc("record.json");
     seed(&store, &node, &d, b"v1");
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, d.clone())),
             &nonce("empty"),
         )

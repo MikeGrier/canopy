@@ -56,7 +56,7 @@ impl Store {
     /// new blob -- which is harmless, because a blob is immutable and named by its content:
     /// the partial set is a real blob with too few copies, not a corrupt one, and no
     /// pointer names it yet.
-    pub fn ingest_blob<R: Read>(
+    pub(crate) fn ingest_blob<R: Read>(
         &self,
         node: &NodePath,
         document: &DocumentName,
@@ -296,7 +296,7 @@ impl Store {
     /// wandered into a shard directory is not collected by a cleanup that does not own it.
     /// Empty shard directories are also left: they cost nothing, they will be reused, and
     /// removing one races an ingest creating the same shard for another document.
-    pub fn retain_blobs(
+    pub(crate) fn retain_blobs(
         &self,
         path_hash: PathHash,
         keep: &[ContentDigest],

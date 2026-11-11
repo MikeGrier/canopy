@@ -46,7 +46,7 @@ use std::time::Duration;
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     Contention, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store,
-    StoreError, Swap, SwapSet, read_settled,
+    StoreError, StoreOptions, Swap, SwapSet, read_settled,
 };
 
 /// The store root these tests build under.
@@ -93,6 +93,10 @@ fn fresh_store(vfs: Arc<dyn Vfs>) -> Store {
         vfs,
         ROOT,
         GenesisConfig::new(ShireId::new("cvs22-shire").expect("valid shire id"), 0),
+        StoreOptions::with_nonce_source({
+            let next = AtomicUsize::new(0);
+            move || nonce(next.fetch_add(1, Ordering::Relaxed))
+        }),
     )
     .expect("init store")
 }
@@ -100,10 +104,7 @@ fn fresh_store(vfs: Arc<dyn Vfs>) -> Store {
 /// Commits `body(n)` over the shared document.
 fn commit(store: &Store, n: usize) {
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::new(node(), document(), body(n))),
-            &nonce(n),
-        )
+        .apply_transaction(&SwapSet::single(Swap::new(node(), document(), body(n))))
         .expect("a transaction over an uncontended writer path commits");
 }
 

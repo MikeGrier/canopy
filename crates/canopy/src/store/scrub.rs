@@ -161,9 +161,16 @@ impl Store {
     /// a blob whose every copy fails verification -- that is reported, not guessed. The store
     /// must be quiescent: this reads and rewrites replicas while assuming no transaction is
     /// moving them.
-    pub fn scrub_content(
+    ///
+    /// Each repair is made under its own nonce, drawn from the store's source and claimed for
+    /// the pass; the nonces are returned with the report, in the order they were used.
+    pub fn scrub_content(&self) -> Result<(ContentScrubReport, Vec<Nonce>), StoreError> {
+        self.with_claimed_nonces(|mint| self.scrub_content_minting(mint))
+    }
+
+    fn scrub_content_minting(
         &self,
-        mut nonce_source: impl FnMut() -> Nonce,
+        mint: &mut dyn FnMut() -> Result<Nonce, StoreError>,
     ) -> Result<ContentScrubReport, StoreError> {
         let mut report = ContentScrubReport::default();
 
@@ -187,7 +194,7 @@ impl Store {
 
             let pointer_intact = read.rejected().is_empty() && read.missing().is_empty();
             if !pointer_intact {
-                let outcome = self.repair_pointer(&node, &document, &read, &nonce_source())?;
+                let outcome = self.repair_pointer_as(&node, &document, &read, &mint()?)?;
                 report.pointer_repairs.push((subject.clone(), outcome));
             }
             let pointer_current = read.stale().is_empty();
@@ -196,7 +203,7 @@ impl Store {
             }
 
             let reference = read.pointer().target();
-            match self.restore_blob(&reference, &mut nonce_source)? {
+            match self.restore_blob(&reference, mint)? {
                 None => {
                     if pointer_intact && pointer_current {
                         report.whole += 1;
@@ -222,7 +229,7 @@ impl Store {
     fn restore_blob(
         &self,
         reference: &BlobRef,
-        nonce_source: &mut impl FnMut() -> Nonce,
+        mint: &mut dyn FnMut() -> Result<Nonce, StoreError>,
     ) -> Result<Option<Option<RepairOutcome>>, StoreError> {
         let verification = self.verify_blob(reference)?;
         if verification.is_whole() {
@@ -236,12 +243,12 @@ impl Store {
             Err(StoreError::BlobUnavailable { .. }) => return Ok(Some(None)),
             Err(other) => return Err(other),
         };
-        let outcome = self.repair_blob(
+        let outcome = self.repair_blob_as(
             reference,
             &source,
             verification.missing(),
             verification.corrupt(),
-            &nonce_source(),
+            &mint()?,
         )?;
         Ok(Some(Some(outcome)))
     }
@@ -254,10 +261,9 @@ impl Store {
     ///
     /// # Why the reader does not do this itself
     ///
-    /// Repairing is a write and a write needs a nonce, which `D61` has the caller supply.
-    /// Threading a nonce source through every reader in the workspace to make a *read* able
-    /// to write would put a write on the latency path of every read and change the shape of
-    /// an API sixty call sites bind to. Reads record; a writer repairs.
+    /// Repairing is a write and a write needs a nonce. Drawing one on every read that found
+    /// damage would put a write on the latency path of every read. Reads record; a writer
+    /// repairs.
     ///
     /// # It re-examines rather than trusting the finding
     ///
@@ -268,9 +274,27 @@ impl Store {
     /// one verification and nothing else.
     ///
     /// The store must be quiescent, for the same reason [`Store::scrub_content`] requires it.
-    pub fn repair_reported_damage(
+    /// Each repair is made under its own nonce, drawn from the store's source and claimed for
+    /// the drain; the nonces are returned with the report, in the order they were used.
+    pub fn repair_reported_damage(&self) -> Result<(BacklogRepairReport, Vec<Nonce>), StoreError> {
+        self.with_claimed_nonces(|mint| self.drain_reported_damage(mint))
+    }
+
+    /// [`repair_reported_damage`](Store::repair_reported_damage) under nonces the test
+    /// supplies, unclaimed.
+    #[cfg(test)]
+    pub(crate) fn repair_reported_damage_with(
         &self,
         mut nonce_source: impl FnMut() -> Nonce,
+    ) -> Result<BacklogRepairReport, StoreError> {
+        self.drain_reported_damage(&mut || Ok(nonce_source()))
+    }
+
+    /// [`repair_reported_damage`](Store::repair_reported_damage) over a minter that may refuse,
+    /// so a nonce that cannot be claimed fails the drain instead of being used.
+    fn drain_reported_damage(
+        &self,
+        mint: &mut dyn FnMut() -> Result<Nonce, StoreError>,
     ) -> Result<BacklogRepairReport, StoreError> {
         let _writer = self.writable()?;
         let suspects = self
@@ -283,7 +307,7 @@ impl Store {
         let mut suspects = suspects.into_iter();
         while let Some(reference) = suspects.next() {
             report.examined += 1;
-            let restored = match self.restore_blob(&reference, &mut nonce_source) {
+            let restored = match self.restore_blob(&reference, mint) {
                 Ok(restored) => restored,
                 Err(error) => {
                     // The backlog was taken whole, so a failure part-way would otherwise

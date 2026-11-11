@@ -26,8 +26,17 @@ use std::sync::Arc;
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     Artifact, BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash,
-    Pointer, ShireId, Store, Swap, SwapSet,
+    Pointer, ShireId, Store, StoreOptions, Swap, SwapSet,
 };
+
+/// Options drawing nonces `T1`, `T2`, ... .
+fn options() -> StoreOptions {
+    let mut n: u64 = 0;
+    StoreOptions::with_nonce_source(move || {
+        n += 1;
+        Nonce::new(&format!("T{n}")).unwrap()
+    })
+}
 
 /// Renames to interrupt, one per run.
 ///
@@ -84,7 +93,7 @@ fn store_faulting_rename(k: u32) -> (Arc<dyn Vfs>, Store, FaultGate) {
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
     let config = GenesisConfig::new(ShireId::new("cvs14-shire").unwrap(), 3);
-    let store = Store::init(vfs.clone(), root, config).expect("init");
+    let store = Store::init(vfs.clone(), root, config, options()).expect("init");
     (vfs, store, gate)
 }
 
@@ -146,7 +155,7 @@ fn no_interruption_leaves_a_pointer_naming_a_blob_that_is_not_there() {
         let (vfs, store, gate) = store_faulting_rename(k);
         gate.open();
 
-        match store.apply_transaction(&swaps(), &Nonce::new("T1").unwrap()) {
+        match store.apply_transaction(&swaps()) {
             Ok(_) => completed += 1,
             Err(_) => interrupted += 1,
         }
@@ -186,11 +195,12 @@ fn a_committed_transaction_leaves_each_document_reachable_through_its_pointer() 
         vfs,
         root,
         GenesisConfig::new(ShireId::new("cvs14-shire").unwrap(), 3),
+        options(),
     )
     .expect("init");
 
     store
-        .apply_transaction(&swaps(), &Nonce::new("T1").unwrap())
+        .apply_transaction(&swaps())
         .expect("an uncontended transaction commits");
 
     for (node, document, body) in targets() {
@@ -221,6 +231,7 @@ fn a_rejected_transaction_writes_neither_blob_nor_pointer() {
         vfs.clone(),
         root,
         GenesisConfig::new(ShireId::new("cvs14-shire").unwrap(), 3),
+        options(),
     )
     .expect("init");
 
@@ -240,11 +251,11 @@ fn a_rejected_transaction_writes_neither_blob_nor_pointer() {
         DocumentBody::new(b"a body this document has never held".to_vec()).digest(),
     ));
 
-    let outcome = store
-        .apply_transaction(&doomed, &Nonce::new("T1").unwrap())
+    let commit = store
+        .apply_transaction(&doomed)
         .expect("a failed precondition is a rejection, not an error");
     assert!(
-        !matches!(outcome, canopy::TransactionOutcome::Committed),
+        !commit.is_committed(),
         "the precondition cannot hold against an absent document"
     );
 

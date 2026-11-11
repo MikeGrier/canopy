@@ -12,7 +12,7 @@ fn recovery_on_an_absent_log_is_the_fast_path() {
     let (vfs, store) = fresh_store();
     // A committed document, then the log emptied at quiescence -- the clean state.
     let swaps = SwapSet::single(Swap::new(name("record"), doc("record.json"), body(b"kept")));
-    store.apply_transaction(&swaps, &nonce("t1")).unwrap();
+    store.apply_transaction_as(&swaps, &nonce("t1")).unwrap();
     store.quiesce_commit_log().unwrap();
     assert!(store.commit_log().read().unwrap().is_empty());
     // Reopen: an empty log skips replay and disturbs nothing.
@@ -32,7 +32,7 @@ fn recovery_sweeps_an_applied_transaction_and_keeps_its_data() {
     let node = name("record");
     let d = doc("record.json");
     let swaps = SwapSet::single(Swap::new(node.clone(), d.clone(), body(b"v1")));
-    store.apply_transaction(&swaps, &nonce("t1")).unwrap();
+    store.apply_transaction_as(&swaps, &nonce("t1")).unwrap();
     // The log still holds begin/prepare/end (not quiesced): reopening treats the applied
     // transaction as a sweep no-op and keeps its data.
     let recovered = reopen(&vfs, store).unwrap();
@@ -257,11 +257,11 @@ fn a_committed_write_into_new_directories_survives_a_crash() {
     let vfs: Arc<dyn Vfs> = mem.clone();
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
 
     let node = NodePath::parse("deep/nested/node").unwrap();
     let outcome = store
-        .update_document(
+        .update_document_as(
             Swap::new(&node, doc("record.json"), body(b"durable")),
             &nonce("t1"),
         )
@@ -270,7 +270,7 @@ fn a_committed_write_into_new_directories_survives_a_crash() {
     drop(store);
 
     mem.simulate_crash();
-    let reopened = Store::open(Arc::clone(&vfs), root).unwrap();
+    let reopened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
     assert_eq!(
         reopened.read_document(&node, &doc("record.json")).unwrap(),
         crate::Read::Found(body(b"durable"))

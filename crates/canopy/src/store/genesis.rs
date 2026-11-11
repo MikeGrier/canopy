@@ -40,7 +40,24 @@ impl Store {
     /// Takes the root's exclusive-writer lock (`D116`) and holds it for the
     /// returned store's life; a root another process already holds is refused
     /// with [`StoreError::RootInUse`].
+    ///
+    /// `root` must be on a local filesystem; a networked root is unsupported and not
+    /// detected (see [`Store`]).
+    ///
+    /// `options` supplies the nonce source the write verbs draw from; see [`StoreOptions`].
     pub fn init(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
+        config: GenesisConfig,
+        options: StoreOptions,
+    ) -> Result<Self, StoreError> {
+        let store = Self::init_unsourced(vfs, root, config)?;
+        store.install(options);
+        Ok(store)
+    }
+
+    /// [`init`](Store::init) with no nonce source, for tests that name every nonce themselves.
+    pub(crate) fn init_unsourced(
         vfs: Arc<dyn Vfs>,
         root: impl Into<PathBuf>,
         config: GenesisConfig,
@@ -126,6 +143,7 @@ impl Store {
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             _lock: lock,
+            surface: Arc::default(),
         })
     }
 
@@ -139,7 +157,26 @@ impl Store {
     /// count, a missing or non-directory partition) is
     /// [`StoreError::MalformedMarker`] / [`StoreError::MissingPartition`]. Only a
     /// fully valid Shire yields a handle.
-    pub fn open(vfs: Arc<dyn Vfs>, root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+    ///
+    /// `root` must be on a local filesystem; a networked root is unsupported and not
+    /// detected (see [`Store`]).
+    ///
+    /// `options` supplies the nonce source the write verbs draw from; see [`StoreOptions`].
+    pub fn open(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
+        options: StoreOptions,
+    ) -> Result<Self, StoreError> {
+        let store = Self::open_unsourced(vfs, root)?;
+        store.install(options);
+        Ok(store)
+    }
+
+    /// [`open`](Store::open) with no nonce source, for tests that name every nonce themselves.
+    pub(crate) fn open_unsourced(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
+    ) -> Result<Self, StoreError> {
         let root = root.into();
         let marker = root.join(MARKER_NAME);
 
@@ -221,11 +258,13 @@ impl Store {
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             _lock: lock,
+            surface: Arc::default(),
         };
         // Recovery replays the D53 log and writes, so it must happen under the
         // lock rather than before it.
         store.discharge_recorded_dirs()?;
         store.recover()?;
+        store.release_stale_claims()?;
         Ok(store)
     }
 }

@@ -216,6 +216,19 @@ pub enum StoreError {
     },
     /// A pointer handed to a write does not belong to the document it would be filed under.
     InvalidPointer(PointerError),
+    /// A verb that mints its own nonce was called on a store opened without a nonce source.
+    NoNonceSource,
+    /// A snapshot's read was disturbed by a modification on every attempt it was allowed.
+    SnapshotContended {
+        /// How many times the read ran.
+        attempts: usize,
+    },
+    /// An operation's nonce is already claimed -- by an operation in flight, or one that left
+    /// its claim behind -- so the operation was refused before creating anything named by it.
+    NonceCollision {
+        /// The colliding nonce.
+        nonce: Nonce,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -355,6 +368,16 @@ impl fmt::Display for StoreError {
                 "staged blob {} changed while it was being replicated",
                 staged.display()
             ),
+            StoreError::NoNonceSource => {
+                f.write_str("the store was opened without a nonce source, so it cannot mint one")
+            }
+            StoreError::SnapshotContended { attempts } => write!(
+                f,
+                "a snapshot was disturbed by a concurrent modification on all {attempts} attempts"
+            ),
+            StoreError::NonceCollision { nonce } => {
+                write!(f, "nonce {} is already claimed", nonce.as_str())
+            }
         }
     }
 }

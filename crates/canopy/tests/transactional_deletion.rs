@@ -22,13 +22,13 @@
 //! Taking the keep-set from the namespace instead makes the question "what is live now",
 //! which no replay order can get wrong.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store,
-    StoreError, Swap, SwapSet,
+    StoreError, StoreOptions, Swap, SwapSet,
 };
 
 fn node() -> NodePath {
@@ -47,29 +47,36 @@ fn config() -> GenesisConfig {
     GenesisConfig::new(ShireId::new("cvs15-shire").unwrap(), 3)
 }
 
+/// Options drawing nonces `T1`, `T2`, ... .
+fn options() -> StoreOptions {
+    let mut n: u64 = 0;
+    StoreOptions::with_nonce_source(move || {
+        n += 1;
+        Nonce::new(&format!("T{n}")).unwrap()
+    })
+}
+
+fn store_on(vfs: &Arc<dyn Vfs>, root: &Path) -> Store {
+    vfs.create_dir_all(root).unwrap();
+    Store::init(vfs.clone(), root.to_path_buf(), config(), options()).expect("init")
+}
+
 fn fresh() -> (Arc<dyn Vfs>, PathBuf, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
     let root = PathBuf::from("shire");
-    vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config()).expect("init");
+    let store = store_on(&vfs, &root);
     (vfs, root, store)
 }
 
-fn write(store: &Store, text: &str, txn: &str) {
+fn write(store: &Store, text: &str) {
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::new(node(), document(), body(text))),
-            &Nonce::new(txn).unwrap(),
-        )
+        .apply_transaction(&SwapSet::single(Swap::new(node(), document(), body(text))))
         .expect("an uncontended write commits");
 }
 
-fn remove(store: &Store, txn: &str) {
+fn remove(store: &Store) {
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::remove(node(), document())),
-            &Nonce::new(txn).unwrap(),
-        )
+        .apply_transaction(&SwapSet::single(Swap::remove(node(), document())))
         .expect("an uncontended removal commits");
 }
 
@@ -117,10 +124,10 @@ fn resolved(store: &Store) -> Option<Vec<u8>> {
 #[test]
 fn a_second_write_leaves_only_the_blob_the_namespace_points_at() {
     let (vfs, _root, store) = fresh();
-    write(&store, "v1", "T1");
+    write(&store, "v1");
     assert_eq!(blobs(&vfs, &store).len(), store.blob_replica_count());
 
-    write(&store, "v2", "T2");
+    write(&store, "v2");
 
     // One blob per replica, not two: v1 was superseded and collected.
     assert_eq!(
@@ -135,8 +142,8 @@ fn a_second_write_leaves_only_the_blob_the_namespace_points_at() {
 #[test]
 fn removing_a_document_takes_its_pointer_and_then_its_blobs() {
     let (vfs, _root, store) = fresh();
-    write(&store, "v1", "T1");
-    remove(&store, "T2");
+    write(&store, "v1");
+    remove(&store);
 
     assert_eq!(
         resolved(&store),
@@ -164,13 +171,12 @@ fn removing_a_node_takes_its_directory_from_both_trees() {
     // one and not the other leaves the two disagreeing about which nodes exist -- a child one
     // traversal reports and the other does not.
     let (vfs, _root, store) = fresh();
-    write(&store, "v1", "T1");
+    write(&store, "v1");
 
     store
         .apply_transaction(
             &SwapSet::with_node_removals([Swap::remove(node(), document())], [node()])
                 .expect("valid"),
-            &Nonce::new("T2").unwrap(),
         )
         .expect("the node is empty once its only document goes");
 
@@ -205,19 +211,15 @@ fn a_crash_between_end_and_the_collection_is_finished_by_recovery() {
         ),
     ));
     let root = PathBuf::from("shire");
-    vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config()).expect("init");
+    let store = store_on(&vfs, &root);
 
-    write(&store, "v1", "T1");
+    write(&store, "v1");
     let before = blobs(&vfs, &store);
     assert_eq!(before.len(), store.blob_replica_count());
 
     gate.open();
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::new(node(), document(), body("v2"))),
-            &Nonce::new("T2").unwrap(),
-        )
+        .apply_transaction(&SwapSet::single(Swap::new(node(), document(), body("v2"))))
         .expect_err("a failed collection is reported even though the transaction committed");
 
     // The transaction landed: the namespace points at v2, and v2's blob is durable. What did
@@ -231,7 +233,7 @@ fn a_crash_between_end_and_the_collection_is_finished_by_recovery() {
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root).expect("reopen replays the log");
+    let reopened = Store::open(vfs.clone(), root, options()).expect("reopen replays the log");
 
     assert_eq!(
         blobs(&vfs, &reopened).len(),
@@ -248,19 +250,29 @@ fn replaying_two_completed_writes_does_not_collect_the_live_blob() {
     // collections in order -- the first one's before the second's. A keep-set taken from the
     // `prepare` record would have the first replay delete v2, the blob the namespace points
     // at, leaving a dangling pointer produced by the cleanup itself.
-    let (vfs, root, store) = fresh();
-    write(&store, "v1", "T1");
-    write(&store, "v2", "T2");
+    // A log that cannot be truncated keeps both transactions for the replay, as a crash
+    // before the reset would.
+    let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(
+        MemFs::new(),
+        FaultPolicy::new().inject(
+            FaultOp::Truncate,
+            PathBuf::from("shire").join(".commit-log"),
+            Fault::io_error(),
+            When::Always,
+        ),
+    ));
+    let root = PathBuf::from("shire");
+    let store = store_on(&vfs, &root);
+    write(&store, "v1");
+    write(&store, "v2");
 
-    // The log is only emptied at quiescence, which nothing has called, so both transactions
-    // are still there to be replayed.
     assert!(
         !store.commit_log_is_empty().expect("read the log"),
         "this test needs a non-empty log to replay"
     );
 
     drop(store);
-    let reopened = Store::open(vfs.clone(), root).expect("reopen replays the log");
+    let reopened = Store::open(vfs.clone(), root, options()).expect("reopen replays the log");
 
     assert_eq!(
         resolved(&reopened).as_deref(),
@@ -292,23 +304,20 @@ fn a_rolled_back_transaction_leaves_the_previous_body_readable() {
         ),
     ));
     let root = PathBuf::from("shire");
-    vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), config()).expect("init");
+    let store = store_on(&vfs, &root);
 
-    write(&store, "v1", "T1");
+    write(&store, "v1");
 
     // Every log append now fails, so the second transaction cannot reach `prepare`.
     gate.open();
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::new(node(), document(), body("v2"))),
-            &Nonce::new("T2").unwrap(),
-        )
+        .apply_transaction(&SwapSet::single(Swap::new(node(), document(), body("v2"))))
         .expect_err("a transaction that cannot journal cannot commit");
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root).expect("reopen rolls the transaction back");
+    let reopened =
+        Store::open(vfs.clone(), root, options()).expect("reopen rolls the transaction back");
 
     assert_eq!(
         resolved(&reopened).as_deref(),

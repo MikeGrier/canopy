@@ -459,7 +459,8 @@ afterwards, and prefer deleting the specific subdirectory if that is what you me
 ## TLA+ / TLC
 
 Protocol specs live in a crate's `spec/` directory as `<Name>.tla` with a sibling
-`<Name>.cfg` (see [crates/canopy/CHECKLIST.md](../crates/canopy/CHECKLIST.md), `FM-*`).
+`<Name>.cfg`. Why the repository has them, and how code is held to them, is the formal-model
+decision in [crates/canopy/DESIGN-NOTES.md](../crates/canopy/DESIGN-NOTES.md).
 
 **Pinned toolchain** (Windows host):
 
@@ -663,6 +664,47 @@ Rules:
   edit; do not leave new non-linked cross-references behind.
 
 ## Coding conventions
+
+### Comments describe the code as it is, never how it got there
+
+A code comment is written for a reader in the distant future who has this file at its current
+revision and possibly nothing else -- no repository history, no review thread, no memory of
+what the code used to be. **The history of a change belongs in the commit message; the comment
+explains the present.** A comment that narrates the change ("now checks X", "no longer
+syncs", "previously this deleted first", "fixed to ...", "added to handle the case where")
+makes that reader reconstruct a past state they never saw in order to understand the one in
+front of them, which is drag on their mental model, not help.
+
+**Comment what a reader cannot get by glancing at the code:**
+
+- an invariant the code relies on or maintains, and who else depends on it;
+- an ordering or durability requirement whose violation is silent (why this fsync comes before
+  that rename);
+- a constraint that lives far away -- in another module, another process, the OS, a file
+  format -- that the reader would otherwise have to go and find;
+- why a non-obvious algorithm or data structure was chosen over the obvious one, when the
+  obvious one is wrong or too costly here;
+- the design decision behind it, cited by id (`D41`) beside prose that already says the point.
+
+**Do not comment what the code already says** (restating the next line), and **never** what
+changed, what was wrong before, which review or work item prompted it, or what the code
+"no longer" or "now" does.
+
+**Actionable check -- apply it to every comment you write or edit, before finishing:**
+
+1. Read the comment as someone who has only this file at HEAD. Does it mention a previous state,
+   a change, a fix, or an event (a review, a bug report, a work item)? Words like *now*,
+   *no longer*, *previously*, *used to*, *instead of the old*, *was changed*, *fixed*, *added*
+   are the usual tells. If so, rewrite it to state the present fact and its reason, or delete it.
+2. Would the reader lose something real if the comment were deleted? If not, delete it.
+3. Is it one short line? If it needs more, it must be because the unobvious thing is genuinely
+   that large -- an invariant with several parts, a hazard with a non-local cause. A long
+   comment explaining a small change is a commit message in the wrong place.
+
+When you edit code that already carries a change-narrating comment, rewrite that comment to the
+present tense as part of the edit; do not leave it, and do not add a second comment beside it.
+The principle is recorded in [DESIGN-NOTES.md](../DESIGN-NOTES.md) "Code comments are for the
+reader at HEAD".
 
 ### Source module size — measured in bytes, split at fracture points
 
@@ -1289,6 +1331,8 @@ step breakdowns described during planning.
 When a group of related items is fully complete:
 1. Move the completed group to `COMPLETED-CHECKLIST.md` in the same directory.
 2. Prefix the moved block with a heading: `## Moved YYYY-MM-DD — <brief description of what was done>`.
+   Give every moved item an explicit `<a id="..."></a>` anchor (the lowercased id with periods
+   removed, as for stubs), so a citation can link to the item itself rather than to the file.
 3. `COMPLETED-CHECKLIST.md` is **append-only**; always add new groups at the bottom.
 4. Leave only the remaining pending or in-progress items in the source `CHECKLIST.md`.
 
@@ -1571,6 +1615,97 @@ guarantees the live document decays.
 The **tombstone** may name the predecessor, and the aged-out file's dated heading may name
 the successor. That is the full extent of forward and backward linkage; it belongs in those
 two places and nowhere else.
+
+## Terse labels are for short-lived correlation; anything that lasts gets a descriptive name
+
+**Very brief identifiers are appropriate for short-lived correlation, and must not become
+long-lived edifices.** A review round's `E1`, a session's "option 2", a scratch numbering of
+cases -- these are fine while they connect a finding to its fix within one review, one session,
+one change. They are not names. They carry no meaning on their own, they collide across rounds
+(every review has an `E1`), and a reader months later cannot tell what `D1` was without
+archaeology.
+
+**The moment a thing outlives the context that coined its label, give it a descriptive name**
+and use that name everywhere from then on. A thing outlives its context when it is carried into
+a live document, a spec, code, a test name, a checklist item meant for a later milestone, or a
+design decision. Typical candidates are a defect that stays open past its review round, an
+invariant or property, a protocol state, a design concept, and a failure mode a test pins.
+
+Rules:
+
+- **A name says what the thing is.** It is a short noun phrase in `UPPER-KEBAB-CASE` when it is
+  a defect, state or property id -- `STRANDED-VOTE`, `DANGLING-DURABLE` -- or an ordinary
+  identifier in the host language when it is code (`DurablePointerHasBlob`,
+  `a_stale_intent_below_what_is_now_a_document_does_not_block_reopening`). A reader who sees
+  only the name should be able to guess roughly what it means.
+- **Record the name where the thing is defined**, in the nearest `DESIGN-NOTES.md`, with one
+  sentence saying what it is and, if it replaces a terse label, which label and from where
+  ("supersedes the review-round label `E1`, eighth review round, 2026-11-10"). That sentence is
+  the bridge from the history to the present; the terse label appears nowhere else in live
+  content.
+- **Do not rewrite history to apply a name.** Append-only and immutable records
+  (`COMPLETED-CHECKLIST.md`, `COMPLETED-PLANS.md`, committed design decisions, `design-sessions/`,
+  saved review reports) keep the label they were written with; the naming decision is what
+  connects them to the name.
+- **Design-decision ids are the exception.** Decision numbers (`D53`) are assigned from a
+  managed register that never reuses them, so they stay valid indefinitely and do not have the
+  collision and archaeology problems above. They are the right way to cite a decision.
+- **Checklist work-item ids are short-lived correlation, not durable references.** `FM-2.1`,
+  `RV7-1` and their kind exist to tie a checklist item to its commit, its archive entry and its
+  neighbours while the checklist is live. They are not managed across the repository -- each
+  checklist picks its own mnemonic prefix without consulting the others, so duplicates exist --
+  and a completed checklist moves to its archive. So **a work-item id is only ever a clarifier
+  beside prose that already says what was done** -- never the substance: not a heading's
+  payload ("Fifth review fixes (`RV5-1`..`RV5-8`)"), not a bare "fixed by `RV7-1`", not a label
+  a reader must look up to understand the sentence.
+- **A work-item citation is a footnote that leads to the item.** The prose carries the meaning
+  and a footnote marker carries the reference; the footnote definition holds:
+  - the item id, and a clickable relative link to the checklist that holds the item -- to the
+    item's `<a id>` anchor where it has one;
+  - once the item is complete, in square brackets: its completion date and the abbreviated
+    hash(es) of the commit(s) that delivered it, as inline code -- resolvable with
+    `git show`, and tied to no hosting service.
+
+  ```
+  ... the namespace sync before collection[^rv7-1].
+
+  [^rv7-1]: `RV7-1` in [COMPLETED-CHECKLIST.md](../../COMPLETED-CHECKLIST.md#rv7-1)
+      [completed 2026-11-10; `6e8f351`]
+  ```
+
+  The footnote label is the item id lowercased with periods removed, the same slug the archive's
+  anchors use. Footnotes keep the extended reference out of line, so the sentence reads as
+  prose. GitHub renders them; VS Code's built-in preview shows the raw `[^label]`, but the links
+  inside the definition are still Ctrl+Clickable in the editor.
+- **Work-item ids never appear in source code** -- not in comments, doc comments, test names,
+  or string literals. A design decision is a durable reason and may be cited from code
+  (`D41`); a work item is only the occasion on which something was done, which the code does
+  not need and the commit history already records. Code says what it does and why, in prose,
+  citing the decision where the why lives in one. This binds new and edited code; the ids that
+  came in with the imported crates are removed by a queued cleanup[^src-1], so do not copy
+  their style.
+
+  [^src-1]: `SRC-1` in [CHECKLIST.md](../CHECKLIST.md)
+- **Completing the item revises its citations -- the one permitted edit to otherwise immutable
+  text.** A citation written while the item is open has only the id and the link to the live
+  checklist. When the item completes, every footnote citing it is revised in place: the link is
+  repointed to the item's archive entry and the bracketed completion context is added. Nothing
+  else in the citing document changes, which is why this is allowed even in a committed design
+  decision. A commit hash is only known once the commit exists, so the revision lands in the
+  commit after the one that completes the item -- normally the milestone commit that archives
+  it. The archive (`COMPLETED-CHECKLIST.md`, the commit message) is the
+  only place they remain, and it is out of scope for this cleanup: it is the historical record,
+  kept as archaeological evidence, not documentation a reader is expected to follow. Prefer prose from the start in anything expected to outlive the
+  checklist, so there is nothing to rewrite.
+- **A reference never replaces prose; it refines it and makes it exact.** Even a permanent id
+  is opaque to a human reading a comment or document, and making them look up a cross-reference
+  to follow every sentence is a real cost. Write the sentence so it reads correctly with the id
+  removed, then add the id to pin the claim to its source: "reads bypass the writer gate
+  (`D41`)" -- not "per `D41`", "see `D41`", or an id standing alone as the subject of a
+  sentence. Equally, do not force an id onto every mention: cite it where exactness matters,
+  and let the prose carry the rest.
+- **Name it before it spreads.** When a terse label is about to be copied into a second live
+  document, that is the moment to name it -- not after it has become load-bearing in five.
 
 ## Derived information does not belong in checked-in documents
 

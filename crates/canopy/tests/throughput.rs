@@ -23,7 +23,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use acadia::{OsFs, Vfs};
-use canopy::{DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, Swap};
+use canopy::{
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreOptions, Swap,
+};
 
 /// Payload sizes (bytes) swept per partition count.
 const PAYLOADS: &[usize] = &[256, 1024, 4096, 65_536, 1_048_576];
@@ -106,7 +108,12 @@ fn measure_transaction_throughput() {
             let config = GenesisConfig::new(ShireId::new("bench").expect("shire id"), 0)
                 .with_pointer_replica_count(n)
                 .expect("odd pointer replica count");
-            let store = Store::init(vfs.clone(), &store_dir, config).expect("init store");
+            let mut issued: u64 = 0;
+            let options = StoreOptions::with_nonce_source(move || {
+                issued += 1;
+                Nonce::new(&format!("T{issued}")).expect("valid nonce")
+            });
+            let store = Store::init(vfs.clone(), &store_dir, config, options).expect("init store");
 
             let body = DocumentBody::new(vec![0xABu8; payload]);
             let document = DocumentName::new("record").expect("doc name");
@@ -114,10 +121,9 @@ fn measure_transaction_throughput() {
             let write_one = |store: &Store, c: &mut u64| {
                 let node =
                     NodePath::parse(&format!("{:016X}", mix(*c))).expect("valid hex node path");
-                let nonce = Nonce::new(&format!("T{c}")).expect("valid nonce");
                 *c += 1;
                 let outcome = store
-                    .update_document(Swap::new(node, document.clone(), body.clone()), &nonce)
+                    .update_document(Swap::new(node, document.clone(), body.clone()))
                     .expect("write ok");
                 assert!(outcome.is_committed(), "unconditional write must commit");
             };

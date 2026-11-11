@@ -20,8 +20,14 @@ use std::time::{Duration, Instant};
 use acadia::{OsFs, Vfs};
 use canopy::{
     DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store, StoreError,
-    Swap,
+    StoreOptions, Swap,
 };
+
+/// Options with a single nonce, for the one write these tests make per open.
+fn options() -> StoreOptions {
+    let mut nonce = Some(Nonce::new("after-kill").unwrap());
+    StoreOptions::with_nonce_source(move || nonce.take().expect("one write per open"))
+}
 
 /// How long to wait for the OS to release a killed holder's lock before failing.
 ///
@@ -72,7 +78,7 @@ fn config() -> GenesisConfig {
 
 /// Initialises a store at `root` and releases it, leaving a valid store nobody holds.
 fn seed_store(root: &Path) {
-    let store = Store::init(vfs(), root.to_path_buf(), config()).expect("init store");
+    let store = Store::init(vfs(), root.to_path_buf(), config(), options()).expect("init store");
     drop(store);
 }
 
@@ -164,7 +170,7 @@ impl Drop for Holder {
 fn open_within_deadline(root: &Path) -> Result<Store, StoreError> {
     let deadline = Instant::now() + RELEASE_DEADLINE;
     loop {
-        match Store::open(vfs(), root.to_path_buf()) {
+        match Store::open(vfs(), root.to_path_buf(), options()) {
             Ok(store) => return Ok(store),
             Err(e) if Instant::now() >= deadline => return Err(e),
             Err(_) => test_timers::thread::sleep(Duration::from_millis(25)),
@@ -180,8 +186,8 @@ fn a_live_holder_in_another_process_excludes_this_one() {
     seed_store(root.path());
     let holder = Holder::spawn(root.path());
 
-    let refused =
-        Store::open(vfs(), root.path().to_path_buf()).expect_err("another process holds this root");
+    let refused = Store::open(vfs(), root.path().to_path_buf(), options())
+        .expect_err("another process holds this root");
     match refused {
         StoreError::RootInUse { root: reported } => assert_eq!(reported, root.path()),
         other => panic!("expected RootInUse, got {other:?}"),
@@ -207,7 +213,7 @@ fn a_killed_holder_releases_the_root() {
     // acquired anything".
     assert!(
         matches!(
-            Store::open(vfs(), root.path().to_path_buf()),
+            Store::open(vfs(), root.path().to_path_buf(), options()),
             Err(StoreError::RootInUse { .. })
         ),
         "the holder must actually hold the lock before we kill it"
@@ -250,7 +256,7 @@ fn holders_of_different_roots_do_not_exclude_each_other() {
 
     let holder = Holder::spawn(first.path());
 
-    let other = Store::open(vfs(), second.path().to_path_buf())
+    let other = Store::open(vfs(), second.path().to_path_buf(), options())
         .expect("a different root is a different lock");
     drop(other);
 
@@ -277,10 +283,7 @@ fn the_root_is_writable_again_after_the_holder_dies() {
     let name = DocumentName::new("doc").unwrap();
     let body = DocumentBody::new(b"written after the holder died".to_vec());
     let outcome = store
-        .update_document(
-            Swap::new(&node, name.clone(), body.clone()),
-            &Nonce::new("after-kill").unwrap(),
-        )
+        .update_document(Swap::new(&node, name.clone(), body.clone()))
         .expect("write after the holder died");
     assert!(outcome.is_committed());
     drop(store);

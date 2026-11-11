@@ -16,18 +16,21 @@ mod digest;
 mod hierarchy;
 mod layout;
 mod lock;
-mod monitor;
+mod modification;
 mod names;
 mod namespace;
 mod naming;
 mod node_path;
 mod node_removal;
+mod nonce_source;
 mod pointer;
 mod quiescence;
 mod recovery;
 mod removal;
 mod surface;
 mod transaction;
+mod verbs;
+mod write_surface;
 
 /// A node path for tests, panicking on an invalid one.
 ///
@@ -106,7 +109,7 @@ fn doc(raw: &str) -> DocumentName {
 /// same filesystem for tests that inspect the raw on-disk layout.
 fn fresh_store() -> (Arc<dyn Vfs>, Store) {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root, test_config()).expect("init store");
+    let store = Store::init_unsourced(vfs.clone(), root, test_config()).expect("init store");
     (vfs, store)
 }
 
@@ -119,7 +122,7 @@ fn fresh_store() -> (Arc<dyn Vfs>, Store) {
 fn reopen(vfs: &Arc<dyn Vfs>, store: Store) -> Result<Store, StoreError> {
     let root = store.root().to_path_buf();
     drop(store);
-    Store::open(Arc::clone(vfs), root)
+    Store::open_unsourced(Arc::clone(vfs), root)
 }
 
 use crate::{Nonce, NonceError};
@@ -147,18 +150,24 @@ fn node_entries(vfs: &Arc<dyn Vfs>, store: &Store, index: usize) -> Vec<OsString
     names
 }
 
-use crate::{WriteMonitor, WriteOutcome};
+use crate::StoreOptions;
 use std::thread;
 
-/// A deterministic nonce source for a monitor: `N1`, `N2`, `N3`, ... .
-///
-/// The actor owns and drives it single-threaded, so a plain counter is sufficient.
-fn counting_nonce_source() -> impl FnMut() -> Nonce {
+/// A deterministic nonce source: `N1`, `N2`, `N3`, ... .
+fn counting_nonce_source() -> impl FnMut() -> Nonce + Send + 'static {
     let mut n: u64 = 0;
     move || {
         n += 1;
         Nonce::new(&format!("N{n}")).unwrap()
     }
+}
+
+/// A fresh store drawing from [`counting_nonce_source`], for tests of the public write verbs.
+fn sourced_store() -> (Arc<dyn Vfs>, Store) {
+    let (vfs, root) = fresh_root();
+    let options = StoreOptions::with_nonce_source(counting_nonce_source());
+    let store = Store::init(vfs.clone(), root, test_config(), options).expect("init store");
+    (vfs, store)
 }
 
 use crate::commit_log::{

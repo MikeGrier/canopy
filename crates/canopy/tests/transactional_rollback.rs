@@ -23,8 +23,17 @@ use std::sync::Arc;
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, ShireId, Store,
-    StoreError, Swap, SwapSet,
+    StoreError, StoreOptions, Swap, SwapSet,
 };
+
+/// Options drawing nonces `T1`, `T2`, ... in the order transactions run.
+fn options() -> StoreOptions {
+    let mut n: u64 = 0;
+    StoreOptions::with_nonce_source(move || {
+        n += 1;
+        Nonce::new(&format!("T{n}")).unwrap()
+    })
+}
 
 /// The document written by a transaction that completes.
 fn settled() -> NodePath {
@@ -72,6 +81,7 @@ fn store_faulting_log_append(k: u32) -> (Arc<dyn Vfs>, PathBuf, Store, FaultGate
         vfs.clone(),
         root.clone(),
         GenesisConfig::new(ShireId::new("cvs16-shire").unwrap(), 3),
+        options(),
     )
     .expect("init");
     (vfs, root, store, gate)
@@ -120,13 +130,13 @@ fn resolved(store: &Store, node: &NodePath) -> Option<Vec<u8>> {
 fn a_rolled_back_transaction_leaves_no_blob_behind() {
     let (vfs, root, store, gate) = store_faulting_log_append(2);
     store
-        .apply_transaction(&swaps(settled(), "v1"), &Nonce::new("T1").unwrap())
+        .apply_transaction(&swaps(settled(), "v1"))
         .expect("the first transaction commits");
 
     // From here the next transaction's `begin` lands but its `prepare` does not.
     gate.open();
     store
-        .apply_transaction(&swaps(abandoned(), "v1"), &Nonce::new("T2").unwrap())
+        .apply_transaction(&swaps(abandoned(), "v1"))
         .expect_err("a transaction whose prepare cannot be journalled cannot commit");
 
     // Staging ran, but the failure was before `prepare`, so the live rollback collected it
@@ -140,7 +150,8 @@ fn a_rolled_back_transaction_leaves_no_blob_behind() {
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root).expect("reopen rolls the transaction back");
+    let reopened =
+        Store::open(vfs.clone(), root, options()).expect("reopen rolls the transaction back");
 
     assert!(
         blobs(&vfs, &reopened, &abandoned()).is_empty(),
@@ -162,18 +173,19 @@ fn a_rollback_keeps_the_blob_the_namespace_still_points_at() {
     // transaction ingested" would delete it and leave the pointer dangling.
     let (vfs, root, store, gate) = store_faulting_log_append(2);
     store
-        .apply_transaction(&swaps(settled(), "v1"), &Nonce::new("T1").unwrap())
+        .apply_transaction(&swaps(settled(), "v1"))
         .expect("the first transaction commits");
     let before = blobs(&vfs, &store, &settled());
 
     gate.open();
     store
-        .apply_transaction(&swaps(settled(), "v1"), &Nonce::new("T2").unwrap())
+        .apply_transaction(&swaps(settled(), "v1"))
         .expect_err("a transaction whose prepare cannot be journalled cannot commit");
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root).expect("reopen rolls the transaction back");
+    let reopened =
+        Store::open(vfs.clone(), root, options()).expect("reopen rolls the transaction back");
 
     assert_eq!(
         resolved(&reopened, &settled()).as_deref(),
@@ -194,12 +206,12 @@ fn a_rolled_back_transaction_leaves_no_staging_in_any_tree() {
     let (vfs, root, store, gate) = store_faulting_log_append(2);
     gate.open();
     store
-        .apply_transaction(&swaps(abandoned(), "v1"), &Nonce::new("T2").unwrap())
+        .apply_transaction(&swaps(abandoned(), "v1"))
         .expect_err("a transaction whose prepare cannot be journalled cannot commit");
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root.clone()).expect("reopen rolls back");
+    let reopened = Store::open(vfs.clone(), root.clone(), options()).expect("reopen rolls back");
 
     for index in 0..reopened.pointer_replica_count() {
         assert!(
@@ -208,7 +220,7 @@ fn a_rolled_back_transaction_leaves_no_staging_in_any_tree() {
                     .join("namespace")
                     .join(format!("p{index}"))
                     .join(".staging")
-                    .join("T2")
+                    .join("T1")
             )
             .unwrap(),
             "namespace replica {index} kept its staging tree"
@@ -221,7 +233,7 @@ fn a_rolled_back_transaction_leaves_no_staging_in_any_tree() {
                     .join("files")
                     .join(format!("p{index}"))
                     .join(".staging")
-                    .join("blob.tmp.T2")
+                    .join("blob.tmp.T1")
             )
             .unwrap(),
             "blob replica {index} kept its staging temp"
@@ -237,12 +249,13 @@ fn a_transaction_that_dies_before_ingesting_anything_rolls_back_cleanly() {
     let (vfs, root, store, gate) = store_faulting_log_append(1);
     gate.open();
     store
-        .apply_transaction(&swaps(abandoned(), "v1"), &Nonce::new("T2").unwrap())
+        .apply_transaction(&swaps(abandoned(), "v1"))
         .expect_err("a transaction that cannot journal its begin cannot proceed");
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root).expect("reopen rolls back an empty transaction");
+    let reopened =
+        Store::open(vfs.clone(), root, options()).expect("reopen rolls back an empty transaction");
 
     assert!(blobs(&vfs, &reopened, &abandoned()).is_empty());
     assert_eq!(resolved(&reopened, &abandoned()), None);

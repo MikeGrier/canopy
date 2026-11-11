@@ -47,11 +47,15 @@
 //! the crate-wide dead-code lint is silenced here rather than per item.
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, MemFs, Vfs, When};
-use canopy::{DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreError};
+use canopy::{
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreError,
+    StoreOptions, SwapSet, TransactionOutcome,
+};
 
 /// The store root every CHAOS test uses.
 pub const ROOT: &str = "shire";
@@ -255,12 +259,10 @@ impl Script {
         self.at(FaultOp::Append, log, fault, When::OnCall(3))
     }
 
-    /// Fail the `read` of the commit log itself, on the schedule `when` -- the
-    /// read that drives the recovery replay at
-    /// [`Store::open`](canopy::Store::open). Store *creation* never reads the log
-    /// and a clean apply only appends, so the first matching log read is the
-    /// reopen's recovery: `When::Once` faults exactly that recovery read without
-    /// disturbing the original open or the intervening apply.
+    /// Fail the `read` of the commit log itself, on the schedule `when`. Store creation never
+    /// reads the log; a clean apply reads it twice, once to refuse a transaction id it already
+    /// holds and once to check it holds no unresolved work before emptying it; and
+    /// [`Store::open`](canopy::Store::open) reads it to drive the recovery replay.
     #[must_use]
     pub fn fail_log_read(self, fault: Fault, when: When) -> Self {
         let log = self.layout.commit_log();
@@ -304,9 +306,67 @@ impl Script {
 
 /// The fault-injecting store harness: owns the [`FaultyFs`] backend and opens or
 /// reopens the store over it.
+///
+/// Every store it opens draws its nonces from a queue the test fills through
+/// [`apply`](Chaos::apply), so a test can name a transaction's nonce -- and so the paths a
+/// fault rule targets -- before the transaction runs.
 pub struct Chaos {
     faulty: Arc<FaultyFs<MemFs>>,
     layout: Layout,
+    nonces: Nonces,
+}
+
+/// A queue of nonces a store draws from, filled by the test just before each write, so a
+/// test names every nonce -- and with it every staging path -- itself.
+#[derive(Clone, Default)]
+pub struct Nonces(Arc<Mutex<VecDeque<Nonce>>>);
+
+impl Nonces {
+    /// Options whose source pops this queue, panicking if a store asks for a nonce no test
+    /// queued.
+    pub fn options(&self) -> StoreOptions {
+        let queue = Arc::clone(&self.0);
+        StoreOptions::with_nonce_source(move || {
+            queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("the test queued a nonce for every write")
+        })
+    }
+
+    /// Queues `nonce` for the next write.
+    pub fn queue(&self, nonce: &Nonce) {
+        self.0.lock().unwrap().push_back(nonce.clone());
+    }
+
+    /// Applies `swaps` through `store` under `txn`.
+    pub fn apply(
+        &self,
+        store: &Store,
+        swaps: &SwapSet,
+        txn: &Nonce,
+    ) -> Result<TransactionOutcome, StoreError> {
+        self.queue(txn);
+        store
+            .apply_transaction(swaps)
+            .map(|commit| commit.outcome().clone())
+    }
+
+    /// Writes `body` through `store` without the log, under `nonce`.
+    pub fn write(
+        &self,
+        store: &Store,
+        node: &NodePath,
+        document: &DocumentName,
+        body: &DocumentBody,
+        nonce: &Nonce,
+    ) -> Result<(), StoreError> {
+        self.queue(nonce);
+        store
+            .write_document_replicated(node.clone(), document, body)
+            .map(|_| ())
+    }
 }
 
 impl Chaos {
@@ -331,9 +391,32 @@ impl Chaos {
             .unwrap()
             .with_blob_replica_count(replica_count)
             .unwrap();
-        let store =
-            Store::init(faulty.clone(), layout.root().to_path_buf(), genesis).expect("init store");
-        (Chaos { faulty, layout }, store)
+        let nonces = Nonces::default();
+        let store = Store::init(
+            faulty.clone(),
+            layout.root().to_path_buf(),
+            genesis,
+            nonces.options(),
+        )
+        .expect("init store");
+        (
+            Chaos {
+                faulty,
+                layout,
+                nonces,
+            },
+            store,
+        )
+    }
+
+    /// Applies `swaps` through `store` under the nonce `txn`.
+    pub fn apply(
+        &self,
+        store: &Store,
+        swaps: &SwapSet,
+        txn: &Nonce,
+    ) -> Result<TransactionOutcome, StoreError> {
+        self.nonces.apply(store, swaps, txn)
     }
 
     /// Opens a fresh store of `replica_count` replicas with no faults scripted, on
@@ -373,6 +456,10 @@ impl Chaos {
         // `None` is for the case where the last attempt *failed*: a failed `open` returns
         // no handle, so its lock was already released.
         drop(previous.into());
-        Store::open(self.fs(), self.layout.root().to_path_buf())
+        Store::open(
+            self.fs(),
+            self.layout.root().to_path_buf(),
+            self.nonces.options(),
+        )
     }
 }

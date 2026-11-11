@@ -32,7 +32,7 @@ fn shard_entries(
 #[test]
 fn a_sweep_removes_superseded_versions_and_keeps_the_survivor() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let v1 = ingest(&store, b"one", "n1");
     let v2 = ingest(&store, b"two", "n2");
@@ -65,7 +65,7 @@ fn a_sweep_removes_superseded_versions_and_keeps_the_survivor() {
 fn an_empty_keep_set_removes_every_blob_the_document_owns() {
     // Which is what deleting a document is.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"doomed", "n1");
     let removed = store.retain_blobs(name.path_hash(), &[]).expect("sweep");
@@ -82,7 +82,7 @@ fn a_rewrite_of_identical_content_survives_its_own_sweep() {
     // the old blob and the new one are the same file, so the naive phrasing would remove
     // the live one (`D315`).
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let first = ingest(&store, b"same", "n1");
     let second = ingest(&store, b"same", "n2");
@@ -109,7 +109,7 @@ fn a_sweep_collects_artifact_types_this_build_does_not_know() {
     // survive every sweep an older one ran -- accumulating forever, owned by a version
     // that no longer exists.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let old = ingest(&store, b"old", "n1");
     let new = ingest(&store, b"new", "n2");
@@ -149,7 +149,7 @@ fn a_sweep_collects_artifact_types_this_build_does_not_know() {
 fn a_sweep_keeps_every_artifact_of_a_surviving_version() {
     // The complement: an unknown artifact of the *current* version is not collateral.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"current", "n1");
     let width = store.shard_width();
@@ -176,7 +176,7 @@ fn a_sweep_keeps_every_artifact_of_a_surviving_version() {
 fn a_sweep_does_not_touch_another_documents_blobs() {
     // Ownership is the whole point of the owner hash leading the name (`D315`).
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let mine = ingest(&store, b"mine", "n1");
     let theirs = store
@@ -205,7 +205,7 @@ fn a_sweep_leaves_a_foreign_file_alone() {
     // A cleanup must never collect something it does not own, however conveniently it is
     // sitting in the same directory.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let name = ingest(&store, b"ours", "n1");
     let shard = root
@@ -226,7 +226,7 @@ fn a_sweep_leaves_a_foreign_file_alone() {
 fn a_sweep_over_an_untouched_document_is_a_no_op() {
     // A shard directory that was never created is a clean sweep, not a failure.
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     let never_written = PathHash::of(&node_of("TICKETS/Z"), &doc_of("absent.json"));
     assert_eq!(store.retain_blobs(never_written, &[]).expect("sweep"), 0);
@@ -235,7 +235,7 @@ fn a_sweep_over_an_untouched_document_is_a_no_op() {
 #[test]
 fn a_sweep_is_idempotent() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     ingest(&store, b"one", "n1");
     let survivor = ingest(&store, b"two", "n2");
@@ -265,7 +265,7 @@ fn a_sweep_is_idempotent() {
 #[test]
 fn a_sweep_can_keep_more_than_one_version() {
     let (vfs, root) = fresh_root();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).expect("init");
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
 
     let a = ingest(&store, b"a", "n1");
     let b = ingest(&store, b"b", "n2");

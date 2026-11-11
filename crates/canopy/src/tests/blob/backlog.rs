@@ -92,7 +92,7 @@ fn a_drain_that_fails_part_way_puts_its_suspects_back() {
     let vfs: Arc<dyn Vfs> = Arc::new(acadia::FaultyFs::new(acadia::MemFs::new(), policy));
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs, root, test_config()).expect("init");
+    let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 
     for seed in 0..3 {
         store.note_damaged_blob(distinct_reference(&store, seed));
@@ -101,7 +101,7 @@ fn a_drain_that_fails_part_way_puts_its_suspects_back() {
 
     let mut counter = 0;
     store
-        .repair_reported_damage(|| {
+        .repair_reported_damage_with(|| {
             counter += 1;
             nonce_of(&format!("d{counter}"))
         })

@@ -1,6 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! `CVS-9` end-to-end integration test for the content store: ingest, read, verify, delete.
+//! The content store end to end at scale: ingest, read, verify, delete.
 //!
 //! Drives hundreds of documents and versions through the blob path against `acadia`'s
 //! `MemFs`, then injects corruption across replicas and proves the read identifies a bad
@@ -11,17 +11,20 @@
 //! of a document changes nothing about what a read returns, because there is no vote to
 //! lose. A store that byte-compared copies would fail every assertion below.
 //!
-//! Repair is deliberately not exercised. It does not exist until `CVS-18`, which is where
-//! the assertion that a repair re-replicates from a verified-good copy now lives; what this
-//! file pins is that the read *identifies* the failing replicas, which is the input repair
-//! will consume.
+//! Repair is not exercised here; what this file pins is that the read *identifies* the failing
+//! replicas, which is the input a repair consumes.
+//!
+//! This module's time budget is 2 s rather than the usual 1 s, kept by populating one store
+//! per replica count and forking it per test (DESIGN-NOTES.md, "The content-store scale tests
+//! are unit tests with a 2 s budget").
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use acadia::{MemFs, Vfs};
-use canopy::{
+
+use crate::{
     Artifact, BlobName, BlobRef, ContentDigest, DocumentName, GenesisConfig, NodePath, Nonce,
     ShireId, Store, StoreError,
 };
@@ -32,16 +35,46 @@ const DOCUMENTS: usize = 400;
 /// Versions written per document, so supersession and the sweep see real depth.
 const VERSIONS: usize = 3;
 
-/// A fresh store on an in-memory filesystem, plus the backend handle for raw corruption.
-fn fresh(replicas: usize) -> (Arc<dyn Vfs>, Store) {
-    let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+/// Where every store here is rooted.
+const ROOT: &str = "shire";
+
+/// A new store with `replicas` replicas on `vfs`.
+fn init(vfs: Arc<dyn Vfs>, replicas: usize) -> Store {
+    let root = PathBuf::from(ROOT);
     vfs.create_dir_all(&root).unwrap();
     let config = GenesisConfig::new(ShireId::new("cvs9-shire").unwrap(), 11)
         .with_blob_replica_count(replicas)
         .unwrap();
-    let store = Store::init(vfs.clone(), root, config).unwrap();
-    (vfs, store)
+    Store::init_unsourced(vfs, root, config).unwrap()
+}
+
+/// A populated store's filesystem and the names it holds, built once and forked per test.
+struct Fixture {
+    fs: Arc<MemFs>,
+    names: Vec<Vec<BlobName>>,
+}
+
+/// A store over a private copy of a fully populated store with `replicas` replicas.
+///
+/// Populating is most of a test's cost, and every test would populate identically, so the
+/// first caller builds the fixture and each test opens a fork of it.
+fn populated(replicas: usize) -> (Arc<dyn Vfs>, Store, Vec<Vec<BlobName>>) {
+    static THREE: OnceLock<Fixture> = OnceLock::new();
+    static FIVE: OnceLock<Fixture> = OnceLock::new();
+    let cell = match replicas {
+        3 => &THREE,
+        5 => &FIVE,
+        _ => panic!("no fixture with {replicas} replicas"),
+    };
+    let fixture = cell.get_or_init(|| {
+        let fs = Arc::new(MemFs::new());
+        let store = init(fs.clone(), replicas);
+        let names = populate(&store);
+        Fixture { fs, names }
+    });
+    let vfs: Arc<dyn Vfs> = Arc::new(fixture.fs.fork());
+    let store = Store::open_unsourced(vfs.clone(), ROOT).unwrap();
+    (vfs, store, fixture.names.clone())
 }
 
 fn node_of(i: usize) -> NodePath {
@@ -97,8 +130,7 @@ fn populate(store: &Store) -> Vec<Vec<BlobName>> {
 
 #[test]
 fn every_ingested_version_reads_back_exactly() {
-    let (_vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (_vfs, store, names) = populated(3);
 
     for (i, versions) in names.iter().enumerate() {
         for (v, name) in versions.iter().enumerate() {
@@ -113,8 +145,7 @@ fn every_ingested_version_reads_back_exactly() {
 fn every_blob_hashes_to_the_name_it_is_stored_under() {
     // The property that makes a blob self-validating, checked over the whole store rather
     // than one hand-placed example.
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
 
     for versions in &names {
         for name in versions {
@@ -131,7 +162,7 @@ fn documents_never_share_a_blob_even_when_their_content_is_identical() {
     // `D315` enforces non-sharing with the owner hash rather than merely intending it.
     // Every document here gets the same body, so a content-addressed store would collapse
     // them all onto one file.
-    let (_vfs, store) = fresh(3);
+    let store = init(Arc::new(MemFs::new()), 3);
     let mut names = BTreeSet::new();
     for i in 0..DOCUMENTS {
         let nonce = Nonce::new(&format!("S{i}")).unwrap();
@@ -158,8 +189,7 @@ fn a_read_falls_through_corruption_spread_across_every_replica() {
     // Faults are spread rather than confined to one partition: each document loses a
     // different replica, so over the store every partition is both a victim and a
     // survivor. A read that preferred a fixed partition would pass this only by luck.
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
     let replicas = store.blob_replica_count();
 
     for (i, versions) in names.iter().enumerate() {
@@ -188,8 +218,7 @@ fn corrupting_a_majority_changes_nothing() {
     // The assertion a quorum store cannot make. Two of three copies are rotted, so a
     // byte-comparing read would take the corrupt pair as truth; a verifying read convicts
     // both by examining them and serves the survivor (`D316`).
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
 
     for versions in &names {
         for name in versions {
@@ -213,8 +242,7 @@ fn corrupting_a_majority_changes_nothing() {
 fn the_read_names_the_replicas_a_repair_will_need() {
     // What `CVS-18` consumes. The read does not repair, but it must report precisely which
     // copies failed and how, or the repair path would have to re-discover it.
-    let (vfs, store) = fresh(5);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(5);
 
     for versions in &names {
         for name in versions {
@@ -247,8 +275,7 @@ fn the_read_names_the_replicas_a_repair_will_need() {
 #[test]
 fn a_document_whose_every_replica_is_gone_is_unavailable_rather_than_wrong() {
     // canopy invents no body. With no verified copy the read fails, and says which way.
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
     let doomed = &names[7][0];
 
     for index in 0..store.blob_replica_count() {
@@ -279,8 +306,7 @@ fn a_document_whose_every_replica_is_gone_is_unavailable_rather_than_wrong() {
 
 #[test]
 fn sweeping_to_the_latest_version_leaves_exactly_one_blob_per_document() {
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
 
     let mut removed = 0;
     for versions in &names {
@@ -316,8 +342,7 @@ fn sweeping_to_the_latest_version_leaves_exactly_one_blob_per_document() {
 
 #[test]
 fn deleting_every_document_empties_the_blob_tree_of_our_blobs() {
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
 
     let mut removed = 0;
     for versions in &names {
@@ -341,8 +366,7 @@ fn a_sweep_after_corruption_still_removes_the_corrupt_copies() {
     // A rotted blob is still a blob the owner holds: the sweep matches on the name, which
     // is intact, not on the content, which is not. Corruption must not make garbage
     // immortal.
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
 
     for versions in &names {
         for name in versions {
@@ -363,8 +387,7 @@ fn a_sweep_after_corruption_still_removes_the_corrupt_copies() {
 fn the_full_cycle_holds_over_the_whole_store() {
     // Ingest, read, corrupt, read through the corruption, supersede, sweep, read again --
     // the sequence a document actually lives through, at scale.
-    let (vfs, store) = fresh(3);
-    let names = populate(&store);
+    let (vfs, store, names) = populated(3);
 
     for (i, versions) in names.iter().enumerate() {
         let victim = i % 3;

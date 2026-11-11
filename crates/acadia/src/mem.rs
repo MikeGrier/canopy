@@ -52,7 +52,7 @@ enum Node {
 }
 
 /// The two-state store behind a [`MemFs`].
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Inner {
     /// The visible tree: what reads observe.
     live: BTreeMap<OsString, Node>,
@@ -85,6 +85,19 @@ struct Inner {
     /// (a rename made durable in its destination but not its source), so live bytes go only
     /// with the last live name.
     live_refs: HashMap<u64, usize>,
+    /// The names in each directory whose live entry may differ from its durable one, so a
+    /// directory sync costs what changed rather than the size of the directory. `None` means
+    /// the durable directory was created, reset or replaced wholesale and every entry must be
+    /// reconciled; a directory with no record has no changes. Recording a name that did not
+    /// change only costs a no-op reconcile, while missing one would lose it on a crash -- so
+    /// every operation that changes a live directory's entries records here.
+    dirty: HashMap<Vec<OsString>, Option<HashSet<OsString>>>,
+    /// Reconcile every entry on every directory sync, as an oracle for the change tracking.
+    #[cfg(test)]
+    full_directory_sync: bool,
+    /// How many entries directory syncs have examined, so a test can see what a sync cost.
+    #[cfg(test)]
+    examined_entries: usize,
     /// Next inode id to hand out.
     next_inode: u64,
 }
@@ -114,6 +127,32 @@ impl MemFs {
         Self::default()
     }
 
+    /// A filesystem whose directory syncs reconcile every entry, ignoring the change tracking.
+    #[cfg(test)]
+    pub(crate) fn with_full_directory_sync() -> Self {
+        let fs = Self::default();
+        fs.lock().full_directory_sync = true;
+        fs
+    }
+
+    /// How many entries directory syncs have examined so far.
+    #[cfg(test)]
+    pub(crate) fn examined_entries(&self) -> usize {
+        self.lock().examined_entries
+    }
+
+    /// An independent filesystem starting from this one's whole state, what is durable and
+    /// what is not yet alike, so an expensive fixture can be built once and copied per test.
+    ///
+    /// Locks are not copied: a lock belongs to its holder, not to the stored tree.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        Self {
+            inner: Mutex::new(self.lock().clone()),
+            locks: Arc::default(),
+        }
+    }
+
     /// Discards every change that has not been made durable by an
     /// [`fsync`](Vfs::fsync), reverting the live tree to the durable tree.
     ///
@@ -136,6 +175,7 @@ impl MemFs {
         }
         inner.carried.clear();
         inner.replaced.clear();
+        inner.dirty.clear();
         inner.live = inner.durable.clone();
         let mut ids = Vec::new();
         collect_ids(&inner.live, &mut ids);
@@ -324,10 +364,41 @@ fn ensure_dir<'a>(
     }
 }
 
+/// Records that the entry `name` in the live directory `parent` changed.
+///
+/// The implicit root is never synced, so its entries are not tracked.
+fn mark(
+    dirty: &mut HashMap<Vec<OsString>, Option<HashSet<OsString>>>,
+    parent: &[OsString],
+    name: &OsString,
+) {
+    if parent.is_empty() {
+        return;
+    }
+    match dirty.get_mut(parent) {
+        Some(Some(names)) => {
+            names.insert(name.clone());
+        }
+        Some(None) => {}
+        None => {
+            dirty.insert(parent.to_vec(), Some(HashSet::from([name.clone()])));
+        }
+    }
+}
+
+/// Records that the durable directory at `parts` no longer matches its live one except by
+/// recorded changes, so its next sync reconciles every entry.
+fn mark_all(dirty: &mut HashMap<Vec<OsString>, Option<HashSet<OsString>>>, parts: &[OsString]) {
+    if !parts.is_empty() {
+        dirty.insert(parts.to_vec(), None);
+    }
+}
+
 /// Moves `carried`'s snapshot for `parts`, if any, into `durable` at `parts`.
 ///
 /// Run before a sync makes anything at or beneath a renamed directory durable, so what the
 /// directory carried is the base that sync builds on rather than being replaced by it.
+/// Returns whether a snapshot was moved.
 fn materialize(
     durable: &mut BTreeMap<OsString, Node>,
     carried: &mut HashMap<Vec<OsString>, Node>,
@@ -335,12 +406,12 @@ fn materialize(
     parts: &[OsString],
     op: &'static str,
     full: &Path,
-) -> VfsResult<()> {
+) -> VfsResult<bool> {
     let Some((name, parents)) = parts.split_last() else {
-        return Ok(());
+        return Ok(false);
     };
     if !carried.contains_key(parts) {
-        return Ok(());
+        return Ok(false);
     }
     // Only taken once its destination exists, so a failure leaves the snapshot carried.
     let dir = ensure_dir(durable, parents, op, full)?;
@@ -351,19 +422,20 @@ fn materialize(
     {
         refs.release_node(&displaced);
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Starts the durable directory at `parts` from empty if the path was [`Inner::replaced`]:
 /// the directory there now is a new one, and must not inherit its predecessor's entries.
+/// Returns whether the path was replaced.
 fn refresh(
     durable: &mut BTreeMap<OsString, Node>,
     replaced: &mut HashSet<Vec<OsString>>,
     refs: &mut Refs<'_>,
     parts: &[OsString],
-) {
+) -> bool {
     if !replaced.remove(parts) {
-        return;
+        return false;
     }
     if let Some((name, parents)) = parts.split_last()
         && let Ok(dir) = dir_of_mut(durable, parents, "fsync", Path::new(""))
@@ -371,6 +443,52 @@ fn refresh(
     {
         let old = std::mem::replace(node, Node::Dir(BTreeMap::new()));
         refs.release_node(&old);
+    }
+    true
+}
+
+/// Refreshes and materializes the durable directory at `parts` before a sync builds on it.
+///
+/// Either one replaces durable directories wholesale, after which their recorded changes no
+/// longer describe how they differ from the live ones, so each is marked for a full sync.
+fn renew(
+    durable: &mut BTreeMap<OsString, Node>,
+    carried: &mut HashMap<Vec<OsString>, Node>,
+    replaced: &mut HashSet<Vec<OsString>>,
+    dirty: &mut HashMap<Vec<OsString>, Option<HashSet<OsString>>>,
+    refs: &mut Refs<'_>,
+    parts: &[OsString],
+    full: &Path,
+) -> VfsResult<()> {
+    if refresh(durable, replaced, refs, parts) {
+        mark_all(dirty, parts);
+    }
+    if materialize(durable, carried, refs, parts, "fsync", full)?
+        && let Ok(node) = node_at(durable, parts, "fsync", full)
+    {
+        mark_subtree_all(dirty, &mut parts.to_vec(), node);
+    }
+    Ok(())
+}
+
+/// Marks the directory `node`, at `path`, and every directory beneath it for a full sync.
+fn mark_subtree_all(
+    dirty: &mut HashMap<Vec<OsString>, Option<HashSet<OsString>>>,
+    path: &mut Vec<OsString>,
+    node: &Node,
+) {
+    for_each_dir(path, node, &mut |dir_parts| mark_all(dirty, dir_parts));
+}
+
+/// Calls `f` with the path of `node`, at `path`, and of every directory beneath it.
+fn for_each_dir(path: &mut Vec<OsString>, node: &Node, f: &mut impl FnMut(&[OsString])) {
+    if let Node::Dir(children) = node {
+        f(path);
+        for (name, child) in children {
+            path.push(name.clone());
+            for_each_dir(path, child, f);
+            path.pop();
+        }
     }
 }
 
@@ -485,37 +603,57 @@ enum Kind {
 /// contents.
 ///
 /// Every durable entry it drops or replaces is released, which is the only way durable file
-/// data becomes unreachable.
+/// data becomes unreachable. Returns the names given a new, empty durable directory.
 fn reconcile_children(
     ddir: &mut BTreeMap<OsString, Node>,
     live_children: &BTreeMap<OsString, Node>,
     refs: &mut Refs<'_>,
-) {
+) -> Vec<OsString> {
     let stale: Vec<OsString> = ddir
         .keys()
         .filter(|k| !live_children.contains_key(*k))
         .cloned()
         .collect();
     for k in stale {
-        if let Some(old) = ddir.remove(&k) {
-            refs.release_node(&old);
-        }
+        reconcile_entry(ddir, &k, None, refs);
     }
-    for (name, node) in live_children {
-        match node {
-            Node::File(id) => {
-                refs.retain(*id);
-                if let Some(old) = ddir.insert(name.clone(), Node::File(*id)) {
-                    refs.release_node(&old);
-                }
+    live_children
+        .iter()
+        .filter(|(name, node)| reconcile_entry(ddir, name, Some(node), refs))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Advances the durable entry `name` in `ddir` to `live`, the live entry (or its absence).
+/// Returns whether the name was given a new, empty durable directory.
+fn reconcile_entry(
+    ddir: &mut BTreeMap<OsString, Node>,
+    name: &OsString,
+    live: Option<&Node>,
+    refs: &mut Refs<'_>,
+) -> bool {
+    match live {
+        None => {
+            if let Some(old) = ddir.remove(name) {
+                refs.release_node(&old);
             }
-            Node::Dir(_) => {
-                if !matches!(ddir.get(name), Some(Node::Dir(_)))
-                    && let Some(old) = ddir.insert(name.clone(), Node::Dir(BTreeMap::new()))
-                {
-                    refs.release_node(&old);
-                }
+            false
+        }
+        Some(Node::File(id)) => {
+            refs.retain(*id);
+            if let Some(old) = ddir.insert(name.clone(), Node::File(*id)) {
+                refs.release_node(&old);
             }
+            false
+        }
+        Some(Node::Dir(_)) => {
+            if matches!(ddir.get(name), Some(Node::Dir(_))) {
+                return false;
+            }
+            if let Some(old) = ddir.insert(name.clone(), Node::Dir(BTreeMap::new())) {
+                refs.release_node(&old);
+            }
+            true
         }
     }
 }
@@ -781,6 +919,7 @@ impl Vfs for MemFs {
             refs,
             live_refs,
             next_inode,
+            dirty,
             ..
         } = &mut *guard;
         let dir = dir_of_mut(live, parents, "write", path)?;
@@ -802,6 +941,7 @@ impl Vfs for MemFs {
                 dir.insert(name.clone(), Node::File(id));
                 *refs.entry(id).or_default() += 1;
                 *live_refs.entry(id).or_default() += 1;
+                mark(dirty, parents, name);
                 Ok(())
             }
         }
@@ -824,6 +964,7 @@ impl Vfs for MemFs {
             refs,
             live_refs,
             next_inode,
+            dirty,
             ..
         } = &mut *guard;
         let dir = dir_of_mut(live, parents, "append", path)?;
@@ -845,6 +986,7 @@ impl Vfs for MemFs {
                 dir.insert(name.clone(), Node::File(id));
                 *refs.entry(id).or_default() += 1;
                 *live_refs.entry(id).or_default() += 1;
+                mark(dirty, parents, name);
                 Ok(())
             }
         }
@@ -900,6 +1042,10 @@ impl Vfs for MemFs {
             return Err(err(VfsErrorKind::InvalidInput, "fsync", path, "empty path"));
         };
         let mut guard = self.lock();
+        #[cfg(test)]
+        let full_sync = guard.full_directory_sync;
+        #[cfg(not(test))]
+        let full_sync = false;
         let Inner {
             live,
             durable,
@@ -909,6 +1055,9 @@ impl Vfs for MemFs {
             carried,
             replaced,
             refs,
+            dirty,
+            #[cfg(test)]
+            examined_entries,
             ..
         } = &mut *guard;
         let mut refs = Refs {
@@ -953,29 +1102,80 @@ impl Vfs for MemFs {
                         unnamed.insert(prefix.to_vec());
                     }
                 }
+                // A directory the durable tree does not hold once its ancestors are renewed
+                // starts empty there, so all of its entries are changes.
                 for depth in 1..=parts.len() {
-                    refresh(durable, replaced, &mut refs, &parts[..depth]);
-                    materialize(durable, carried, &mut refs, &parts[..depth], "fsync", path)?;
+                    let prefix = &parts[..depth];
+                    renew(durable, carried, replaced, dirty, &mut refs, prefix, path)?;
+                    if !matches!(node_at(durable, prefix, "fsync", path), Ok(Node::Dir(_))) {
+                        mark_all(dirty, prefix);
+                    }
                 }
                 ensure_dir(durable, &parts, "fsync", path)?;
-                // A renamed directory newly named here brings what it carried with it.
-                for (child, node) in live_children {
-                    if matches!(node, Node::Dir(_)) {
-                        let mut child_parts = parts.clone();
-                        child_parts.push(child.clone());
-                        refresh(durable, replaced, &mut refs, &child_parts);
-                        materialize(durable, carried, &mut refs, &child_parts, "fsync", path)?;
+                // Only the recorded names can differ from the durable directory, unless it was
+                // replaced wholesale, when every entry is reconciled.
+                let changed: Option<Vec<OsString>> = if full_sync {
+                    None
+                } else {
+                    match dirty.get(&parts) {
+                        None => Some(Vec::new()),
+                        Some(None) => None,
+                        Some(Some(names)) => Some(names.iter().cloned().collect()),
                     }
+                };
+                let child_dirs: Vec<&OsString> = match &changed {
+                    None => live_children
+                        .iter()
+                        .filter(|(_, node)| matches!(node, Node::Dir(_)))
+                        .map(|(child, _)| child)
+                        .collect(),
+                    Some(names) => names
+                        .iter()
+                        .filter(|child| matches!(live_children.get(*child), Some(Node::Dir(_))))
+                        .collect(),
+                };
+                // A renamed directory newly named here brings what it carried with it.
+                for child in &child_dirs {
+                    let mut child_parts = parts.clone();
+                    child_parts.push((*child).clone());
+                    renew(
+                        durable,
+                        carried,
+                        replaced,
+                        dirty,
+                        &mut refs,
+                        &child_parts,
+                        path,
+                    )?;
                 }
                 let ddir = dir_of_mut(durable, &parts, "fsync", path)?;
-                reconcile_children(ddir, live_children, &mut refs);
-                for (child, node) in live_children {
-                    let mut child_parts = parts.clone();
-                    child_parts.push(child.clone());
-                    if matches!(node, Node::Dir(_)) {
-                        unnamed.remove(&child_parts);
-                    }
+                #[cfg(test)]
+                {
+                    *examined_entries += changed
+                        .as_ref()
+                        .map_or(live_children.len().max(ddir.len()), Vec::len);
                 }
+                let fresh = match &changed {
+                    None => reconcile_children(ddir, live_children, &mut refs),
+                    Some(names) => names
+                        .iter()
+                        .filter(|child| {
+                            reconcile_entry(ddir, child, live_children.get(*child), &mut refs)
+                        })
+                        .cloned()
+                        .collect(),
+                };
+                for child in fresh {
+                    let mut child_parts = parts.clone();
+                    child_parts.push(child);
+                    mark_all(dirty, &child_parts);
+                }
+                for child in &child_dirs {
+                    let mut child_parts = parts.clone();
+                    child_parts.push((*child).clone());
+                    unnamed.remove(&child_parts);
+                }
+                dirty.remove(&parts);
                 unnamed.retain(|marked| {
                     marked.len() <= parts.len()
                         || !marked.starts_with(&parts)
@@ -1022,6 +1222,7 @@ impl Vfs for MemFs {
             replaced,
             refs,
             live_refs,
+            dirty,
             ..
         } = &mut *guard;
         let mut refs = Refs {
@@ -1085,6 +1286,23 @@ impl Vfs for MemFs {
         if let Some(Node::File(displaced)) = ddir.insert(to_name.clone(), node) {
             unlink_live(live_refs, live_data, displaced);
             refs.release(displaced);
+        }
+        mark(dirty, from_parents, from_name);
+        mark(dirty, to_parents, to_name);
+        if src_kind == Kind::Dir {
+            // Both paths are replaced below, so the next sync naming either starts it, and
+            // everything beneath it, from empty and reconciles every entry: the records under
+            // either path describe nothing any more.
+            dirty.remove(&to_parts);
+            if let Ok(moved) = node_at(live, &to_parts, "rename", to) {
+                let mut stale = Vec::new();
+                for_each_dir(&mut from_parts.clone(), moved, &mut |old| {
+                    stale.push(old.to_vec())
+                });
+                for old in stale {
+                    dirty.remove(&old);
+                }
+            }
         }
         if src_kind == Kind::Dir {
             // What the directory carries is captured now, so syncing its old parent first --
@@ -1161,6 +1379,7 @@ impl Vfs for MemFs {
             durable_data,
             refs,
             live_refs,
+            dirty,
             ..
         } = &mut *guard;
         let mut refs = Refs {
@@ -1186,6 +1405,7 @@ impl Vfs for MemFs {
                     unlink_live(live_refs, live_data, id);
                     refs.release(id);
                 }
+                mark(dirty, parents, name);
                 Ok(())
             }
         }
@@ -1202,7 +1422,7 @@ impl Vfs for MemFs {
             ));
         };
         let mut guard = self.lock();
-        let Inner { live, .. } = &mut *guard;
+        let Inner { live, dirty, .. } = &mut *guard;
         let dir = dir_of_mut(live, parents, "create_dir", path)?;
         if dir.contains_key(name) {
             return Err(err(
@@ -1213,13 +1433,26 @@ impl Vfs for MemFs {
             ));
         }
         dir.insert(name.clone(), Node::Dir(BTreeMap::new()));
+        mark(dirty, parents, name);
         Ok(())
     }
 
     fn create_dir_all(&self, path: &Path) -> VfsResult<()> {
         let parts = split_path(path, "create_dir_all")?;
         let mut guard = self.lock();
-        let Inner { live, .. } = &mut *guard;
+        let Inner { live, dirty, .. } = &mut *guard;
+        // Every level this creates is a new entry in its parent.
+        let mut cur = Some(&*live);
+        for depth in 1..=parts.len() {
+            cur = match cur.and_then(|dir| dir.get(&parts[depth - 1])) {
+                Some(Node::Dir(next)) => Some(next),
+                Some(Node::File(_)) => break,
+                None => {
+                    mark(dirty, &parts[..depth - 1], &parts[depth - 1]);
+                    None
+                }
+            };
+        }
         ensure_dir(live, &parts, "create_dir_all", path)?;
         Ok(())
     }
@@ -1241,6 +1474,7 @@ impl Vfs for MemFs {
             carried,
             replaced,
             refs,
+            dirty,
             ..
         } = &mut *guard;
         let mut refs = Refs {
@@ -1265,6 +1499,8 @@ impl Vfs for MemFs {
                 if children.is_empty() {
                     dir.remove(name);
                     drop_carried_under(carried, &mut refs, &parts);
+                    mark(dirty, parents, name);
+                    dirty.remove(&parts);
                     replaced.insert(parts.clone());
                     Ok(())
                 } else {
@@ -1298,6 +1534,7 @@ impl Vfs for MemFs {
             replaced,
             refs,
             live_refs,
+            dirty,
             ..
         } = &mut *guard;
         let mut refs = Refs {
@@ -1331,7 +1568,12 @@ impl Vfs for MemFs {
                 unlink_live(live_refs, live_data, id);
                 refs.release(id);
             }
+            // Records for directories that no longer exist only cost memory.
+            for_each_dir(&mut parts.clone(), &Node::Dir(sub), &mut |dir_parts| {
+                dirty.remove(dir_parts);
+            });
         }
+        mark(dirty, parents, name);
         drop_carried_under(carried, &mut refs, &parts);
         replaced.insert(parts);
         Ok(())

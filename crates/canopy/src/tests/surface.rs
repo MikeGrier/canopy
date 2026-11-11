@@ -14,7 +14,7 @@ fn update_document_commits_a_single_document() {
     let node = name("record");
     let d = doc("record.json");
     let outcome = store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"payload")),
             &nonce("u1"),
         )
@@ -29,7 +29,7 @@ fn update_document_is_read_back_by_the_quorum_read() {
     let node = name("record");
     let d = doc("record.json");
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"v1")),
             &nonce("u1"),
         )
@@ -44,13 +44,13 @@ fn update_document_overwrites_a_prior_value_atomically() {
     let node = name("record");
     let d = doc("record.json");
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"v1")),
             &nonce("u1"),
         )
         .unwrap();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"v2")),
             &nonce("u2"),
         )
@@ -66,13 +66,13 @@ fn update_document_conditional_commits_when_the_precondition_holds() {
     let node = name("record");
     let d = doc("record.json");
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"v1")),
             &nonce("u1"),
         )
         .unwrap();
     let outcome = store
-        .update_document(
+        .update_document_as(
             Swap::conditional(node.clone(), d.clone(), body(b"v2"), body(b"v1").digest()),
             &nonce("u2"),
         )
@@ -87,13 +87,13 @@ fn update_document_conditional_rejects_on_a_digest_mismatch_and_changes_nothing(
     let node = name("record");
     let d = doc("record.json");
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"v1")),
             &nonce("u1"),
         )
         .unwrap();
     let outcome = store
-        .update_document(
+        .update_document_as(
             Swap::conditional(
                 node.clone(),
                 d.clone(),
@@ -113,7 +113,7 @@ fn update_document_conditional_rejects_when_the_document_is_absent() {
     let node = name("record");
     let d = doc("record.json");
     let outcome = store
-        .update_document(
+        .update_document_as(
             Swap::conditional(
                 node.clone(),
                 d.clone(),
@@ -142,19 +142,19 @@ fn list_documents_returns_every_committed_document_sorted() {
     let d = doc("record.json");
     // Insert in non-sorted order; the traversal returns the union sorted.
     store
-        .update_document(
+        .update_document_as(
             Swap::new(name("charlie"), d.clone(), body(b"c")),
             &nonce("u1"),
         )
         .unwrap();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(name("alpha"), d.clone(), body(b"a")),
             &nonce("u2"),
         )
         .unwrap();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(name("bravo"), d.clone(), body(b"b")),
             &nonce("u3"),
         )
@@ -181,7 +181,7 @@ fn list_documents_reflects_a_multi_document_transaction() {
         Swap::new(b.clone(), d.clone(), body(b"b")),
     ])
     .expect("distinct targets");
-    store.apply_transaction(&swaps, &nonce("t1")).unwrap();
+    store.apply_transaction_as(&swaps, &nonce("t1")).unwrap();
     assert_eq!(
         store.list_documents().unwrap(),
         vec![(a, d.clone()), (b, d)]
@@ -196,7 +196,7 @@ fn list_documents_skips_the_shire_marker_and_swept_staging() {
     // A committed update leaves the .shire marker in place and sweeps its staging tree;
     // the traversal reports only the real document, never those reserved entries.
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node.clone(), d.clone(), body(b"v1")),
             &nonce("u1"),
         )

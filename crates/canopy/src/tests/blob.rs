@@ -14,6 +14,7 @@ use crate::store::BLOB_TREE_DIR;
 mod backlog;
 mod ingest;
 mod read;
+mod scale;
 mod sweep;
 
 fn node_of(path: &str) -> NodePath {

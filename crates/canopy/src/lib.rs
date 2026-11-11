@@ -10,37 +10,37 @@
 //! hold opaque tree-structured documents that canopy replicates but never parses
 //! (D27/D54). It offers atomic single-document updates and atomic multi-document
 //! transactions (D53), N-copy quorum durability with an idempotent repair queue
-//! (D40), and a single-writer monitor (D41). It knows nothing of tickets, IDs, or
-//! dispositions -- that domain belongs to the embedding application. The crate
-//! is transport-agnostic and proto-free (D51): no gRPC, tonic, or `.proto`.
+//! (D40), and one writer at a time across every handle to a store (D41). It knows nothing
+//! of tickets, IDs, or dispositions -- that domain belongs to the embedding application.
+//! The crate is transport-agnostic and proto-free (D51): no gRPC, tonic, or `.proto`.
 //!
-//! The value types are in place -- the namespace path ([`NodePath`]), the opaque
-//! document body ([`DocumentBody`]), and the transaction shape ([`SwapSet`]) -- over an
-//! on-disk layout ([`Store::init`] / [`Store::open`] above the `.shire` marker) that keeps
-//! content-verified blobs and the namespace of pointers naming them in separately
-//! replicated trees (`D314`..`D316`, `D337`). A document is written whole by
-//! [`Store::write_document_replicated`], which stages and atomically renames each replica
-//! under a caller-supplied [`Nonce`] (D40/D8), and read by [`Store::read_document`]: the
-//! namespace quorum names a blob and the blob is verified against the digest in its own
-//! name, so a bad copy is identified rather than outvoted (`D316`, `D320`). All writes funnel
-//! through the single-writer [`WriteMonitor`] actor, which applies a caller-supplied
-//! read-modify-write [`transform`](WriteMonitor::transform) (no lost update) or a
-//! compare-and-set (D41/D54, LAY-5) while reads bypass it lock-free. The batch sibling of
-//! the read is [`scrub_content`](Store::scrub_content), which walks the namespace and
-//! repairs from a verified copy (`D331`).
-//! The D53 transaction commit begins with its journal: an append-only NDJSON commit
-//! log at the store root records `begin`/`prepare`/`end` records, each a self-delimited
-//! line so a torn final append is discarded on read (TXN-1). The two-phase apply path
-//! ([`apply_transaction`](Store::apply_transaction), TXN-2), its quiescence truncation,
-//! and the open-time recovery replay (TXN-4) that drive it are in place.
+//! A store is created with [`Store::init`] or opened with [`Store::open`], each taking
+//! [`StoreOptions`] that supply the [`NonceSource`] every write draws its [`Nonce`] from
+//! (`random-nonce` enables a ready-made random source). Content-verified blobs and the
+//! namespace of pointers naming them are kept in separately replicated trees
+//! (`D314`..`D316`, `D337`). A read ([`Store::read_document`]) takes the namespace quorum's
+//! blob and verifies it against the digest in its own name, so a bad copy is identified
+//! rather than outvoted (`D316`, `D320`). Reads take no lock; writes take turns at the
+//! store's writer gate.
 //!
-//! The generic store surface an embedding application binds to (D54, TXN-6) is:
-//! atomic single-document update ([`update_document`](Store::update_document), the
-//! one-element swap set), atomic multi-document transaction
-//! ([`apply_transaction`](Store::apply_transaction), a swap set applied all-or-nothing),
-//! content-verified read of a named document ([`read_document`](Store::read_document)),
-//! and namespace traversal ([`list_documents`](Store::list_documents)). Anything
-//! domain-specific belongs to the embedding application, layered on top.
+//! The surface an embedding application binds to (D54):
+//!
+//! - **Logged writes**, journaled to the commit log and applied all-or-nothing:
+//!   [`update_document`](Store::update_document), [`apply_transaction`](Store::apply_transaction),
+//!   the read-modify-write [`transform`](Store::transform) (no lost update), and
+//!   [`plan_and_apply`](Store::plan_and_apply), which plans swaps from what it reads and
+//!   commits them with the writer gate held from the plan to the commit. Each reports the
+//!   nonce it used in a [`Commit`].
+//! - **The unlogged write** [`write_document_replicated`](Store::write_document_replicated)
+//!   (`D332`).
+//! - **Reads**: [`read_document`](Store::read_document), [`list_children`](Store::list_children),
+//!   [`list_documents`](Store::list_documents), and the optimistic
+//!   [`snapshot`](Store::snapshot), which re-runs a read until no write disturbed it.
+//! - **Maintenance**: [`scrub_content`](Store::scrub_content),
+//!   [`repair_reported_damage`](Store::repair_reported_damage), [`quiesce`](Store::quiesce),
+//!   and the change feed installed by [`observe`](Store::observe).
+//!
+//! Anything domain-specific belongs to the embedding application, layered on top.
 //!
 //! # What canopy asks of whoever embeds it (`D340`)
 //!
@@ -56,32 +56,44 @@
 //! no business owning a thread for maintenance (`D61`), so the cadence is yours to pick
 //! and yours to keep; advising you of it is the most a library can do, and is therefore
 //! something it must do.
+//!
+//! **Put the store root on a local filesystem.** Network filesystems -- SMB/CIFS shares
+//! (including mapped network drives), NFS mounts, and other remote or distributed
+//! filesystems -- are not supported. canopy's guarantees rest on the local operating system's
+//! lock, rename and fsync behaviour, which they do not reliably provide, and canopy neither
+//! detects nor refuses a networked root: one may appear to work while losing writes or
+//! corrupting the store.
 
 #![warn(unnameable_types)]
 
 mod body;
 mod commit_log;
-mod monitor;
+mod feed;
 mod name;
 mod naming;
 mod pointer;
+#[cfg(any(feature = "random-nonce", test))]
+mod random;
 mod read;
 mod store;
 mod transaction;
 
 pub use body::{ContentDigest, DocumentBody};
 pub use commit_log::CommitLogError;
-pub use monitor::{CommitObserver, MonitorError, NonceSource, WriteMonitor, WriteOutcome};
+pub use feed::{CommitObserver, NonceSource};
 pub use name::{DocumentName, DocumentNameError, NodePath, NodePathError, Nonce, NonceError};
 pub use naming::{Artifact, BlobName, BlobNameError, BlobRef, PathHash};
 pub use pointer::{Pointer, PointerError};
+#[cfg(feature = "random-nonce")]
+pub use random::{random_nonce, random_nonce_source};
 pub use read::{Contended, Contention, Read, read_once, read_settled, read_within};
 pub use store::{
-    BacklogRepairReport, BlobRead, BlobVerification, Children, ContentScrubReport,
+    BacklogRepairReport, BlobRead, BlobVerification, Children, Commit, ContentScrubReport,
     DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT, DEFAULT_SHARD_WIDTH,
     GENESIS_FORMAT_VERSION, GenesisConfig, LOCK_NAME, MARKER_NAME, MAX_REPLICA_COUNT,
     MAX_SHARD_WIDTH, PointerRead, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RejectedPrecondition,
-    RepairOutcome, ShireId, Store, StoreError, TransactionOutcome,
+    RepairOutcome, SNAPSHOT_ATTEMPTS, ShireId, Store, StoreError, StoreOptions, StoreView,
+    TransactionOutcome,
 };
 pub use transaction::{Effect, Precondition, Swap, SwapSet, SwapSetError};
 

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use acadia::{MemFs, Vfs};
 use canopy::{
     DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, QUARANTINE_LIMIT, ShireId, Store,
-    Swap, SwapSet, WriteMonitor,
+    StoreOptions, Swap, SwapSet,
 };
 
 fn node() -> NodePath {
@@ -31,8 +31,13 @@ fn doc() -> DocumentName {
     DocumentName::new("record.json").unwrap()
 }
 
-fn nonce(tag: &str) -> Nonce {
-    Nonce::new(tag).unwrap()
+/// A distinct nonce per call, which is all a write or a repair needs of one (`D61`).
+fn counting_nonces() -> impl FnMut() -> Nonce + Send + 'static {
+    let mut issued = 0u32;
+    move || {
+        issued += 1;
+        Nonce::new(&format!("M{issued}")).unwrap()
+    }
 }
 
 /// A store holding one committed document, plus the backend for raw corruption.
@@ -44,17 +49,15 @@ fn seeded(text: &str) -> (Arc<dyn Vfs>, Store) {
         vfs.clone(),
         root,
         GenesisConfig::new(ShireId::new("cvs18-shire").unwrap(), 3),
+        StoreOptions::with_nonce_source(counting_nonces()),
     )
     .expect("init");
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::new(
-                node(),
-                doc(),
-                DocumentBody::new(text.as_bytes().to_vec()),
-            )),
-            &nonce("SEED"),
-        )
+        .apply_transaction(&SwapSet::single(Swap::new(
+            node(),
+            doc(),
+            DocumentBody::new(text.as_bytes().to_vec()),
+        )))
         .expect("the seed commits");
     (vfs, store)
 }
@@ -123,9 +126,7 @@ fn a_repair_rebuilds_from_the_one_intact_copy_even_when_the_majority_is_corrupt(
             .unwrap();
     }
 
-    let report = store
-        .scrub_content(|| nonce("R1"))
-        .expect("the scrub completes");
+    let (report, _) = store.scrub_content().expect("the scrub completes");
 
     assert_eq!(report.documents(), 1);
     assert_eq!(
@@ -159,7 +160,7 @@ fn a_repair_keeps_the_corrupt_bytes_before_replacing_them() {
     let corrupt = b"garbage that must be kept".to_vec();
     vfs.write(&blob_path(&store, 1), &corrupt).unwrap();
 
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
 
     let (_, outcome) = &report.blob_repairs()[0];
     assert_eq!(outcome.replaced(), &[1]);
@@ -184,7 +185,7 @@ fn a_missing_replica_is_rebuilt_and_nothing_is_sequestered() {
     let (vfs, store) = seeded("the real body");
     vfs.remove_file(&blob_path(&store, 2)).unwrap();
 
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
     let (_, outcome) = &report.blob_repairs()[0];
 
     assert_eq!(outcome.replaced(), &[2]);
@@ -200,7 +201,7 @@ fn a_blob_whose_every_copy_is_corrupt_is_reported_rather_than_guessed() {
         vfs.write(&blob_path(&store, index), b"all gone").unwrap();
     }
 
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
 
     assert!(report.blob_repairs().is_empty());
     assert_eq!(
@@ -222,7 +223,7 @@ fn an_unparseable_pointer_replica_is_rebuilt_and_kept() {
     let garbage = b"this is not a pointer".to_vec();
     vfs.write(&pointer_path(&store, 2), &garbage).unwrap();
 
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
 
     let (subject, outcome) = &report.pointer_repairs()[0];
     assert!(subject.contains("RECORD.JSON"));
@@ -251,10 +252,11 @@ fn a_stale_pointer_replica_is_left_exactly_as_it_is() {
     let stale = vfs.read(&pointer_path(&store, 2)).unwrap();
 
     store
-        .apply_transaction(
-            &SwapSet::single(Swap::new(node(), doc(), DocumentBody::new(b"v2".to_vec()))),
-            &nonce("T2"),
-        )
+        .apply_transaction(&SwapSet::single(Swap::new(
+            node(),
+            doc(),
+            DocumentBody::new(b"v2".to_vec()),
+        )))
         .expect("the second write commits");
 
     // Put the old, still-valid pointer back on one replica.
@@ -262,7 +264,7 @@ fn a_stale_pointer_replica_is_left_exactly_as_it_is() {
     let read = store.read_pointer(&node(), &doc()).expect("a pointer");
     assert_eq!(read.stale(), &[2], "the fixture did not create staleness");
 
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
 
     assert!(
         report.pointer_repairs().is_empty(),
@@ -286,8 +288,8 @@ fn a_stale_pointer_replica_is_left_exactly_as_it_is() {
     // else wrong, the scrub never calls the repair at all, so the assertions above would pass
     // against a repair that happily rewrites stale replicas. Drive it directly to pin the
     // rule where it actually is.
-    let outcome = store
-        .repair_pointer(&node(), &doc(), &read, &nonce("R2"))
+    let (outcome, _) = store
+        .repair_pointer(&node(), &doc(), &read)
         .expect("repair");
     assert!(
         outcome.is_noop(),
@@ -347,9 +349,7 @@ fn a_read_reports_damage_and_the_drain_repairs_more_than_the_read_examined() {
         "the read reported the blob it found damaged"
     );
 
-    let report = store
-        .repair_reported_damage(|| nonce("R1"))
-        .expect("the drain repairs");
+    let (report, _) = store.repair_reported_damage().expect("the drain repairs");
     assert_eq!(store.repair_backlog(), (0, 0), "the drain emptied it");
     assert_eq!(report.examined(), 1);
 
@@ -396,7 +396,7 @@ fn a_full_quarantine_still_repairs_and_says_what_it_dropped() {
     }
 
     vfs.write(&blob_path(&store, 1), b"garbage").unwrap();
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
     let (_, outcome) = &report.blob_repairs()[0];
 
     assert_eq!(outcome.replaced(), &[1], "the repair must still happen");
@@ -424,22 +424,13 @@ fn a_healthy_store_scrubs_clean_and_changes_nothing() {
         .map(|i| vfs.read(&blob_path(&store, i)).unwrap())
         .collect();
 
-    let report = store.scrub_content(|| nonce("R1")).expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub");
 
     assert!(report.is_clean(), "a healthy store reported work to do");
     assert_eq!(report.documents(), 1);
     assert_eq!(report.whole(), 1);
     for (index, bytes) in before.iter().enumerate() {
         assert_eq!(&vfs.read(&blob_path(&store, index)).unwrap(), bytes);
-    }
-}
-
-/// A distinct nonce per call, which is all a repair needs of one (`D61`).
-fn counting_nonces() -> impl FnMut() -> Nonce + Send + 'static {
-    let mut issued = 0u32;
-    move || {
-        issued += 1;
-        Nonce::new(&format!("M{issued}")).unwrap()
     }
 }
 
@@ -460,10 +451,10 @@ fn rot_the_preferred_replica(vfs: &Arc<dyn Vfs>, store: &Store) -> usize {
 }
 
 #[test]
-fn the_monitor_repairs_reported_damage_when_asked() {
+fn the_store_repairs_reported_damage_when_asked() {
     // `D317` argued that rotation makes every read a probe. This is the other half of that
-    // argument: something acts on what the probe finds, and under `D339` it is the writer,
-    // because repairing needs the nonce only the writer holds (`D61`).
+    // argument: something acts on what the probe finds, and under `D339` it is a writer,
+    // because repairing is a write and needs a nonce.
     let (vfs, store) = seeded("the real body");
     let rotted = rot_the_preferred_replica(&vfs, &store);
 
@@ -477,10 +468,8 @@ fn the_monitor_repairs_reported_damage_when_asked() {
         "and repaired nothing itself -- a read never writes"
     );
 
-    let monitor = WriteMonitor::spawn(store.clone(), counting_nonces()).expect("spawn");
-    let report = monitor
-        .repair_reported_damage()
-        .expect("the monitor repairs");
+    let (report, nonces) = store.repair_reported_damage().expect("the drain repairs");
+    assert_eq!(nonces.len(), 1, "one repair, under one nonce");
 
     assert_eq!(report.examined(), 1);
     assert_eq!(report.repairs().len(), 1);
@@ -489,43 +478,4 @@ fn the_monitor_repairs_reported_damage_when_asked() {
         b"the real body".to_vec()
     );
     assert_eq!(store.repair_backlog(), (0, 0));
-}
-
-#[test]
-fn a_monitor_that_falls_idle_repairs_without_being_asked() {
-    // The point of `D339`: no scheduler is required for a store that takes writes. The actor
-    // drains the backlog whenever it runs out of queued work, so a rotted replica is rebuilt
-    // shortly after a read notices it rather than at the next whole-store scrub.
-    let (vfs, store) = seeded("the real body");
-    let rotted = rot_the_preferred_replica(&vfs, &store);
-
-    store
-        .read_document(node(), &doc())
-        .expect("the read serves");
-    assert_eq!(store.repair_backlog().0, 1);
-
-    let monitor = WriteMonitor::spawn(store.clone(), counting_nonces()).expect("spawn");
-    // A write to a *different* document, so the blob under repair is not itself replaced and
-    // then collected (`D328`) out from under the drain.
-    monitor
-        .write(
-            node(),
-            DocumentName::new("unrelated.json").unwrap(),
-            DocumentBody::new(b"something else".to_vec()),
-        )
-        .expect("the write commits");
-
-    // The drain deliberately runs *after* the write's reply is delivered, so that a repair is
-    // never charged to a caller's latency -- which also means it is not ordered against this
-    // thread. Wait on the repaired bytes rather than on the backlog being empty: the drain
-    // takes the whole backlog up front, so the count reaches zero when the repair *starts*.
-    let repaired = b"the real body".to_vec();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while vfs.read(&blob_path(&store, rotted)).unwrap() != repaired {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the idle monitor never rebuilt the replica the read reported"
-        );
-        test_timers::thread::sleep(std::time::Duration::from_millis(10));
-    }
 }

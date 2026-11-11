@@ -25,7 +25,7 @@ impl Store {
     /// seam the transaction uses, and `D327` is what orders it after the blob it names is
     /// durable -- the reverse order leaves a **dangling pointer**, which `D315` notes
     /// nothing in the store detects or repairs.
-    pub fn write_pointer(
+    pub(crate) fn write_pointer(
         &self,
         node: &NodePath,
         document: &DocumentName,

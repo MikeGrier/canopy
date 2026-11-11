@@ -5,12 +5,15 @@
 
 use super::*;
 
-/// Seeds a committed document through the transactional path.
+/// Seeds a committed document through the transactional path, under a nonce no other seed
+/// uses: the commit log refuses a transaction id it already holds.
 fn seed_committed(store: &Store, node: &NodePath, document: &DocumentName, bytes: &[u8]) {
+    static SEEDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seed = SEEDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::new(node, document.clone(), body(bytes))),
-            &nonce("seed"),
+            &nonce(&format!("seed{seed}")),
         )
         .expect("seed");
 }
@@ -66,7 +69,7 @@ fn a_committed_removal_deletes_the_document() {
     seed_committed(&store, &node, &d, b"v1");
 
     let outcome = store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, d.clone())),
             &nonce("t1"),
         )
@@ -83,7 +86,7 @@ fn removing_an_absent_document_succeeds() {
     // `end` unrecoverable.
     let (_vfs, store) = fresh_store();
     let outcome = store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(name("record"), doc("record.json"))),
             &nonce("t1"),
         )
@@ -101,7 +104,7 @@ fn a_removal_is_idempotent_when_applied_twice() {
     for txn in ["t1", "t2"] {
         assert_eq!(
             store
-                .apply_transaction(
+                .apply_transaction_as(
                     &SwapSet::single(Swap::remove(&node, d.clone())),
                     &nonce(txn)
                 )
@@ -120,7 +123,7 @@ fn a_removal_leaves_its_siblings_at_the_same_node() {
     seed_committed(&store, &node, &doc("engine"), b"gone");
 
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, doc("engine"))),
             &nonce("t1"),
         )
@@ -142,7 +145,7 @@ fn a_removal_leaves_the_node_behind() {
     seed_committed(&store, &node, &doc("record"), b"v1");
 
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(&node, doc("record"))),
             &nonce("t1"),
         )
@@ -168,7 +171,7 @@ fn a_removed_document_disappears_from_the_traversal() {
     seed_committed(&store, &name("a"), &doc("drop"), b"v1");
 
     store
-        .apply_transaction(
+        .apply_transaction_as(
             &SwapSet::single(Swap::remove(name("a"), doc("drop"))),
             &nonce("t1"),
         )
@@ -199,7 +202,7 @@ fn a_write_and_a_removal_land_together_in_one_transaction() {
     ])
     .expect("distinct targets");
     assert_eq!(
-        store.apply_transaction(&swaps, &nonce("t1")).unwrap(),
+        store.apply_transaction_as(&swaps, &nonce("t1")).unwrap(),
         TransactionOutcome::Committed
     );
 
@@ -231,7 +234,7 @@ fn a_rejected_precondition_anywhere_leaves_the_removal_undone() {
 
     assert!(
         store
-            .apply_transaction(&swaps, &nonce("t1"))
+            .apply_transaction_as(&swaps, &nonce("t1"))
             .unwrap()
             .is_rejected()
     );
@@ -257,7 +260,7 @@ fn a_conditional_removal_applies_when_the_digest_matches() {
         body(b"v1").digest(),
     ));
     assert_eq!(
-        store.apply_transaction(&swaps, &nonce("t1")).unwrap(),
+        store.apply_transaction_as(&swaps, &nonce("t1")).unwrap(),
         TransactionOutcome::Committed
     );
     assert_eq!(store.read_body(&node, &d).unwrap(), None);
@@ -276,7 +279,7 @@ fn a_conditional_removal_is_rejected_on_a_stale_digest() {
         d.clone(),
         body(b"v1").digest(),
     ));
-    match store.apply_transaction(&swaps, &nonce("t1")).unwrap() {
+    match store.apply_transaction_as(&swaps, &nonce("t1")).unwrap() {
         TransactionOutcome::Rejected {
             expected, current, ..
         } => {
@@ -306,7 +309,7 @@ fn a_conditional_removal_of_an_absent_document_is_rejected() {
         doc("record.json"),
         body(b"v1").digest(),
     ));
-    match store.apply_transaction(&swaps, &nonce("t1")).unwrap() {
+    match store.apply_transaction_as(&swaps, &nonce("t1")).unwrap() {
         TransactionOutcome::Rejected { current, .. } => assert_eq!(current, None),
         other => panic!("expected a rejection, got {other:?}"),
     }

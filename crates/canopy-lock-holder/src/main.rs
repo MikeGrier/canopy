@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use acadia::{OsFs, Vfs};
-use canopy::Store;
+use canopy::{Store, StoreOptions};
 
 #[cfg(test)]
 mod tests;
@@ -62,8 +62,9 @@ fn main() -> ExitCode {
 
     let vfs: Arc<dyn Vfs> = Arc::new(OsFs::new());
     // Bound to `_store`, never dropped: holding the handle is the entire job, and the
-    // parent kills this process rather than letting it unwind.
-    let _store = match Store::open(vfs, root) {
+    // parent kills this process rather than letting it unwind. It never writes, so it needs
+    // no nonce source.
+    let _store = match Store::open(vfs, root, StoreOptions::without_nonce_source()) {
         Ok(store) => store,
         Err(e) => return report.fail(format_args!("open failed: {e}")),
     };

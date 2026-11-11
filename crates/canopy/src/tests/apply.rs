@@ -15,7 +15,9 @@ fn single_document_transaction_commits() {
     let node = name("record");
     let d = doc("record.json");
     let swaps = SwapSet::single(Swap::new(node.clone(), d.clone(), body(b"payload")));
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(outcome, TransactionOutcome::Committed);
     assert!(outcome.is_committed());
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"payload")));
@@ -36,11 +38,11 @@ fn a_non_not_found_staged_rename_error_is_propagated() {
     let fault: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let root = PathBuf::from("shire");
     fault.create_dir_all(&root).unwrap();
-    let store = Store::init(fault, root, test_config()).unwrap();
+    let store = Store::init_unsourced(fault, root, test_config()).unwrap();
     gate.open();
 
     let swaps = SwapSet::single(Swap::new(name("record"), doc("record.json"), body(b"x")));
-    match store.apply_transaction(&swaps, &nonce("apply1")) {
+    match store.apply_transaction_as(&swaps, &nonce("apply1")) {
         Err(StoreError::Vfs(error)) => assert_eq!(error.kind(), VfsErrorKind::Other),
         other => panic!("expected Vfs(Other), got {other:?}"),
     }
@@ -64,11 +66,11 @@ fn transaction_propagates_staging_tree_cleanup_errors() {
     );
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs, root, test_config()).unwrap();
+    let store = Store::init_unsourced(vfs, root, test_config()).unwrap();
     gate.open();
 
     let swaps = SwapSet::single(Swap::new(name("record"), doc("record.json"), body(b"x")));
-    match store.apply_transaction(&swaps, &nonce("apply1")) {
+    match store.apply_transaction_as(&swaps, &nonce("apply1")) {
         Err(StoreError::Vfs(error)) => assert_eq!(error.kind(), VfsErrorKind::Other),
         other => panic!("expected Vfs(Other), got {other:?}"),
     }
@@ -87,7 +89,7 @@ fn recovery_does_not_tolerate_non_not_found_rename_errors() {
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let root = PathBuf::from("shire");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs.clone(), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).unwrap();
     let txn = nonce("recover-rename");
     let swaps = SwapSet::single(Swap::new(
         name("record"),
@@ -106,7 +108,7 @@ fn recovery_does_not_tolerate_non_not_found_rename_errors() {
     drop(store);
     gate.open();
 
-    match Store::open(vfs, root) {
+    match Store::open_unsourced(vfs, root) {
         Err(StoreError::Vfs(error)) => assert_eq!(error.kind(), VfsErrorKind::Other),
         other => panic!("expected rename Vfs(Other), got {other:?}"),
     }
@@ -116,7 +118,9 @@ fn recovery_does_not_tolerate_non_not_found_rename_errors() {
 fn a_committed_transaction_logs_begin_prepare_end() {
     let (_vfs, store) = fresh_store();
     let swaps = SwapSet::single(Swap::new(name("record"), doc("record.json"), body(b"x")));
-    store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     let records = store.commit_log().read().unwrap();
     assert!(
         matches!(records.as_slice(),
@@ -140,7 +144,9 @@ fn a_multi_document_transaction_commits_every_target() {
         Swap::new(name("bravo"), doc("record.json"), body(b"b-record")),
     ])
     .expect("distinct targets");
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(outcome, TransactionOutcome::Committed);
     assert_eq!(
         store.read_body(name("alpha"), &doc("record.json")).unwrap(),
@@ -160,7 +166,7 @@ fn a_multi_document_transaction_commits_every_target() {
 fn an_empty_transaction_is_a_vacuous_commit() {
     let (_vfs, store) = fresh_store();
     let outcome = store
-        .apply_transaction(&SwapSet::new([]).unwrap(), &nonce("apply1"))
+        .apply_transaction_as(&SwapSet::new([]).unwrap(), &nonce("apply1"))
         .unwrap();
     assert_eq!(outcome, TransactionOutcome::Committed);
     // The log still brackets the (empty) transaction.
@@ -174,7 +180,7 @@ fn a_conditional_swap_commits_when_its_precondition_holds() {
     let node = name("record");
     let d = doc("record.json");
     store
-        .write_document_replicated(&node, &d, &body(b"old"), &nonce("seed"))
+        .write_document_replicated_as(&node, &d, &body(b"old"), &nonce("seed"))
         .unwrap();
     let swaps = SwapSet::single(Swap::conditional(
         node.clone(),
@@ -182,7 +188,9 @@ fn a_conditional_swap_commits_when_its_precondition_holds() {
         body(b"new"),
         body(b"old").digest(),
     ));
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(outcome, TransactionOutcome::Committed);
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"new")));
 }
@@ -193,7 +201,7 @@ fn a_conditional_swap_rejects_the_whole_transaction_when_its_precondition_fails(
     let node = name("record");
     let d = doc("record.json");
     store
-        .write_document_replicated(&node, &d, &body(b"actual"), &nonce("seed"))
+        .write_document_replicated_as(&node, &d, &body(b"actual"), &nonce("seed"))
         .unwrap();
     // A second, unconditional swap that must NOT land because the transaction is
     // rejected atomically.
@@ -207,7 +215,9 @@ fn a_conditional_swap_rejects_the_whole_transaction_when_its_precondition_fails(
         Swap::new(name("other"), doc("record.json"), body(b"other")),
     ])
     .expect("distinct targets");
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
@@ -236,7 +246,9 @@ fn a_conditional_swap_on_an_absent_document_rejects_with_no_current() {
         body(b"new"),
         body(b"expected").digest(),
     ));
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
@@ -258,7 +270,9 @@ fn a_conditional_absent_swap_creates_a_document_that_does_not_yet_exist() {
         d.clone(),
         body(b"created"),
     ));
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(outcome, TransactionOutcome::Committed);
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"created")));
 }
@@ -269,7 +283,7 @@ fn a_conditional_absent_swap_rejects_when_the_document_already_exists() {
     let node = name("record");
     let d = doc("engine");
     store
-        .write_document_replicated(&node, &d, &body(b"present"), &nonce("seed"))
+        .write_document_replicated_as(&node, &d, &body(b"present"), &nonce("seed"))
         .unwrap();
     // A second, unconditional swap that must NOT land because the transaction is
     // rejected atomically on the absent-precondition miss.
@@ -278,7 +292,9 @@ fn a_conditional_absent_swap_rejects_when_the_document_already_exists() {
         Swap::new(name("other"), doc("record.json"), body(b"other")),
     ])
     .expect("distinct targets");
-    let outcome = store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
@@ -308,7 +324,9 @@ fn a_prepare_record_names_every_target_by_digest_and_carries_no_body() {
         Swap::new(name("bravo"), doc("record.json"), body(b"b")),
     ])
     .expect("distinct targets");
-    store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     let records = store.commit_log().read().unwrap();
     let prepare = records
         .iter()
@@ -337,7 +355,9 @@ fn a_prepare_record_names_every_target_by_digest_and_carries_no_body() {
 fn a_committed_transaction_sweeps_its_staging() {
     let (vfs, store) = fresh_store();
     let swaps = SwapSet::single(Swap::new(name("record"), doc("record.json"), body(b"x")));
-    store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     for index in 0..store.pointer_replica_count() {
         assert!(
             !staging_exists(&vfs, &store, index, &nonce("apply1")),
@@ -357,9 +377,13 @@ fn re_applying_a_committed_transaction_is_a_safe_no_op() {
     let node = name("record");
     let d = doc("record.json");
     let swaps = SwapSet::single(Swap::new(node.clone(), d.clone(), body(b"payload")));
-    store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     // Applying the same swap set again (same body) is a repeatable no-op change.
-    let outcome = store.apply_transaction(&swaps, &nonce("apply2")).unwrap();
+    let outcome = store
+        .apply_transaction_as(&swaps, &nonce("apply2"))
+        .unwrap();
     assert_eq!(outcome, TransactionOutcome::Committed);
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"payload")));
 }
@@ -370,10 +394,12 @@ fn a_transaction_overwrites_an_existing_document() {
     let node = name("record");
     let d = doc("record.json");
     store
-        .write_document_replicated(&node, &d, &body(b"first"), &nonce("seed"))
+        .write_document_replicated_as(&node, &d, &body(b"first"), &nonce("seed"))
         .unwrap();
     let swaps = SwapSet::single(Swap::new(node.clone(), d.clone(), body(b"second")));
-    store.apply_transaction(&swaps, &nonce("apply1")).unwrap();
+    store
+        .apply_transaction_as(&swaps, &nonce("apply1"))
+        .unwrap();
     let read = store.read_body(&node, &d).unwrap();
     assert_eq!(read, Some(body(b"second")));
 }
@@ -388,7 +414,7 @@ fn node(raw: &str) -> NodePath {
 fn a_document_over_an_existing_child_node_is_refused_before_prepare() {
     let (vfs, store) = fresh_store();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node("parent/child"), doc("leaf"), body(b"x")),
             &nonce("t1"),
         )
@@ -396,7 +422,7 @@ fn a_document_over_an_existing_child_node_is_refused_before_prepare() {
     store.quiesce_commit_log().unwrap();
 
     let refused = store
-        .update_document(
+        .update_document_as(
             Swap::new(node("parent"), doc("child"), body(b"y")),
             &nonce("t2"),
         )
@@ -413,7 +439,7 @@ fn a_document_over_an_existing_child_node_is_refused_before_prepare() {
 fn a_node_under_an_existing_document_is_refused_before_prepare() {
     let (vfs, store) = fresh_store();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node("parent"), doc("child"), body(b"x")),
             &nonce("t1"),
         )
@@ -421,7 +447,7 @@ fn a_node_under_an_existing_document_is_refused_before_prepare() {
     store.quiesce_commit_log().unwrap();
 
     let refused = store
-        .update_document(
+        .update_document_as(
             Swap::new(node("parent/child"), doc("leaf"), body(b"y")),
             &nonce("t2"),
         )
@@ -444,7 +470,7 @@ fn colliding_writes_within_one_set_are_refused_before_prepare() {
     .unwrap();
 
     let refused = store
-        .apply_transaction(&swaps, &nonce("t1"))
+        .apply_transaction_as(&swaps, &nonce("t1"))
         .expect_err("the set contradicts itself");
     assert!(
         matches!(refused, StoreError::NameIsChildNode { .. }),
@@ -472,7 +498,7 @@ fn a_write_at_a_removed_node_path_is_refused_before_prepare() {
     .expect("construction cannot see that the write's entry is the removed node");
 
     let refused = store
-        .apply_transaction(&swaps, &nonce("t1"))
+        .apply_transaction_as(&swaps, &nonce("t1"))
         .expect_err("the write and the removal contradict each other");
     assert!(
         matches!(refused, StoreError::NameIsChildNode { ref path, ref name }
@@ -481,7 +507,7 @@ fn a_write_at_a_removed_node_path_is_refused_before_prepare() {
     );
     assert!(store.commit_log().read().unwrap().is_empty());
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node("a"), doc("other"), body(b"after")),
             &nonce("t2"),
         )
@@ -504,7 +530,7 @@ fn a_write_above_a_removed_node_is_refused_before_prepare() {
         .unwrap();
 
         let refused = store
-            .apply_transaction(&swaps, &nonce("t1"))
+            .apply_transaction_as(&swaps, &nonce("t1"))
             .expect_err("the write puts a file above the removed node");
         assert!(
             matches!(refused, StoreError::NameIsChildNode { .. }),
@@ -522,13 +548,13 @@ fn removing_a_node_at_or_beneath_an_existing_document_is_refused_before_prepare(
     for removed in ["a/b", "a/b/c", "a/b/c/d"] {
         let (vfs, store) = fresh_store();
         store
-            .update_document(Swap::new(node("a"), doc("b"), body(b"doc")), &nonce("t1"))
+            .update_document_as(Swap::new(node("a"), doc("b"), body(b"doc")), &nonce("t1"))
             .unwrap();
         store.quiesce_commit_log().unwrap();
         let swaps = SwapSet::with_node_removals([], [node(removed)]).unwrap();
 
         let refused = store
-            .apply_transaction(&swaps, &nonce("t2"))
+            .apply_transaction_as(&swaps, &nonce("t2"))
             .expect_err("a document is not a node");
         assert!(
             matches!(refused, StoreError::PathIsDocument { ref path } if path.to_string() == "A/B"),
@@ -536,7 +562,7 @@ fn removing_a_node_at_or_beneath_an_existing_document_is_refused_before_prepare(
         );
         assert!(store.commit_log().read().unwrap().is_empty(), "{removed}");
         store
-            .update_document(Swap::new(node("a"), doc("c"), body(b"after")), &nonce("t3"))
+            .update_document_as(Swap::new(node("a"), doc("c"), body(b"after")), &nonce("t3"))
             .expect("the refusal did not fence the store");
         let reopened = reopen(&vfs, store).expect("the store reopens after a refused removal");
         assert_ne!(
@@ -550,11 +576,11 @@ fn removing_a_node_at_or_beneath_an_existing_document_is_refused_before_prepare(
 fn removing_an_absent_node_beside_a_document_still_commits() {
     let (_vfs, store) = fresh_store();
     store
-        .update_document(Swap::new(node("a"), doc("b"), body(b"doc")), &nonce("t1"))
+        .update_document_as(Swap::new(node("a"), doc("b"), body(b"doc")), &nonce("t1"))
         .unwrap();
     let swaps = SwapSet::with_node_removals([], [node("a/bx/c")]).unwrap();
     assert_eq!(
-        store.apply_transaction(&swaps, &nonce("t2")).unwrap(),
+        store.apply_transaction_as(&swaps, &nonce("t2")).unwrap(),
         TransactionOutcome::Committed
     );
 }
@@ -565,7 +591,7 @@ fn a_write_beside_a_removed_node_still_commits() {
     // is the removed node, or one of its ancestors, collides.
     let (vfs, store) = fresh_store();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(node("a/b"), doc("leaf"), body(b"x")),
             &nonce("seed"),
         )
@@ -581,7 +607,7 @@ fn a_write_beside_a_removed_node_still_commits() {
     .unwrap();
 
     assert_eq!(
-        store.apply_transaction(&swaps, &nonce("t1")).unwrap(),
+        store.apply_transaction_as(&swaps, &nonce("t1")).unwrap(),
         TransactionOutcome::Committed
     );
     let reopened = reopen(&vfs, store).unwrap();
@@ -601,7 +627,7 @@ fn sibling_writes_that_only_share_a_prefix_are_not_collisions() {
     .unwrap();
     assert!(
         store
-            .apply_transaction(&swaps, &nonce("t1"))
+            .apply_transaction_as(&swaps, &nonce("t1"))
             .unwrap()
             .is_committed()
     );

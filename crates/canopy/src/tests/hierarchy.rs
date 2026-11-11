@@ -15,7 +15,7 @@ use super::*;
 fn documents_at_different_depths_are_independent() {
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets"),
             &doc("marker"),
             &body(b"parent"),
@@ -23,7 +23,7 @@ fn documents_at_different_depths_are_independent() {
         )
         .expect("write parent");
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("marker"),
             &body(b"child"),
@@ -49,10 +49,10 @@ fn sibling_paths_do_not_collide_even_when_one_name_prefixes_another() {
     // unrelated nodes, and a document at one must not be visible at the other.
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(name("tickets"), &doc("record"), &body(b"a"), &nonce("h3"))
+        .write_document_replicated_as(name("tickets"), &doc("record"), &body(b"a"), &nonce("h3"))
         .expect("write");
     store
-        .write_document_replicated(name("ticketsx"), &doc("record"), &body(b"b"), &nonce("h4"))
+        .write_document_replicated_as(name("ticketsx"), &doc("record"), &body(b"b"), &nonce("h4"))
         .expect("write");
 
     assert_eq!(
@@ -70,7 +70,7 @@ fn a_deep_path_round_trips_through_the_replicated_write() {
     let (_vfs, store) = fresh_store();
     let deep = name("a/b/c/d/e/f/g/h");
     store
-        .write_document_replicated(&deep, &doc("record"), &body(b"deep"), &nonce("txn1"))
+        .write_document_replicated_as(&deep, &doc("record"), &body(b"deep"), &nonce("txn1"))
         .expect("replicated write");
 
     assert_eq!(
@@ -86,7 +86,7 @@ fn a_document_cannot_take_a_name_a_child_node_already_holds() {
     // `D222`: a name at a path is either a document or a child node, never both.
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("record"),
             &body(b"child"),
@@ -96,7 +96,7 @@ fn a_document_cannot_take_a_name_a_child_node_already_holds() {
 
     // `AB` is now a directory under `TICKETS`, so a document of that name is refused.
     let err = store
-        .write_document_replicated(name("tickets"), &doc("ab"), &body(b"x"), &nonce("h6"))
+        .write_document_replicated_as(name("tickets"), &doc("ab"), &body(b"x"), &nonce("h6"))
         .expect_err("a child node's name is taken");
     match err {
         StoreError::NameIsChildNode { path, name } => {
@@ -111,7 +111,7 @@ fn a_document_cannot_take_a_name_a_child_node_already_holds() {
 fn a_path_cannot_descend_through_a_document() {
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets"),
             &doc("ab"),
             &body(b"a document"),
@@ -120,7 +120,7 @@ fn a_path_cannot_descend_through_a_document() {
         .expect("write document");
 
     let err = store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("record"),
             &body(b"x"),
@@ -139,11 +139,11 @@ fn a_collision_reports_the_shallowest_offending_prefix() {
     // only failed because of this one, sending a caller to the wrong place.
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(name("a"), &doc("b"), &body(b"a document"), &nonce("h9"))
+        .write_document_replicated_as(name("a"), &doc("b"), &body(b"a document"), &nonce("h9"))
         .expect("write document");
 
     let err = store
-        .write_document_replicated(name("a/b/c/d"), &doc("record"), &body(b"x"), &nonce("h10"))
+        .write_document_replicated_as(name("a/b/c/d"), &doc("record"), &body(b"x"), &nonce("h10"))
         .expect_err("cannot descend through a document");
     match err {
         StoreError::PathIsDocument { path } => assert_eq!(path.to_string(), "A/B"),
@@ -157,7 +157,7 @@ fn a_refused_write_leaves_nothing_behind() {
     // directory -- otherwise a rejected write would still reshape the namespace.
     let (vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets"),
             &doc("ab"),
             &body(b"a document"),
@@ -167,7 +167,12 @@ fn a_refused_write_leaves_nothing_behind() {
 
     assert!(
         store
-            .write_document_replicated(name("tickets/ab"), &doc("record"), &body(b"x"), &nonce("t"))
+            .write_document_replicated_as(
+                name("tickets/ab"),
+                &doc("record"),
+                &body(b"x"),
+                &nonce("t")
+            )
             .is_err()
     );
 
@@ -184,7 +189,7 @@ fn a_refused_write_leaves_nothing_behind() {
 fn the_rule_holds_for_the_replicated_write() {
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("record"),
             &body(b"c"),
@@ -193,7 +198,7 @@ fn the_rule_holds_for_the_replicated_write() {
         .expect("write child");
 
     assert!(matches!(
-        store.write_document_replicated(name("tickets"), &doc("ab"), &body(b"x"), &nonce("t2")),
+        store.write_document_replicated_as(name("tickets"), &doc("ab"), &body(b"x"), &nonce("t2")),
         Err(StoreError::NameIsChildNode { .. })
     ));
 }
@@ -216,9 +221,9 @@ fn a_collision_check_that_cannot_look_fails_rather_than_passing() {
     ));
     let root = PathBuf::from("collision-probe");
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs, root, test_config()).unwrap();
+    let store = Store::init_unsourced(vfs, root, test_config()).unwrap();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("record"),
             &body(b"c"),
@@ -227,7 +232,7 @@ fn a_collision_check_that_cannot_look_fails_rather_than_passing() {
         .expect("write child");
 
     gate.open();
-    let refused = store.update_document(
+    let refused = store.update_document_as(
         Swap::new(name("tickets"), doc("ab"), body(b"x")),
         &nonce("t2"),
     );
@@ -272,15 +277,15 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_by_the_next_write()
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(vfs, root, test_config()).unwrap();
+    let store = Store::init_unsourced(vfs, root, test_config()).unwrap();
 
     gate.open();
     store
-        .write_document_replicated(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
+        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
         .expect_err("the node's parent sync fails and the directory cannot be removed");
     gate.close();
     store
-        .write_document_replicated(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
+        .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
         .expect("the retry succeeds");
 
     faulty.inner().simulate_crash();
@@ -296,7 +301,7 @@ fn removing_a_name_that_is_a_child_node_is_refused_before_begin() {
     // make every reopen retry it forever.
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("record"),
             &body(b"c"),
@@ -304,7 +309,7 @@ fn removing_a_name_that_is_a_child_node_is_refused_before_begin() {
         )
         .expect("write child");
 
-    let refused = store.update_document(Swap::remove(name("tickets"), doc("ab")), &nonce("t2"));
+    let refused = store.update_document_as(Swap::remove(name("tickets"), doc("ab")), &nonce("t2"));
 
     assert!(
         matches!(refused, Err(StoreError::NameIsChildNode { .. })),
@@ -342,18 +347,18 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_after_a_reopen() {
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
 
     gate.open();
     store
-        .write_document_replicated(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
+        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
         .expect_err("the node's parent sync fails and the directory cannot be removed");
     gate.close();
     drop(store);
 
-    let reopened = Store::open(vfs, root).expect("reopen discharges the debt");
+    let reopened = Store::open_unsourced(vfs, root).expect("reopen discharges the debt");
     reopened
-        .write_document_replicated(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
+        .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
         .expect("write after reopen");
     drop(reopened);
 
@@ -375,7 +380,7 @@ fn a_set_removing_a_name_another_of_its_writes_nests_under_is_refused_before_beg
     ])
     .unwrap();
 
-    let refused = store.apply_transaction(&swaps, &nonce("t1"));
+    let refused = store.apply_transaction_as(&swaps, &nonce("t1"));
 
     assert!(
         matches!(refused, Err(StoreError::NameIsChildNode { ref name, .. }) if name == "B"),
@@ -395,7 +400,7 @@ fn a_set_removing_beneath_a_document_it_writes_is_refused_before_begin() {
     .unwrap();
 
     assert!(matches!(
-        store.apply_transaction(&swaps, &nonce("t1")),
+        store.apply_transaction_as(&swaps, &nonce("t1")),
         Err(StoreError::NameIsChildNode { .. })
     ));
     assert!(store.commit_log_is_empty().unwrap());
@@ -420,11 +425,11 @@ fn a_directory_whose_creation_cannot_be_recorded_is_not_created() {
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root, test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
 
     gate.open();
     store
-        .write_document_replicated(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
+        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
         .expect_err("the record cannot be written");
     gate.close();
 
@@ -436,7 +441,7 @@ fn a_directory_whose_creation_cannot_be_recorded_is_not_created() {
         );
     }
     store
-        .write_document_replicated(name("tickets"), &doc("first"), &body(b"a"), &nonce("t2"))
+        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t2"))
         .expect("the retry succeeds once the record can be written");
 }
 
@@ -448,7 +453,7 @@ fn a_stale_intent_below_what_is_now_a_document_does_not_block_reopening() {
     let (vfs, store) = fresh_store();
     let root = store.root().to_path_buf();
     store
-        .update_document(
+        .update_document_as(
             Swap::new(name("a/b/c"), doc("leaf"), body(b"x")),
             &nonce("t1"),
         )
@@ -459,11 +464,11 @@ fn a_stale_intent_below_what_is_now_a_document_does_not_block_reopening() {
     )
     .unwrap();
     assert_eq!(
-        store.apply_transaction(&swaps, &nonce("t2")).unwrap(),
+        store.apply_transaction_as(&swaps, &nonce("t2")).unwrap(),
         TransactionOutcome::Committed
     );
     store
-        .update_document(Swap::new(name("a"), doc("b"), body(b"doc")), &nonce("t3"))
+        .update_document_as(Swap::new(name("a"), doc("b"), body(b"doc")), &nonce("t3"))
         .unwrap();
     drop(store);
 
@@ -481,7 +486,7 @@ fn a_stale_intent_below_what_is_now_a_document_does_not_block_reopening() {
     )
     .unwrap();
 
-    let reopened = Store::open(Arc::clone(&vfs), root.clone())
+    let reopened = Store::open_unsourced(Arc::clone(&vfs), root.clone())
         .expect("an intent under a document is obsolete, not fatal");
     assert_ne!(
         reopened.read_document(name("a"), &doc("b")).unwrap(),
@@ -502,7 +507,7 @@ fn a_path_beneath_a_document_reads_as_absent() {
     // superseded body -- must see absence, not an I/O failure.
     let (_vfs, store) = fresh_store();
     store
-        .update_document(Swap::new(name("a"), doc("b"), body(b"doc")), &nonce("t1"))
+        .update_document_as(Swap::new(name("a"), doc("b"), body(b"doc")), &nonce("t1"))
         .unwrap();
 
     assert_eq!(
@@ -533,7 +538,7 @@ fn an_unterminated_intent_tail_is_not_acted_on_at_reopen() {
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    drop(Store::init(Arc::clone(&vfs), root.clone(), test_config()).unwrap());
+    drop(Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap());
     let whole = std::path::Path::new(crate::store::NAMESPACE_TREE_DIR)
         .join("p1")
         .join("A");
@@ -545,7 +550,7 @@ fn an_unterminated_intent_tail_is_not_acted_on_at_reopen() {
     .unwrap();
 
     gate.open();
-    let reopened = Store::open(Arc::clone(&vfs), root.clone());
+    let reopened = Store::open_unsourced(Arc::clone(&vfs), root.clone());
     gate.close();
     reopened.expect("the unterminated tail is not followed into a failing sync");
     assert!(
@@ -591,11 +596,11 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    let store = Store::init(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     // Leave the blob shard behind but not the node, so the only directory the next write
     // creates -- and the only intent it records -- is the node's.
     store
-        .update_document(
+        .update_document_as(
             Swap::new(name("tickets"), doc("first"), body(b"a")),
             &nonce("s1"),
         )
@@ -605,12 +610,12 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
         [name("tickets")],
     )
     .unwrap();
-    store.apply_transaction(&emptied, &nonce("s2")).unwrap();
+    store.apply_transaction_as(&emptied, &nonce("s2")).unwrap();
     assert!(!vfs.exists(&partition.join("TICKETS")).unwrap());
 
     gate.open();
     store
-        .write_document_replicated(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
+        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t1"))
         .expect_err("the record is torn");
     assert!(
         !vfs.read(&root.join(crate::store::DIR_SYNC_DEBT_NAME))
@@ -619,7 +624,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
         "the short append left an unterminated tail"
     );
     store
-        .write_document_replicated(name("tickets"), &doc("first"), &body(b"a"), &nonce("t2"))
+        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t2"))
         .expect_err("the node's parent sync fails and the directory cannot be removed");
     gate.close();
     let record = vfs
@@ -635,9 +640,10 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
     );
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&vfs), root).expect("reopen discharges the debt");
+    let reopened =
+        Store::open_unsourced(Arc::clone(&vfs), root).expect("reopen discharges the debt");
     reopened
-        .write_document_replicated(name("tickets"), &doc("second"), &body(b"b"), &nonce("t3"))
+        .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t3"))
         .expect("write after reopen");
     drop(reopened);
 
@@ -665,7 +671,7 @@ fn a_refused_replicated_write_ingests_no_blob() {
     }
     let (vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("tickets/ab"),
             &doc("record"),
             &body(b"c"),
@@ -677,7 +683,7 @@ fn a_refused_replicated_write_ingests_no_blob() {
 
     assert!(
         store
-            .write_document_replicated(name("tickets"), &doc("ab"), &body(b"new"), &nonce("t2"))
+            .write_document_replicated_as(name("tickets"), &doc("ab"), &body(b"new"), &nonce("t2"))
             .is_err()
     );
     assert_eq!(committed_blobs(&vfs, &blobs), before);
@@ -696,7 +702,7 @@ fn enumeration_reports_documents_at_every_depth_with_their_full_paths() {
         ("pending-work/0001", "entry"),
     ] {
         store
-            .write_document_replicated(name(path), &doc(document), &body(b"x"), &nonce("t"))
+            .write_document_replicated_as(name(path), &doc(document), &body(b"x"), &nonce("t"))
             .expect("write");
     }
 
@@ -727,7 +733,7 @@ fn enumeration_skips_staging_and_the_marker() {
     // than it did before `D222`.
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(name("tickets/ab"), &doc("record"), &body(b"x"), &nonce("t"))
+        .write_document_replicated_as(name("tickets/ab"), &doc("record"), &body(b"x"), &nonce("t"))
         .expect("write");
 
     let listed = store.list_documents().expect("list");
@@ -769,7 +775,7 @@ fn listing_a_prefix_reports_its_documents_and_child_nodes_separately() {
         ("shire", "permutation-key"),
     ] {
         store
-            .write_document_replicated(name(path), &doc(document), &body(b"x"), &nonce("t"))
+            .write_document_replicated_as(name(path), &doc(document), &body(b"x"), &nonce("t"))
             .expect("write");
     }
 
@@ -795,7 +801,7 @@ fn listing_does_not_reach_into_sibling_prefixes() {
     // size, not the store's.
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(
+        .write_document_replicated_as(
             name("pending-work/0001"),
             &doc("entry"),
             &body(b"x"),
@@ -804,7 +810,7 @@ fn listing_does_not_reach_into_sibling_prefixes() {
         .expect("write");
     for i in 0..20 {
         store
-            .write_document_replicated(
+            .write_document_replicated_as(
                 name(&format!("tickets/t{i:04}")),
                 &doc("record"),
                 &body(b"x"),
@@ -841,7 +847,7 @@ fn listing_the_root_level_reports_the_top_tier() {
     let (_vfs, store) = fresh_store();
     for path in ["tickets/ab", "shire", "pending-work/0001"] {
         store
-            .write_document_replicated(name(path), &doc("record"), &body(b"x"), &nonce("t"))
+            .write_document_replicated_as(name(path), &doc("record"), &body(b"x"), &nonce("t"))
             .expect("write");
     }
 
@@ -872,7 +878,7 @@ fn a_child_listing_agrees_with_the_full_traversal_filtered_to_that_path() {
         ("shire", "key"),
     ] {
         store
-            .write_document_replicated(name(path), &doc(document), &body(b"x"), &nonce("t"))
+            .write_document_replicated_as(name(path), &doc(document), &body(b"x"), &nonce("t"))
             .expect("write");
     }
 
@@ -900,10 +906,10 @@ fn a_child_listing_agrees_with_the_full_traversal_filtered_to_that_path() {
 fn into_parts_returns_the_same_two_lists() {
     let (_vfs, store) = fresh_store();
     store
-        .write_document_replicated(name("tickets"), &doc("marker"), &body(b"x"), &nonce("t"))
+        .write_document_replicated_as(name("tickets"), &doc("marker"), &body(b"x"), &nonce("t"))
         .expect("write");
     store
-        .write_document_replicated(name("tickets/ab"), &doc("record"), &body(b"x"), &nonce("t"))
+        .write_document_replicated_as(name("tickets/ab"), &doc("record"), &body(b"x"), &nonce("t"))
         .expect("write");
 
     let children = store.list_children(name("tickets")).expect("list");

@@ -57,8 +57,17 @@ use std::sync::Arc;
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, ShireId, Store,
-    StoreError, Swap, SwapSet, TransactionOutcome,
+    StoreError, StoreOptions, Swap, SwapSet, TransactionOutcome,
 };
+
+/// Options drawing nonces `N1`, `N2`, ... .
+fn options() -> StoreOptions {
+    let mut n: u64 = 0;
+    StoreOptions::with_nonce_source(move || {
+        n += 1;
+        Nonce::new(&format!("N{n}")).unwrap()
+    })
+}
 
 /// Points at which to cut, per operation.
 ///
@@ -120,6 +129,7 @@ fn store_faulting(op: FaultOp, k: u32) -> (Arc<FaultyFs<MemFs>>, PathBuf, Store,
         vfs.clone(),
         root.clone(),
         GenesisConfig::new(ShireId::new("cvs17-shire").unwrap(), 3),
+        options(),
     )
     .expect("init");
     (faulty, root, store, gate)
@@ -256,12 +266,15 @@ fn sweep_through(op: FaultOp, label: &str, crash: bool, cut_points: u32) {
         let vfs: Arc<dyn Vfs> = faulty.clone();
 
         store
-            .apply_transaction(&swaps(1), &Nonce::new("SEED").unwrap())
+            .apply_transaction(&swaps(1))
             .unwrap_or_else(|e| panic!("{at}: the unfaulted seed transaction must commit: {e:?}"));
 
         gate.open();
-        let outcome = store.apply_transaction(&swaps(2), &Nonce::new("T2").unwrap());
-        let committed = matches!(outcome, Ok(TransactionOutcome::Committed));
+        let outcome = store.apply_transaction(&swaps(2));
+        let committed = matches!(
+            outcome.as_ref().map(|commit| commit.outcome()),
+            Ok(TransactionOutcome::Committed)
+        );
         if outcome.is_err() {
             faulted += 1;
         } else {
@@ -277,13 +290,13 @@ fn sweep_through(op: FaultOp, label: &str, crash: bool, cut_points: u32) {
             faulty.inner().simulate_crash();
         }
 
-        let recovered = Store::open(vfs.clone(), root.clone())
+        let recovered = Store::open(vfs.clone(), root.clone(), options())
             .unwrap_or_else(|e| panic!("{at}: recovery refused to open the store: {e:?}"));
         let first = assert_invariants(&vfs, &recovered, committed, &at);
 
         // Recovery is idempotent: a second pass must not move the store again.
         drop(recovered);
-        let again = Store::open(vfs.clone(), root)
+        let again = Store::open(vfs.clone(), root, options())
             .unwrap_or_else(|e| panic!("{at}: the second recovery refused to open: {e:?}"));
         let second = assert_invariants(&vfs, &again, committed, &format!("{at} (second recovery)"));
         assert_eq!(

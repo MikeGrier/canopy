@@ -228,7 +228,25 @@ impl Store {
     /// The source is re-checked here rather than trusted. It costs a hash over bytes already
     /// in hand, and it makes "a repair never propagates content it has not verified" a
     /// property of this function instead of an obligation on every caller.
+    ///
+    /// The repair is made under a nonce drawn from the store's source and claimed for it, and
+    /// the nonce is returned with the outcome.
     pub fn repair_blob(
+        &self,
+        reference: &BlobRef,
+        source: &[u8],
+        missing: &[usize],
+        corrupt: &[usize],
+    ) -> Result<(RepairOutcome, Nonce), StoreError> {
+        let _writer = self.writable()?;
+        let claim = self.claim_fresh_nonce()?;
+        let outcome = self.repair_blob_as(reference, source, missing, corrupt, claim.nonce())?;
+        Ok((outcome, claim.nonce().clone()))
+    }
+
+    /// [`repair_blob`](Store::repair_blob) under `nonce`, which the caller has claimed or, in a
+    /// test, chosen.
+    pub(crate) fn repair_blob_as(
         &self,
         reference: &BlobRef,
         source: &[u8],
@@ -298,7 +316,24 @@ impl Store {
     /// gate and only what that read finds is repaired. If the majority has moved since `read`
     /// was taken, the report is obsolete and nothing is written: replaying it would put a
     /// superseded pointer back over a current replica.
+    ///
+    /// The repair is made under a nonce drawn from the store's source and claimed for it, and
+    /// the nonce is returned with the outcome.
     pub fn repair_pointer(
+        &self,
+        node: &NodePath,
+        document: &DocumentName,
+        read: &PointerRead,
+    ) -> Result<(RepairOutcome, Nonce), StoreError> {
+        let _writer = self.writable()?;
+        let claim = self.claim_fresh_nonce()?;
+        let outcome = self.repair_pointer_as(node, document, read, claim.nonce())?;
+        Ok((outcome, claim.nonce().clone()))
+    }
+
+    /// [`repair_pointer`](Store::repair_pointer) under `nonce`, which the caller has claimed
+    /// or, in a test, chosen.
+    pub(crate) fn repair_pointer_as(
         &self,
         node: &NodePath,
         document: &DocumentName,
@@ -389,6 +424,17 @@ impl Store {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unnamed".to_owned());
         let kept = quarantine.join(format!("{name}.{}", nonce.as_str()));
+        // Kept evidence outlives the claim on its nonce, so an earlier repair under the same
+        // nonce can have left this name; the rename below would replace it.
+        match self.vfs.metadata(&kept) {
+            Ok(_) => {
+                return Err(StoreError::NonceCollision {
+                    nonce: nonce.clone(),
+                });
+            }
+            Err(error) if error.kind() == VfsErrorKind::NotFound => {}
+            Err(error) => return Err(StoreError::Vfs(error)),
+        }
         match self.vfs.rename(entry, &kept) {
             Ok(()) => {}
             // Already gone is success: something else removed it, and the point of the move

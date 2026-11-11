@@ -46,6 +46,7 @@ mod genesis;
 mod namespace;
 mod repair;
 mod scrub;
+mod surface;
 mod writer;
 
 use repair::RepairBacklog;
@@ -60,6 +61,9 @@ pub use self::apply::*;
 pub use self::blob::BlobRead;
 pub use self::errors::*;
 pub use self::namespace::PointerRead;
+#[cfg(test)]
+pub(crate) use self::surface::CLAIMS_DIR;
+pub use self::surface::{Commit, SNAPSHOT_ATTEMPTS, StoreOptions, StoreView};
 
 /// The marker file name at the Shire root (D40).
 ///
@@ -178,16 +182,35 @@ pub(crate) const QUARANTINE_DIR: &str = ".quarantine";
 /// Changing this value is a breaking change to the on-disk layout.
 pub(crate) const DIR_SYNC_DEBT_NAME: &str = ".dir-sync-debt";
 
+/// The modification count (`D335`) and how deeply the current writer has nested
+/// modifications inside one another.
+///
+/// Only the outermost modification moves the count, so a logical operation built from several
+/// -- a transaction's swaps, a write's ingest, publication and collection -- reads as one odd
+/// span to a sampler rather than as a run of settled moments between its steps. The depth is
+/// touched only by the holder of the writer gate, one thread at a time.
+#[derive(Debug, Default)]
+pub(crate) struct ModificationCount {
+    count: std::sync::atomic::AtomicU64,
+    depth: std::sync::atomic::AtomicUsize,
+}
+
 /// Ends a modification begun by `Store::begin_modification`, however the modification ends.
 #[must_use]
 pub(crate) struct ModificationGuard {
-    modifications: Arc<std::sync::atomic::AtomicU64>,
+    modifications: Arc<ModificationCount>,
+    writer: Arc<WriterGate>,
 }
 
 impl Drop for ModificationGuard {
     fn drop(&mut self) {
-        self.modifications
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        use std::sync::atomic::Ordering;
+        let outermost = self.modifications.depth.fetch_sub(1, Ordering::AcqRel) == 1;
+        // A store whose transaction ended unresolved keeps the count odd, so no reader treats
+        // the partial state it left as settled before recovery has finished it.
+        if outermost && !self.writer.is_unresolved() {
+            self.modifications.count.fetch_add(1, Ordering::Release);
+        }
     }
 }
 
@@ -572,6 +595,14 @@ impl Children {
 /// document read/write surface and the D41 single-writer monitor are added by
 /// later CANOPY-M2 items; LAY-1 establishes the layout and its open-time
 /// validation.
+///
+/// # The root must be on a local filesystem
+///
+/// Network filesystems (SMB/CIFS shares including mapped network drives, NFS mounts, and other
+/// remote or distributed filesystems) are not supported. The store's guarantees rest on the
+/// local operating system's lock, rename and fsync behaviour, which they do not reliably provide.
+/// A networked root is neither detected nor refused, and may appear to work while losing writes
+/// or corrupting the store.
 #[derive(Clone)]
 pub struct Store {
     vfs: Arc<dyn Vfs>,
@@ -594,7 +625,7 @@ pub struct Store {
     /// `Arc` for the same reason `blob_reads` is: clones of a `Store` are one store, and a
     /// counter that each clone kept privately would report "nothing changed" while a sibling
     /// handle was writing.
-    modifications: Arc<std::sync::atomic::AtomicU64>,
+    modifications: Arc<ModificationCount>,
     /// Blobs a read found a damaged replica of, waiting for a writer to repair them
     /// (`D339`).
     ///
@@ -618,6 +649,9 @@ pub struct Store {
     /// lock is released only when the **last** handle drops. There is no `Drop`
     /// impl -- dropping the `Arc` is the release.
     _lock: Arc<dyn VfsLock>,
+    /// The nonce source and commit observer the public write surface uses, shared by every
+    /// clone because the clones are one writer.
+    surface: Arc<surface::Surface>,
 }
 
 impl Store {
@@ -662,6 +696,7 @@ impl Store {
     /// single caller's read.
     pub fn modifications(&self) -> u64 {
         self.modifications
+            .count
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -825,13 +860,16 @@ impl Store {
         Ok(())
     }
 
-    /// Holds this store's writer gate until the guard drops. Re-entrant on one thread.
+    /// Holds this store's writer gate until the guard drops, as a writer does but without the
+    /// fence check, so a test can occupy the gate directly.
+    #[cfg(test)]
     pub(crate) fn exclusive(&self) -> WriterGuard {
         self.writer.enter()
     }
 
-    /// [`exclusive`](Store::exclusive), for a write: refused while a transaction is
-    /// unresolved, because writing past it would bury what recovery must finish.
+    /// Holds this store's writer gate until the guard drops, for a write: refused while a
+    /// transaction is unresolved, because writing past it would bury what recovery must
+    /// finish. Re-entrant on one thread.
     pub(crate) fn writable(&self) -> Result<WriterGuard, StoreError> {
         let guard = self.writer.enter();
         self.refuse_if_unresolved()?;
@@ -855,11 +893,24 @@ impl Store {
 
     /// Marks a modification in progress until the guard drops, which also marks it ended:
     /// the count is odd in between (`D335`). Take it before the first visible change.
+    ///
+    /// Nested calls extend the outermost modification rather than starting their own. A count
+    /// already odd at the outermost start was left so by an unresolved transaction, and stays
+    /// odd.
     pub(crate) fn begin_modification(&self) -> ModificationGuard {
-        self.modifications
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        use std::sync::atomic::Ordering;
+        if self.modifications.depth.fetch_add(1, Ordering::AcqRel) == 0
+            && self
+                .modifications
+                .count
+                .load(Ordering::Acquire)
+                .is_multiple_of(2)
+        {
+            self.modifications.count.fetch_add(1, Ordering::AcqRel);
+        }
         ModificationGuard {
             modifications: Arc::clone(&self.modifications),
+            writer: Arc::clone(&self.writer),
         }
     }
 
@@ -1029,9 +1080,23 @@ impl Store {
     /// store drains. Because the log is discardable at quiescence (the namespace over the
     /// content store is the durable truth), the next startup sees an empty log and skips replay,
     /// the O(1)-startup commitment. Absent or already-empty logs are left untouched.
+    ///
+    /// A log holding a `prepare` with no `end` is refused with
+    /// [`StoreError::RecoveryRequired`]: that transaction passed its commit point, and the log
+    /// is the only record recovery can finish it from.
     pub(crate) fn quiesce_commit_log(&self) -> Result<(), StoreError> {
         let _writer = self.writable()?;
-        self.commit_log().reset().map_err(StoreError::CommitLog)
+        let log = self.commit_log();
+        let records = log.read().map_err(StoreError::CommitLog)?;
+        if group_by_transaction(&records)
+            .iter()
+            .any(|txn| txn.prepared.is_some() && !txn.ended)
+        {
+            return Err(StoreError::RecoveryRequired {
+                root: self.root.clone(),
+            });
+        }
+        log.reset().map_err(StoreError::CommitLog)
     }
 
     /// Whether the D53 recovery journal is empty -- the O(1)-clean-start observable.
