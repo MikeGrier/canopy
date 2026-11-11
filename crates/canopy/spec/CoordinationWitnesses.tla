@@ -1,7 +1,7 @@
 \* Copyright (c) Michael Grier.
 \* Split from Coordination.tla at 70668aa.
 ----------------------- MODULE CoordinationWitnesses ------------------------
-EXTENDS CoordinationProperties
+EXTENDS CoordinationUpgradeProperties
 
 -----------------------------------------------------------------------------
 (* Witnesses: each is violated by a reachable state or step it names.      *)

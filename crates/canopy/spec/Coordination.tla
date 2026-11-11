@@ -8,7 +8,10 @@
 (*   CoordinationAttachment  attaching, the gate and tiers, leases, registry *)
 (*   CoordinationOperations  writer exclusion and reads                    *)
 (*   CoordinationBehavior    death, crash, Next and Spec                   *)
-(*   CoordinationProperties  invariants and action properties              *)
+(*   CoordinationProperties  writer exclusion, the count, reads            *)
+(*   CoordinationAttachmentProperties  the gate, registry, clones, leases  *)
+(*   CoordinationTransactionProperties transactions, recovery, discovery   *)
+(*   CoordinationUpgradeProperties     the upgrade body, reader schemas    *)
 (*   CoordinationWitnesses   properties a reachable state or step violates *)
 (***************************************************************************)
 EXTENDS CoordinationWitnesses
