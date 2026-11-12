@@ -37,9 +37,9 @@
 (* visible, so a writer that dies or fails between them leaves the         *)
 (* previous value published. A write that fails after its first effect, or *)
 (* whose closing publication fails, sets the fence and leaves the count    *)
-(* odd. Nothing here clears the fence or restores trust, so once either is *)
-(* set every later acquirer is told recovery is required, and a told       *)
-(* holder writes nothing.                                                  *)
+(* odd. Only recovery (below) clears the fence or restores trust, so until *)
+(* it has run every later acquirer is told recovery is required, and a     *)
+(* told holder writes nothing.                                             *)
 (*                                                                         *)
 (* The generation advances on every acquisition. A holder relies on its    *)
 (* cache of shared, durable state any holder may change, without reading   *)
@@ -69,22 +69,21 @@
 (* checked against every service order. "eligible" stands for the          *)
 (* admission rules and only ever goes from true to false.                  *)
 (*                                                                         *)
-(* Attachment. A process is a reader, a writer, or an upgrader whose       *)
-(* upgrade is safe or unsafe for readers (Scenario), and speaks one schema *)
-(* in the layer that can be upgraded. It attaches through an admission     *)
-(* gate and two tiers, locks that ordinary handles hold shared and an      *)
-(* upgrade holds exclusively, taken in the order gate, reader tier, writer *)
-(* tier, writer exclusion. A handle holds the gate only until it holds the *)
-(* reader tier, and no process waits for the gate while holding a tier.    *)
-(* Holding every tier it needs, a handle is checked against the admission  *)
-(* rules over the store's oldest and current schemas and an upgrade in     *)
-(* progress, and is attached or refused. A reader that cannot be left      *)
-(* attached through an unsafe upgrade is kept out by the exclusive reader  *)
-(* tier; a writer by the exclusive writer tier. Who holds what follows     *)
-(* from where each process is (att), so a death releases all of it. An     *)
-(* upgrade moves the layer to its target in one step when it ends, and an  *)
-(* upgrader that dies in its body leaves the upgrade recorded in progress; *)
-(* how an upgrade moves the schemas is not modelled further. Escapes is    *)
+(* Attachment. A process is a reader, a writer, or an upgrader of one      *)
+(* layer, and speaks a schema in each layer (Scenario). It attaches        *)
+(* through an admission gate and two tiers, locks that ordinary handles    *)
+(* hold shared and an upgrade holds exclusively, taken in the order gate,  *)
+(* reader tier, writer tier, writer exclusion. A handle holds the gate     *)
+(* only until it holds the reader tier, and no process waits for the gate  *)
+(* while holding a tier. Holding every tier it needs, a handle is checked  *)
+(* against the admission rules over the store's oldest and current schemas *)
+(* and an upgrade in progress, and is attached or refused. A reader that   *)
+(* cannot be left attached through an unsafe upgrade is kept out by the    *)
+(* exclusive reader tier; a writer by the exclusive writer tier. Who holds *)
+(* what follows from where each process is (att), so a death releases all  *)
+(* of it. An upgrade moves the layer to its target in one step when it     *)
+(* ends, and an upgrader that dies in its body leaves the upgrade recorded *)
+(* in progress; the body is modelled further below (UpSteps). Escapes is   *)
 (* whether a waiting process may give up or be refused; with it false and  *)
 (* nothing dying, the only state without a successor in a deadlock-free    *)
 (* model is every process ended.                                           *)
@@ -118,6 +117,80 @@
 (* need not be attached, visits the entries in turn, reports one live only *)
 (* if the liveness lock was held when it probed, and says whether it may   *)
 (* be incomplete. A host crash discards the registry.                      *)
+(*                                                                         *)
+(* Transactions (Txn). A write is a transaction over a commit log: begin   *)
+(* appends a record, ingest stages the bodies, prepare appends a record    *)
+(* carrying the swap set, which is the commit point, the swaps move the    *)
+(* namespace cells in turn, and end appends a record, after which the      *)
+(* staging is swept. Nothing is visible in the namespace before prepare,   *)
+(* so a failure before it is rolled back, with the staging swept and the   *)
+(* log reset. A failure at or after prepare cannot be, since its outcome   *)
+(* may be the commit: it sets the fence and leaves the count odd and the   *)
+(* log unresolved, for recovery to finish from the log. The log is reset   *)
+(* by a holder with nothing in flight, and never while it holds unresolved *)
+(* work. With Txn false a write is the one abstract operation above. With  *)
+(* MixedWrites each write chooses: it begins a transaction or makes its    *)
+(* first effect directly, and while it is between its effects the log      *)
+(* shows which, since only a transaction's leaves its prepare record there. *)
+(*                                                                         *)
+(* Recovery and discovery. A holder told that recovery is required, or     *)
+(* whose own transaction failed, may run recovery, which has a capability  *)
+(* ordinary writes do not: the fence refuses writes, not recovery.         *)
+(* Recovery reads the commit log and nothing else. It makes the swaps a    *)
+(* prepared transaction names, appends its end record and sweeps the       *)
+(* staging; or, for one begun and not prepared, sweeps the staging and     *)
+(* resets the log. It then publishes a count that is even and trusted, and *)
+(* only then clears the fence. Every step is idempotent and takes what it  *)
+(* does from durable state, so a recoverer that stops between steps, or    *)
+(* dies, leaves the rest to the next, which finds the fence, the ownership *)
+(* record or the untrusted state and runs again. Discovery is a call any   *)
+(* attached handle can make: in one step it reads the fence, the restart   *)
+(* state and the ownership record together with whether anyone holds       *)
+(* exclusion, reports whether recovery is required, and changes nothing.   *)
+(* The work of a live holder is not abandoned, so it is not reported.      *)
+(*                                                                         *)
+(* Recovery of an unlogged write (UnloggedRecovery). An unlogged write has *)
+(* no log for recovery to read, and its half-applied store is left for the *)
+(* STRANDED-VOTE guard to settle, which may roll it either way. With       *)
+(* UnloggedRecovery a told holder may recover without Txn: it makes a      *)
+(* store half applied whole, forward or back, and then ends as a           *)
+(* transaction's recovery does. Without it and without Txn nothing         *)
+(* recovers, and a fence once set stays set.                               *)
+(*                                                                         *)
+(* The upgrade body (UpSteps). An upgrader that holds its tiers takes      *)
+(* writer exclusion as a writer does, and starts only from a store that    *)
+(* needs no recovery: told that recovery is required it releases, and the  *)
+(* upgrade is refused. Under exclusion, inside the count's bracket, it     *)
+(* records the upgrade intent, makes UpSteps migration steps, each of them *)
+(* durable, advances the layer's schema only after the last, and clears    *)
+(* the intent. The body cannot be rolled back, so a failure in it, or the  *)
+(* death of its upgrader, leaves the intent in place and recovery          *)
+(* required, and recovery is resuming the upgrade from the step that       *)
+(* durable state shows, by a handle that speaks the target schema. With    *)
+(* UpSteps 0 an upgrade completes in one step, as it did before the body   *)
+(* was modelled.                                                           *)
+(*                                                                         *)
+(* Cumulative reader compatibility. An upgrade of a layer has a floor, the *)
+(* oldest reader schema that can read what it leaves. It is safe for       *)
+(* readers when the oldest schema the store still admits can read that, so *)
+(* it is judged against the oldest admissible reader schema and not the    *)
+(* current one, and every schema above the oldest can read it too. Any     *)
+(* other upgrade takes the reader tier exclusively, which drains every     *)
+(* reader before the upgrade crosses that boundary, and sets the oldest    *)
+(* schema to its target when it completes. An upgrade of one layer changes *)
+(* nothing in another. The data floor of a layer is the oldest reader      *)
+(* schema that can read what has been written to it; it never exceeds the  *)
+(* oldest admissible schema, and no attached handle speaks a schema below  *)
+(* it.                                                                     *)
+(*                                                                         *)
+(* The cyclic workload (Cyclic). Liveness needs behaviours that go on     *)
+(* forever in a finite state graph. Under Cyclic a process that exits may  *)
+(* attach again, requests, reads, discoveries and listings are no longer   *)
+(* counted, and the count, the generation and the versions wrap within     *)
+(* 1..CycleMod. Deaths, crashes and upgrades stay bounded: they are        *)
+(* monotone, so every behaviour ends in a cycle without them. Two values   *)
+(* compared across a wrap can be equal when they should not, so a cyclic   *)
+(* configuration checks liveness only (CoordinationLiveness.tla).          *)
 (*                                                                         *)
 (* Steps are sequentially consistent. The contract's ordering rules -- a   *)
 (* raise is ordered with the holder's filesystem operations, and a sample  *)
@@ -184,6 +257,71 @@
 (*   "listing-infers-from-fullness"                                        *)
 (*                              a listing says it may be incomplete only   *)
 (*                              when it found no free entry.               *)
+(*   "reset-during-a-transaction"                                          *)
+(*                              the commit log is reset while a            *)
+(*                              transaction is in flight.                  *)
+(*   "reset-while-recovery-required"                                       *)
+(*                              an acquirer told recovery is required      *)
+(*                              resets the commit log.                     *)
+(*   "apply-before-prepare"     the namespace is changed before the        *)
+(*                              prepare record is written.                 *)
+(*   "prepare-before-ingest"    the prepare record is written before       *)
+(*                              ingest has staged the bodies.              *)
+(*   "end-before-the-swaps"     the end record is written before every     *)
+(*                              swap has landed.                           *)
+(*   "failure-after-prepare-is-rolled-back"                                *)
+(*                              a failure after prepare is handled as one  *)
+(*                              before it: the staging is swept and the    *)
+(*                              log reset, with the count made even.       *)
+(*   "discovery-trusts-the-ownership-record"                               *)
+(*                              discovery reports recovery required        *)
+(*                              whenever an ownership record is there.     *)
+(*   "discovery-ignores-the-fence"                                         *)
+(*                              discovery does not read the fence.         *)
+(*   "discovery-ignores-the-restart"                                       *)
+(*                              discovery does not read the restart        *)
+(*                              state.                                     *)
+(*   "discovery-clears-the-fence"                                          *)
+(*                              discovery clears a fence it finds set      *)
+(*                              while nobody holds exclusion.              *)
+(*   "fence-cleared-at-recovery-start"                                     *)
+(*                              recovery clears the fence when it starts   *)
+(*                              and not when it has finished.              *)
+(*   "count-published-before-the-namespace-is-whole"                       *)
+(*                              recovery publishes the trusted count       *)
+(*                              before it has made the swaps.              *)
+(*   "recovery-rolls-back-a-prepared-transaction"                          *)
+(*                              recovery discards a prepared transaction   *)
+(*                              instead of rolling it forward.             *)
+(*   "step-before-the-intent"   a migration step is made before the intent *)
+(*                              is recorded.                               *)
+(*   "version-advanced-early"   the layer's schema advances before the     *)
+(*                              last step.                                 *)
+(*   "interrupted-upgrade-rolled-back"                                     *)
+(*                              recovery of an interrupted upgrade clears  *)
+(*                              the intent and its progress without        *)
+(*                              advancing the schema.                      *)
+(*   "interrupted-upgrade-admits-source-writers"                           *)
+(*                              a writer that speaks only the source       *)
+(*                              schema is admitted while an upgrade is     *)
+(*                              interrupted.                               *)
+(*   "upgrade-ignores-recovery-required"                                   *)
+(*                              an upgrader told that recovery is required *)
+(*                              goes on with the upgrade.                  *)
+(*   "clone-starts-during-the-body"                                        *)
+(*                              a clone starts an operation on a handle    *)
+(*                              whose upgrade is in its body.              *)
+(*   "unsafe-judged-against-the-current-schema"                            *)
+(*                              an upgrade is judged safe for readers      *)
+(*                              against the current schema and not the     *)
+(*                              oldest admissible one.                     *)
+(*   "unsafe-upgrade-raises-every-layer"                                   *)
+(*                              an upgrade unsafe for readers raises the   *)
+(*                              oldest reader schema of every layer and    *)
+(*                              not only its own.                          *)
+(*   "upgrade-rules-apply-to-every-layer"                                  *)
+(*                              an upgrade of one layer changes what every *)
+(*                              layer admits and not only its own.         *)
 (*                                                                         *)
 (* The Witness_ properties are false on purpose: a run that checks one     *)
 (* must report it violated, which shows the state or step it names is      *)
@@ -201,26 +339,49 @@ CONSTANTS
     MaxLeases,    \* bound on the operations one handle's clones have in flight
     NSlots,       \* how many entries the registry has; 0 leaves it out
     MaxListings,  \* bound on registry listings
+    MaxDiscoveries, \* bound on recovery discovery calls
+    MaxUpgrades,  \* bound on upgrade starts when the body is modelled (UpSteps > 0)
     Escapes,      \* whether a waiter may give up or be refused; FALSE makes a wait
                   \* that never ends a deadlock instead of a request that ends
+    Txn,          \* whether a write is a transaction over a commit log and not
+                  \* one abstract operation
+    UnloggedRecovery, \* whether a told holder recovers an unlogged write
+    MixedWrites,  \* whether each write chooses to be a transaction or not
+    Cyclic,       \* whether processes go on writing, reading and attaching forever
+    CycleMod,     \* under Cyclic, the bound the counters wrap at; even
+    UpSteps,      \* how many migration steps an upgrade's body makes; 0 leaves the
+                  \* body out, and an upgrade completes in one step
     Scenario,     \* which of the Scenarios the processes are
     Control       \* the fault under test
 
 None == 0   \* a number, since TLC compares only values of one kind
 NoVal == -1
 
-\* A scenario fixes what each process is, which is a reader, a writer, or an
-\* upgrader whose upgrade is safe or unsafe for readers, and the schema each
-\* speaks in the one layer that can be upgraded, with the oldest and current
-\* schemas the store starts with and the one an upgrade moves to. A
-\* configuration names one because a configuration file cannot state a
-\* sequence.
-Scen(roles, speaks, o, c, t) ==
+\* A scenario fixes what each process is -- a reader, a writer, or an upgrader of one
+\* layer -- and the schema each speaks in every layer, with the oldest and current
+\* schemas each layer starts with. An upgrader moves its layer from the schema it
+\* speaks to the next, and its upgrade has a floor: the oldest reader schema that can
+\* read what the upgrade leaves. A configuration names a scenario because a
+\* configuration file cannot state a sequence. The layers of a scenario start at
+\* different schemas, so that a step that confuses one layer with another changes
+\* something a property can see.
+ScenL(roles, speaks, o, c, upl, upf) ==
     [roles   |-> roles,
-     speaks  |-> [p \in 1..Len(roles) |-> <<speaks[p]>>],
-     oldest  |-> <<o>>,
-     current |-> <<c>>,
-     target  |-> <<t>>]
+     speaks  |-> speaks,
+     oldest  |-> o,
+     current |-> c,
+     upl     |-> upl,
+     upf     |-> upf]
+
+\* One layer, whose upgrader is safe for readers when every reader schema that is
+\* admissible can read what it leaves, and unsafe when only the schema it moves to can.
+Scen(roles, speaks, o, c, t) ==
+    ScenL([p \in 1..Len(roles) |->
+              IF roles[p] \in {"safeUpgrader", "unsafeUpgrader"} THEN "upgrader"
+                                                                 ELSE roles[p]],
+          [p \in 1..Len(roles) |-> <<speaks[p]>>], <<o>>, <<c>>,
+          [p \in 1..Len(roles) |-> 1],
+          [p \in 1..Len(roles) |-> IF roles[p] = "unsafeUpgrader" THEN t ELSE o])
 
 Scenarios ==
        "Plain2" :> Scen(<<"writer", "writer">>, <<1, 1>>, 1, 1, 1)
@@ -234,6 +395,8 @@ Scenarios ==
     @@ "SafeAndTargetWriter" :> Scen(<<"safeUpgrader", "writer">>, <<2, 3>>, 1, 2, 3)
     @@ "UnsafeAndWriter" :> Scen(<<"unsafeUpgrader", "writer">>, <<2, 2>>, 1, 2, 3)
     @@ "TwoSafe" :> Scen(<<"safeUpgrader", "safeUpgrader">>, <<2, 2>>, 1, 2, 3)
+    @@ "UnsafeAndTwoReaders" :>
+          Scen(<<"unsafeUpgrader", "reader", "reader">>, <<2, 1, 1>>, 1, 2, 3)
     @@ "SafeWriterReader" :>
           Scen(<<"safeUpgrader", "writer", "reader">>, <<2, 2, 1>>, 1, 2, 3)
     @@ "UnsafeWriterReader" :>
@@ -242,23 +405,74 @@ Scenarios ==
           Scen(<<"safeUpgrader", "unsafeUpgrader", "writer">>, <<2, 2, 2>>, 1, 2, 3)
     @@ "TwoSafeWriter" :>
           Scen(<<"safeUpgrader", "safeUpgrader", "writer">>, <<2, 2, 2>>, 1, 2, 3)
+    @@ "SafeTargetWriterReader" :>
+          Scen(<<"safeUpgrader", "writer", "reader">>, <<2, 3, 1>>, 1, 2, 3)
+    @@ "UnsafeTargetWriterReader" :>
+          Scen(<<"unsafeUpgrader", "writer", "reader">>, <<2, 3, 1>>, 1, 2, 3)
+    @@ "SafeTwoTargetWriters" :>
+          Scen(<<"safeUpgrader", "writer", "writer">>, <<2, 3, 3>>, 1, 2, 3)
+    @@ "ChainSafe" :>
+          ScenL(<<"upgrader", "upgrader", "reader">>, <<<<1>>, <<2>>, <<1>>>>,
+                <<1>>, <<1>>, <<1, 1, 1>>, <<1, 1, 1>>)
+    @@ "ChainFloor" :>
+          ScenL(<<"upgrader", "upgrader", "reader">>, <<<<1>>, <<2>>, <<1>>>>,
+                <<1>>, <<1>>, <<1, 1, 1>>, <<1, 2, 1>>)
+    @@ "TwoLayersSafe" :>
+          ScenL(<<"upgrader", "writer", "reader">>, <<<<1, 3>>, <<2, 3>>, <<1, 1>>>>,
+                <<1, 1>>, <<1, 3>>, <<1, 1, 1>>, <<1, 1, 1>>)
+    @@ "TwoLayersUnsafe" :>
+          ScenL(<<"upgrader", "writer", "reader">>, <<<<1, 3>>, <<2, 3>>, <<1, 1>>>>,
+                <<1, 1>>, <<1, 3>>, <<1, 1, 1>>, <<2, 1, 1>>)
+    @@ "TwoLayerUpgradesSafe" :>
+          ScenL(<<"upgrader", "upgrader", "reader">>,
+                <<<<1, 3>>, <<2, 3>>, <<1, 1>>>>,
+                <<1, 1>>, <<1, 3>>, <<1, 2, 1>>, <<1, 1, 1>>)
+    @@ "TwoLayerUpgradesUnsafe" :>
+          ScenL(<<"upgrader", "upgrader", "reader">>,
+                <<<<1, 3>>, <<2, 3>>, <<1, 1>>>>,
+                <<1, 1>>, <<1, 3>>, <<1, 2, 1>>, <<1, 4, 1>>)
+    @@ "TwoLayerUpgradesFloor" :>
+          ScenL(<<"upgrader", "upgrader", "reader">>,
+                <<<<1, 3>>, <<2, 3>>, <<1, 1>>>>,
+                <<1, 1>>, <<1, 3>>, <<1, 2, 1>>, <<1, 3, 1>>)
 
 RoleOf == Scenarios[Scenario].roles
 SpeaksOf == Scenarios[Scenario].speaks
 Oldest == Scenarios[Scenario].oldest
 Current == Scenarios[Scenario].current
-Target == Scenarios[Scenario].target
-UpLayer == 1
+\* The layer an upgrader upgrades, and the floor of its upgrade.
+UpL(p) == Scenarios[Scenario].upl[p]
+UpF(p) == Scenarios[Scenario].upf[p]
+\* The schema an upgrade moves its layer to: the next after the one its upgrader speaks.
+UpTarget(p) == SpeaksOf[p][UpL(p)] + 1
+
+Max(a, b) == IF a >= b THEN a ELSE b
+
+\* Under Cyclic the count, the generation and the versions wrap within 1..CycleMod, so a
+\* behaviour can repeat a state; an even bound keeps the count's parity. Nothing that
+\* compares two of their values is checked in a cyclic configuration.
+Nx(x) == IF Cyclic THEN (x % CycleMod) + 1 ELSE x + 1
+Pv(x) == IF Cyclic /\ x <= 1 THEN CycleMod ELSE x - 1
+\* Under Cyclic the bounds on requests, reads, discoveries and listings are lifted, and a
+\* bound of 0 still leaves the step out.
+Room(c, m) == IF Cyclic THEN m > 0 ELSE c < m
+Tick(c) == IF Cyclic THEN c ELSE c + 1
 
 ASSUME Scenario \in DOMAIN Scenarios
 ASSUME Procs # {} /\ Procs = 1..Len(RoleOf)
 ASSUME MaxRequests \in Nat /\ MaxDeaths \in Nat /\ MaxCrashes \in Nat
 ASSUME MaxReads \in Nat /\ MaxLeases \in Nat /\ Escapes \in BOOLEAN
-ASSUME NSlots \in Nat /\ MaxListings \in Nat
-ASSUME \A p \in Procs :
-          RoleOf[p] \in {"reader", "writer", "safeUpgrader", "unsafeUpgrader"}
-ASSUME \A l \in 1..Len(Oldest) :
-          Oldest[l] <= Current[l] /\ Current[l] <= Target[l]
+ASSUME Txn \in BOOLEAN /\ UnloggedRecovery \in BOOLEAN
+ASSUME UnloggedRecovery => ~Txn
+ASSUME MixedWrites \in BOOLEAN /\ (MixedWrites => UnloggedRecovery)
+ASSUME UpSteps \in Nat /\ (UpSteps > 0 => Txn)
+ASSUME UpSteps > 0 => Control # "upgrader-holds-exclusion"
+ASSUME NSlots \in Nat /\ MaxListings \in Nat /\ MaxDiscoveries \in Nat
+ASSUME MaxUpgrades \in Nat
+ASSUME Cyclic \in BOOLEAN /\ CycleMod \in Nat
+ASSUME Cyclic => (CycleMod > 0 /\ CycleMod % 2 = 0)
+ASSUME \A p \in Procs : RoleOf[p] \in {"reader", "writer", "upgrader"}
+ASSUME \A l \in 1..Len(Oldest) : Oldest[l] <= Current[l]
 ASSUME Control \in {"none", "replace-without-fence", "unlock-before-clear",
                     "ignore-restart", "assembled-sample", "late-invalidation",
                     "read-untrusted-as-stored", "cache-always-kept",
@@ -272,14 +486,39 @@ ASSUME Control \in {"none", "replace-without-fence", "unlock-before-clear",
                     "list-without-claim", "register-releases-claim-early",
                     "entry-follows-the-handles-life", "register-without-claim",
                     "reuse-without-liveness-probe",
-                    "listing-infers-from-fullness"}
+                    "listing-infers-from-fullness",
+                    "reset-during-a-transaction", "reset-while-recovery-required",
+                    "apply-before-prepare", "prepare-before-ingest",
+                    "end-before-the-swaps", "failure-after-prepare-is-rolled-back",
+                    "discovery-trusts-the-ownership-record",
+                    "discovery-ignores-the-fence", "discovery-ignores-the-restart",
+                    "discovery-clears-the-fence",
+                    "fence-cleared-at-recovery-start",
+                    "count-published-before-the-namespace-is-whole",
+                    "recovery-rolls-back-a-prepared-transaction",
+                    "step-before-the-intent", "version-advanced-early",
+                    "interrupted-upgrade-rolled-back",
+                    "interrupted-upgrade-admits-source-writers",
+                    "upgrade-ignores-recovery-required",
+                    "clone-starts-during-the-body",
+                    "unsafe-judged-against-the-current-schema",
+                    "unsafe-upgrade-raises-every-layer",
+                    "upgrade-rules-apply-to-every-layer"}
 
 Layers == 1..Len(Oldest)
+
+\* The most acquisitions of exclusion: one for each request, and one for each upgrade
+\* that takes it for its body.
+Acquisitions == MaxRequests + MaxUpgrades
 
 \* The most any count or sample can reach: two raises per operation, one more
 \* for each operation's nested end under a control, and one for a sample of
 \* state that cannot be vouched for.
-MaxCount == 3 * MaxRequests + 1
+MaxCount == 3 * Acquisitions + 1
+
+\* The most the version of the shared durable state can reach: each transaction
+\* changes it at most once for each record it appends or resets.
+MaxShared == 6 * Acquisitions
 
 VARIABLES
     pc,          \* [Procs -> process states]: each process's execution state
@@ -293,6 +532,10 @@ VARIABLES
     gen,         \* the generation, advanced on every acquisition of exclusion
     a, b,        \* the two cells of a write; a # b is a store half applied
     shared,      \* durable state a holder may cache
+    log,         \* the commit log's tail: "empty", or the latest transaction's
+                 \* last record: "begun", "prepared" or "ended"
+    stage,       \* the version whose bodies are staged, or 0
+    ptgt,        \* the version the prepare record's swap set moves to, or 0
     mygen,       \* [Procs -> gen or NoVal]: what each handle last advanced to
     cache,       \* [Procs -> shared or NoVal]: each handle's knowledge of it
     rphase,      \* [Procs -> reader phase]: where each reader is in its read
@@ -301,6 +544,7 @@ VARIABLES
     rseenB,      \* [Procs -> b or NoVal]: what a reader observed of b
     rpart,       \* [Procs -> part or NoVal]: half an assembled sample
     scache,      \* [Procs -> sample or NoVal]: each reader's cached sample
+    disc,        \* [Procs -> report]: what each handle's last discovery said
     att,         \* [Procs -> attachment states]: where each is in attaching or
                  \* converting, which fixes the gate and tiers it holds
     areq,        \* [Procs -> request states]: the state of its latest attach or
@@ -325,26 +569,40 @@ VARIABLES
     lists,       \* how many listings have been started
     oldest,      \* [Layers -> schema]: the oldest admissible reader schema
     current,     \* [Layers -> schema]: the current schema
-    upState,     \* "ordinary", or an upgrade of UpLayer in progress, "safe" or
-                 \* "unsafe" for readers; it survives its upgrader's death
+    upState,     \* "ordinary", or an upgrade in progress, "safe" or "unsafe" for
+                 \* readers; it survives its upgrader's death
+    ustep,       \* how many migration steps of the recorded upgrade are durable
+    ulayer,      \* 0, or the layer the recorded upgrade moves
+    utgt,        \* the schema the recorded upgrade moves that layer to
+    ufloor,      \* the oldest reader schema that can read what it leaves
+    dfloor,      \* [Layers -> schema]: the oldest reader schema that can read the
+                 \* data of each layer as it is
+    rtier,       \* [Procs -> BOOLEAN]: whether an upgrader holds the reader tier
+                 \* exclusively, decided when it takes its first tier
     diedIn,      \* ghost: where the latest holder died with the record present
     requests,
     deaths,
     crashes,
-    reads
+    reads,
+    discoveries,
+    upgrades
 
 vars == <<pc, req, eligible, lockHolder, owner, fence, trusted, count, gen,
-          a, b, shared, mygen, cache, rphase, rbefore, rseenA, rseenB, rpart,
-          scache, att, areq, lease, cl, ll, etok, edr, ovf, rst, rscan, rcur,
-          lph, lcur, ltok, lrep, lunk, lfree, lres, lists, oldest, current,
-          upState, diedIn, requests, deaths, crashes, reads>>
+          a, b, shared, log, stage, ptgt, mygen, cache, rphase, rbefore, rseenA,
+          rseenB, rpart, scache, disc, att, areq, lease, cl, ll, etok, edr, ovf,
+          rst, rscan, rcur, lph, lcur, ltok, lrep, lunk, lfree, lres, lists,
+          oldest, current, upState, ustep, ulayer, utgt, ufloor, dfloor, rtier,
+          diedIn, requests, deaths, crashes, reads,
+          discoveries, upgrades>>
 
 coord  == <<lockHolder, owner, fence, trusted, count, gen>>
-store  == <<a, b, shared>>
+store  == <<a, b, shared, log, stage, ptgt>>
 handle == <<mygen, cache>>
-reader == <<rphase, rbefore, rseenA, rseenB, rpart, scache>>
-counts == <<requests, deaths, crashes, reads>>
-schema == <<oldest, current, upState>>
+reader == <<rphase, rbefore, rseenA, rseenB, rpart, scache, disc>>
+counts == <<requests, deaths, crashes, reads, discoveries, upgrades>>
+\* What the store records about schemas and the upgrade in progress.
+recorded == <<oldest, current, dfloor, upState, ulayer, utgt, ufloor, ustep>>
+schema == <<recorded, rtier>>
 \* The registry: the entries' locks and data, each handle's place in keeping its
 \* entry, and each listing's.
 rlock  == <<cl, ll>>
@@ -370,25 +628,53 @@ core   == <<pc, att, areq, lease, schema, bystanders>>
 \* before the first effect; "writing" between the effects, or "nested" while an
 \* operation nested under the hold runs there; "wrote" after the last;
 \* "closing" while the closing raise is prepared and not yet published; and
-\* "closed" once the operation is over. "told" holds exclusion having been
-\* told recovery is required, or having failed unresolved, and may only
-\* release it. "releasing" has cleared the record and still holds the lock;
+\* "closed" once the operation is over. Under Txn an operation goes from "open"
+\* through "begun" (the begin record is in the log), "ingested" (the bodies are
+\* staged), "prepared" (the prepare record is in the log: the commit point),
+\* "writing" and "nested" (between the swaps), "applied" (every swap has
+\* landed) and "ended" (the end record is in the log) to "wrote". "told" holds
+\* exclusion having been told recovery is required, or having failed
+\* unresolved, and may only release it or run recovery. A recoverer is in
+\* "recSwap1" and "recSwap2" while it makes the swaps a prepared transaction
+\* names, "recEnd" while it appends that transaction's end record or sweeps one
+\* that was begun, "recReset" while it resets the log of one that was, "recSweep"
+\* while it sweeps the staging, "recWhole" while it makes an unlogged write's
+\* half-applied store whole, "recCount" while it publishes the even count
+\* together with the trusted state, and "recClear" while it clears the fence.
+\* Under UpSteps an upgrader holds exclusion for its body and goes through
+\* "locked", "held", "opening" and "open" as a writer does; "upBody" is it, or a
+\* writer's operation, between recording the upgrade intent and clearing it, and
+\* "recUp" a recoverer doing the same for an upgrade it resumes. "releasing" has
+\* cleared the record and still holds the lock;
 \* "unlocked" is only reached under Control = "unlock-before-clear", and has
 \* dropped the lock but not cleared the record. "detached" is a handle whose
 \* conversion was cancelled or failed: it holds nothing, refuses every
 \* operation, and may attach again or be dropped. "detaching" is a handle that
 \* is being dropped and is leaving the registry before it lets go of its tiers.
 LiveStates == {"attaching", "converting", "convertingX", "idle", "waiting",
-               "locked", "held", "opening", "open", "writing", "nested",
-               "wrote", "closing", "closed", "told", "releasing",
-               "unlocked", "detached", "detaching"}
+               "locked", "held", "opening", "open", "begun", "ingested",
+               "prepared", "writing", "nested", "applied", "ended", "wrote",
+               "closing", "closed", "told", "releasing", "unlocked", "detached",
+               "detaching", "recSwap1", "recSwap2", "recEnd", "recReset",
+               "recSweep", "recCount", "recClear", "upBody", "recUp",
+               "recWhole"}
 \* Where a process is inside an operation of its own: a write from its request
 \* to its release. A read is inside one while rphase is not "none".
 InOperationStates == LiveStates \ {"attaching", "converting", "convertingX",
                                    "idle", "detached", "detaching"}
 States == {"new", "exited", "dead"} \cup LiveStates
-OpenStates == {"open", "writing", "nested", "wrote", "closing"}
+OpenStates == {"open", "begun", "ingested", "prepared", "writing", "nested",
+               "applied", "ended", "wrote", "closing", "upBody"}
+\* Where a holder is inside a transaction, between its begin record and the
+\* sweep of its staging.
+TxnStates == {"begun", "ingested", "prepared", "writing", "nested", "applied",
+              "ended"}
+\* Where a holder is running recovery, which holds exclusion and the record.
+RecStates == {"recWhole", "recSwap1", "recSwap2", "recEnd", "recReset", "recSweep",
+              "recCount", "recClear", "recUp"}
+DiscReports == {"none", "required", "notRequired"}
 OwnsRecord == OpenStates \cup {"held", "opening", "closed", "told", "convertingX"}
+                         \cup RecStates
 HoldsLock == OwnsRecord \cup {"locked", "releasing"}
 Outcomes == {"served", "withdrawn", "dead", "refused"}
 DiedKinds == {"none", "crash", "unlocked"} \cup OwnsRecord
@@ -431,12 +717,22 @@ Odd(n) == n % 2 = 1
 Even(n) == n % 2 = 0
 
 CanWrite(p) == RoleOf[p] # "reader"
-Upgrader(p) == RoleOf[p] \in {"safeUpgrader", "unsafeUpgrader"}
+Upgrader(p) == RoleOf[p] = "upgrader"
+
+\* An upgrade counts as safe for readers only if it is safe for every reader schema
+\* that is still admissible, from the oldest up: what it leaves can be read by the
+\* oldest. Under Control = "unsafe-judged-against-the-current-schema" it is judged
+\* against the current schema alone.
+SafeFor(p) ==
+    UpF(p) <= (IF Control = "unsafe-judged-against-the-current-schema"
+                  THEN current[UpL(p)] ELSE oldest[UpL(p)])
+
 \* Whether an upgrade takes the reader tier exclusively, which drains every
-\* reader. An upgrade that is unsafe for readers does, unless a control says
-\* otherwise.
-TakesReaderTier(p) ==
-    RoleOf[p] = "unsafeUpgrader" /\ Control # "unsafe-upgrade-leaves-readers"
+\* reader, is decided when its upgrader takes its first tier: an upgrade that is
+\* not safe for readers does, unless a control says otherwise. The schemas cannot
+\* change after that until the upgrade completes, since it holds the gate.
+DecideReaderTier(p) == ~SafeFor(p) /\ Control # "unsafe-upgrade-leaves-readers"
+TakesReaderTier(p) == rtier[p]
 
 \* The gate and the tiers each process holds, fixed by where it is.
 HoldsGateS(p) == att[p] \in {"hasGate", "gateRd", "gateWr"}
@@ -468,18 +764,26 @@ ReaderXHeld == \E q \in Procs : HoldsReaderX(q)
 WriterSHeld == \E q \in Procs : HoldsWriterS(q)
 WriterXHeld == \E q \in Procs : HoldsWriterX(q)
 
-\* Whether an upgrade of layer l is in progress, which changes what it admits.
-InProgress(l) == upState # "ordinary" /\ l = UpLayer
+\* Whether an upgrade of layer l is in progress, which changes what it admits. Under
+\* Control = "upgrade-rules-apply-to-every-layer" an upgrade of any layer counts as
+\* in progress for every layer.
+InProgress(l) ==
+    upState # "ordinary" /\ (l = ulayer \/ Control = "upgrade-rules-apply-to-every-layer")
 
 \* The admission rules, per layer, over what the store records (DESIGN-NOTES
-\* "Schemas and attachment").
+\* "Schemas and attachment"). An upgrade of one layer changes the rules of that
+\* layer alone.
 ReaderOK(l, s) ==
     IF InProgress(l)
        THEN upState = "safe"
-            /\ ((oldest[l] <= s /\ s <= current[l]) \/ s = Target[l])
+            /\ ((oldest[l] <= s /\ s <= current[l]) \/ s = utgt)
        ELSE oldest[l] <= s /\ s <= current[l]
 WriterOK(l, s) ==
-    IF InProgress(l) THEN s = Target[l] ELSE s = current[l]
+    IF InProgress(l)
+       THEN s = utgt
+            \/ (Control = "interrupted-upgrade-admits-source-writers"
+                /\ s = current[l])
+       ELSE s = current[l]
 Admissible(p) ==
     \A l \in Layers :
         IF CanWrite(p) THEN WriterOK(l, SpeaksOf[p][l])
@@ -488,12 +792,41 @@ Admissible(p) ==
 \* A store with its write half applied.
 Partial == a # b
 
+\* A commit log whose latest transaction is neither ended nor rolled back.
+UnresolvedLog == log \in {"begun", "prepared"}
+
+\* An upgrade whose intent is recorded and not yet cleared, whether or not its
+\* upgrader lives.
+IntentStands == UpSteps > 0 /\ upState # "ordinary"
+
+\* Whether the recorded upgrade has moved its layer to its target schema, and
+\* whether p's own upgrade has, whether or not an intent still stands.
+Advanced == ulayer # 0 /\ current[ulayer] = utgt
+Completed(p) == current[UpL(p)] = UpTarget(p)
+
+\* The oldest reader schemas once the recorded upgrade completes: an upgrade unsafe
+\* for readers sets its own layer's to its target, whatever its floor, and any other
+\* leaves them as they are. Under Control = "unsafe-upgrade-raises-every-layer" every
+\* layer's is set to its current schema.
+OldestAfterCompleting ==
+    IF upState # "unsafe" THEN oldest
+    ELSE IF Control = "unsafe-upgrade-raises-every-layer"
+            THEN [l \in Layers |-> IF l = ulayer THEN utgt ELSE current[l]]
+            ELSE Set(oldest, ulayer, utgt)
+
+\* Everything recovery may have to finish.
+UnresolvedWork == Partial \/ UnresolvedLog \/ stage # 0 \/ IntentStands
+
+\* A store with nothing left for recovery to finish: the namespace whole, the log
+\* resolved, no staging and no upgrade intent standing.
+Settled == a = b /\ log \in {"empty", "ended"} /\ stage = 0 /\ ~IntentStands
+
 \* What a sampler finds when it reads the published count. State that cannot be
 \* vouched for reads as odd, whatever is stored.
 Visible ==
     IF trusted \/ Control = "read-untrusted-as-stored"
        THEN count
-       ELSE IF Odd(count) THEN count ELSE count + 1
+       ELSE IF Odd(count) THEN count ELSE Nx(count)
 
 \* The value a reader's next single-step sample returns: its cached sample if
 \* it holds one, otherwise what it reads.
@@ -503,6 +836,7 @@ Sampled(p) == IF scache[p] # NoVal THEN scache[p] ELSE Visible
 Undisturbed(x, y) == x = y /\ Even(x)
 
 -----------------------------------------------------------------------------
+\* Audience: internal.
 TypeOK ==
     /\ pc \in [Procs -> States]
     /\ req \in [Procs -> {"none", "pending"} \cup Outcomes]
@@ -512,18 +846,22 @@ TypeOK ==
     /\ fence \in BOOLEAN
     /\ trusted \in BOOLEAN
     /\ count \in 0..MaxCount
-    /\ gen \in 0..MaxRequests
+    /\ gen \in 0..Acquisitions
     /\ a \in 0..MaxRequests
     /\ b \in 0..MaxRequests
-    /\ shared \in 0..MaxRequests
-    /\ mygen \in [Procs -> NoVal..MaxRequests]
-    /\ cache \in [Procs -> NoVal..MaxRequests]
+    /\ shared \in 0..MaxShared
+    /\ log \in {"empty", "begun", "prepared", "ended"}
+    /\ stage \in 0..MaxRequests
+    /\ ptgt \in 0..MaxRequests
+    /\ mygen \in [Procs -> NoVal..Acquisitions]
+    /\ cache \in [Procs -> NoVal..MaxShared]
     /\ rphase \in [Procs -> ReaderPhases]
     /\ rbefore \in [Procs -> NoVal..MaxCount]
     /\ rseenA \in [Procs -> NoVal..MaxRequests]
     /\ rseenB \in [Procs -> NoVal..MaxRequests]
     /\ rpart \in [Procs -> NoVal..MaxCount]
     /\ scache \in [Procs -> NoVal..MaxCount]
+    /\ disc \in [Procs -> DiscReports]
     /\ att \in [Procs -> AttStates]
     /\ areq \in [Procs -> {"none", "pending"} \cup Outcomes]
     /\ lease \in [Procs -> 0..MaxLeases]
@@ -546,11 +884,19 @@ TypeOK ==
     /\ oldest \in [Layers -> Nat]
     /\ current \in [Layers -> Nat]
     /\ upState \in {"ordinary", "safe", "unsafe"}
+    /\ ustep \in 0..UpSteps
+    /\ ulayer \in 0..Len(Oldest)
+    /\ utgt \in Nat
+    /\ ufloor \in Nat
+    /\ dfloor \in [Layers -> Nat]
+    /\ rtier \in [Procs -> BOOLEAN]
     /\ diedIn \in DiedKinds
     /\ requests \in 0..MaxRequests
     /\ deaths \in 0..MaxDeaths
     /\ crashes \in 0..MaxCrashes
     /\ reads \in 0..MaxReads
+    /\ discoveries \in 0..MaxDiscoveries
+    /\ upgrades \in 0..MaxUpgrades
 
 Init ==
     /\ pc = [p \in Procs |-> "new"]
@@ -565,6 +911,9 @@ Init ==
     /\ a = 0
     /\ b = 0
     /\ shared = 0
+    /\ log = "empty"
+    /\ stage = 0
+    /\ ptgt = 0
     /\ mygen = [p \in Procs |-> NoVal]
     /\ cache = [p \in Procs |-> NoVal]
     /\ rphase = [p \in Procs |-> "none"]
@@ -573,6 +922,7 @@ Init ==
     /\ rseenB = [p \in Procs |-> NoVal]
     /\ rpart = [p \in Procs |-> NoVal]
     /\ scache = [p \in Procs |-> NoVal]
+    /\ disc = [p \in Procs |-> "none"]
     /\ att = [p \in Procs |-> "off"]
     /\ areq = [p \in Procs |-> "none"]
     /\ lease = [p \in Procs |-> 0]
@@ -595,11 +945,19 @@ Init ==
     /\ oldest = [l \in Layers |-> Oldest[l]]
     /\ current = [l \in Layers |-> Current[l]]
     /\ upState = "ordinary"
+    /\ ustep = 0
+    /\ ulayer = 0
+    /\ utgt = 0
+    /\ ufloor = 0
+    /\ dfloor = [l \in Layers |-> Oldest[l]]
+    /\ rtier = [p \in Procs |-> FALSE]
     /\ diedIn = "none"
     /\ requests = 0
     /\ deaths = 0
     /\ crashes = 0
     /\ reads = 0
+    /\ discoveries = 0
+    /\ upgrades = 0
 
 \* What a process forgets when it ends: its handle's memory and any read.
 Forget(p) ==
@@ -611,5 +969,6 @@ Forget(p) ==
     /\ rseenB' = Set(rseenB, p, NoVal)
     /\ rpart' = Set(rpart, p, NoVal)
     /\ scache' = Set(scache, p, NoVal)
+    /\ disc' = Set(disc, p, "none")
 
 =============================================================================

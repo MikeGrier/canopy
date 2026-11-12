@@ -462,6 +462,11 @@ Protocol specs live in a crate's `spec/` directory as `<Name>.tla` with a siblin
 `<Name>.cfg`. Why the repository has them, and how code is held to them, is the formal-model
 decision in [crates/canopy/DESIGN-NOTES.md](../crates/canopy/DESIGN-NOTES.md).
 
+A spec that grows past the source-module size scale is a chain of modules, each `EXTENDS` the one
+before it, split at the same fracture points and with the same provenance trail as source. A
+chain's `<Name>.tla` is a facade that extends the last module, so configurations and the tools
+below name it unchanged.
+
 **Pinned toolchain** (Windows host):
 
 - JDK: Microsoft Build of OpenJDK 21 -- `winget install --id Microsoft.OpenJDK.21 -e`.
@@ -492,6 +497,110 @@ and its state files under `.scratch/tlc/states`, suppresses TLC's generated trac
 spec so nothing is written beside the spec, and exits with TLC's code: `0` when every
 invariant and property holds, non-zero otherwise (`12` for a safety violation). A spec check
 is therefore a gate like `cargo test`.
+
+**Run every configuration of a spec** with
+[tools/run-tlc-all.ps1](../tools/run-tlc-all.ps1):
+
+```powershell
+pwsh tools/run-tlc-all.ps1 -Spec crates/canopy/spec/<Name>.tla
+pwsh tools/run-tlc-all.ps1 -Spec crates/canopy/spec/<Name>.tla -Filter '*Witness*'
+pwsh tools/run-tlc-all.ps1 -Spec crates/canopy/spec/<Name>.tla -Filter '*Cumulative*,<Name>-Txn' -FailFast
+pwsh tools/run-tlc-all.ps1 -Spec crates/canopy/spec/<Name>.tla -Tier item
+pwsh tools/run-tlc-all.ps1 -Spec crates/canopy/spec/<Name>.tla -Tier evidence -Parallel 6
+```
+
+A `-Filter` list is one comma-separated string, so that it arrives whole however `pwsh` is started.
+`-Parallel N` runs N configurations at once, each with an equal share of the processors and of
+three quarters of memory (`-Workers` and `-HeapGB` override them); TLC's liveness check uses about
+one thread per branch, so liveness configurations side by side use cores a single run leaves idle.
+
+A spec's configurations are its sibling `<Name>.cfg` and `<Name>-*.cfg` files. Each states the
+outcome it requires in its header comment -- `TLC must report <Name> violated` for a negative
+control or a witness, `TLC must report a deadlock` for a negative control for a wait that never
+ends, or `every invariant and property holds` -- and the tool runs each one and compares. It
+exits non-zero when any outcome differs, so a negative control that stops failing, or a witness
+whose state becomes unreachable, is caught instead of passing. A configuration whose header
+states no outcome is listed as unchecked. Write the header so it can be read: a new
+configuration of a spec this tool covers states its outcome in one of those three forms.
+
+**Configurations are generated.** Every `Coordination*.cfg` is written by
+[tools/gen-coordination-cfgs.ps1](../tools/gen-coordination-cfgs.ps1), every `Acquisition*.cfg` by
+[tools/gen-acquisition-cfgs.ps1](../tools/gen-acquisition-cfgs.ps1), every `Creation*.cfg` by
+[tools/gen-creation-cfgs.ps1](../tools/gen-creation-cfgs.ps1), every `PointerPublication*.cfg` by
+[tools/gen-pointer-publication-cfgs.ps1](../tools/gen-pointer-publication-cfgs.ps1) and every
+`SharedPublication*.cfg` by
+[tools/gen-shared-publication-cfgs.ps1](../tools/gen-shared-publication-cfgs.ps1), from tables --
+the parts under `tools/gen-coordination-cfgs/` for Coordination -- that carry each configuration's
+constants, its required outcome and its tier. Change a configuration by changing its table and
+regenerating, never the generated file; regenerating changes no file when the tables have not. A new
+configuration is a new table entry.
+
+[tools/check-run-tlc-all.ps1](../tools/check-run-tlc-all.ps1) checks that the sweep can fail, and
+is run when the sweep tool changes. [tools/trace-summary.ps1](../tools/trace-summary.ps1) prints a
+counterexample as each state's action and the variables that changed in it, and
+[tools/fmt-header.ps1](../tools/fmt-header.ps1) formats a spec's header comment at the box width.
+
+**Tiers.** A configuration whose header carries the line `\* Tier: milestone.` is slow enough
+that the sweep keeps it out of the work-item loop; every other configuration is in the `item`
+tier, apart from the `evidence` tier below. `-Tier item` runs the item tier, `-Tier milestone`
+the milestone tier, and the default sweep runs both. `-List` shows what a filter and tier select
+without running anything, and a sweep reports any item-tier configuration that ran slowly, so the
+tags stay honest.
+
+A configuration whose header carries `\* Tier: evidence.` takes a quarter of an hour to hours --
+the liveness checks under strong fairness are the case -- and establishes a finding recorded in a
+design note rather than guarding a rule. The default sweep, the milestone boundary's included,
+leaves it out and names it as not run. It is run with `-Tier evidence` (and a `-Filter`) only when
+a change touches what its finding rests on, which the table that tags it says; a work item whose
+change does names those configurations in its `Verify:` line with `-Tier evidence`. `-Tier all`
+runs every tier.
+
+**Cadence: guardrails, not a lawyer for every adjustment.** A work item that changes a spec ends
+with a `Verify:` line naming the `-Filter` patterns of the configurations that show it -- its
+controls and witnesses, and the mains it touches -- and is checked by running exactly those with
+`-FailFast`. The full sweep belongs to the milestone boundary, and an hour there is welcome once
+the PR has merged; a mismatch it finds is ordinary realignment, not a failure of the item. A
+change to a definition every configuration shares may justify a broader run sooner (`-Tier
+item`); say why it was run. While a model's rules are being authored such changes are frequent
+and the cost is accepted, but a broad run is never the standard cadence.
+
+**Probes.** A probe is a mutation test of a model: in a scratch copy of the spec one rule is
+broken, and the property written for that rule must fail. A mutant that survives shows a check
+that cannot fail. Probes are written and run at the milestone boundary, never per work item or
+per build, and before the boundary's sweep, because a survivor can change a scenario and so the
+configurations the sweep runs. Choose them from the milestone's diff: a mutant for each rule it
+adds or changes, and the existing mutants whose targets, or the definitions those depend on, it
+changes. A full probe run belongs with the full sweep.
+
+The mutants of a spec are data: `<spec dir>/probes/<Name>/*.psd1`, one file per subject, each
+mutant a name, a base configuration, the one property that must fail and an `Old`/`New` text
+edit. [tools/run-probes.ps1](../tools/run-probes.ps1) runs them, `-Parallel` at a time, and its
+header describes every field:
+
+```powershell
+pwsh tools/run-probes.ps1 -Spec crates/canopy/spec/<Name>.tla -Check
+pwsh tools/run-probes.ps1 -Spec crates/canopy/spec/<Name>.tla -Filter 'die-*,*upgrade*' -Parallel 6
+```
+
+`Old` must occur exactly once -- in the body of the mutant's `Def` when it names one -- and an
+UNCHANGED tuple's contents are not compared, so a variable added to a frame leaves a mutant as it
+was. A mutant whose text no longer matches is STALE: it is reported before any TLC run, it fails
+the run, and it is never skipped. `-Check` finds the stale ones without running TLC, and
+re-expressing them against the current text, or retiring them on purpose, is the first step of the
+boundary's probe work: it is what a rule having changed costs, not a defect in the milestone. A
+repaired mutant is trusted only once it has run and come out as recorded.
+
+**Audience tags.** Every invariant and property a configuration checks, other than the `Witness_`
+ones, opens its header comment with `\* Audience: client.` or `\* Audience: internal.`; a client
+one states the guarantee in a user's words and the outcome it `Shows through:`. The rule for which
+is in [crates/canopy/DESIGN-NOTES.md](../crates/canopy/DESIGN-NOTES.md) "Who a property is for", and
+[tools/check-audience-tags.ps1](../tools/check-audience-tags.ps1) `-Spec <spec.tla>` fails a spec
+in which a property has none, so a work item that adds a property tags it and runs the check.
+
+A configuration cannot state a sequence, so a spec that needs per-process data names it with a
+string constant that selects a table in the spec itself (`Scenario` in `Coordination.tla`).
+TLC also refuses to compare values of different kinds, so a "no process" sentinel for a set of
+numbered processes is a number, not a string.
 
 WSL has no JDK installed, so TLC runs on the Windows host only.
 
@@ -851,6 +960,11 @@ is walked one hop at a time.
 
 1. Start from a clean tree (stash in-flight milestone work first, see above); the split is
    its own commit.
+   - A module whose uncommitted text is the text to split has nothing to stash: commit it
+     whole first, limited to its path (`git add -- <file>`), and name that commit in the headers.
+     A file that only needs a wiring line, and has other uncommitted edits, goes into the split
+     commit as its committed text plus that line (`git hash-object -w`, then
+     `git update-index --cacheinfo`), so no other work rides along.
 2. Capture the pre-split commit for the header:
    `git --no-pager rev-parse --short HEAD`
 3. **Move the bytes by copy-then-delete, never by retyping.** `tpu_copy_file` the whole source
@@ -871,7 +985,9 @@ is walked one hop at a time.
 4. Add the provenance header to each extracted file; wire the facade's `mod` / re-exports.
 5. Run the Rust pre-commit gate (`cargo_fmt`, then `cargo_clippy --all-targets`) and the
    in-scope tests. `cargo fmt` should produce no diff inside the moved blocks.
-6. Write the message to a scratch file (multi-line messages must never go through `-m`):
+6. Write the message to a scratch file with `tpu_write_file`, which overwrites, so that a message
+   left there by an earlier commit is never the one committed (multi-line messages must never go
+   through `-m`):
 
    ```
    Split store.rs: extract recovery and scrub
@@ -1169,7 +1285,8 @@ as checklist items:
    intentionally-excluded slow crates, and has previously caused builds to appear to
    hang. `--all-targets` (tests/examples/benches) is fine and expected; `--workspace`
    (all members) is not.
-2. **Test only the in-scope crate / source-component**, not the whole default workspace.
+2. **Test only the in-scope crate / source-component**, not the whole default workspace. For a
+   milestone that changed a TLA+ spec this includes its probes (see "TLA+ / TLC").
 3. **Build the in-scope crate's documentation, and resolve every broken link it reports.**
    For Rust this is `cargo doc -p <crate> --no-deps`, and the gate is specifically rustdoc's
    **`unresolved link`** class: a doc comment naming an item that does not resolve.

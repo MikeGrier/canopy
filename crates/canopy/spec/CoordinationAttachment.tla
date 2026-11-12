@@ -31,12 +31,12 @@ Disqualify(p) ==
 
 Request(p) ==
     /\ CanWrite(p)
-    /\ pc[p] = "idle" /\ rphase[p] = "none" /\ requests < MaxRequests
+    /\ pc[p] = "idle" /\ rphase[p] = "none" /\ Room(requests, MaxRequests)
     /\ pc' = Set(pc, p, "waiting")
     /\ req' = Set(req, p, "pending")
-    /\ requests' = requests + 1
+    /\ requests' = Tick(requests)
     /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, deaths,
-                   crashes, reads>>
+                   crashes, reads, discoveries, upgrades>>
 
 \* The waiter gives up.
 Withdraw(p) ==
@@ -65,7 +65,8 @@ Refuse(p) ==
 \* write, and only then is checked, so an upgrade cannot complete between the
 \* check and the attachment. A detached handle attaches again the same way.
 BeginAttach(p) ==
-    /\ pc[p] \in {"new", "detached"} /\ rst[p] = "out"
+    /\ pc[p] \in {"new", "detached"} \cup (IF Cyclic THEN {"exited"} ELSE {})
+    /\ rst[p] = "out"
     /\ pc' = Set(pc, p, "attaching")
     /\ att' = Set(att, p, "wGate")
     /\ areq' = Set(areq, p, "pending")
@@ -148,13 +149,15 @@ GiveUp(p) ==
                  ELSE IF Control = "cancelled-conversion-stays-usable"
                          THEN "idle" ELSE "detached")
     /\ areq' = Set(areq, p, "withdrawn")
-    /\ UNCHANGED <<schema, rest>>
+    /\ rtier' = Set(rtier, p, FALSE)
+    /\ UNCHANGED <<recorded, rest>>
 
 \* A clone of an attached handle starts an operation, which holds a lease on the
 \* attachment until it ends. A handle that is draining or converting refuses it.
 BeginOp(p) ==
     /\ \/ att[p] = "attached"
        \/ att[p] = "draining" /\ Control = "clone-starts-while-draining"
+       \/ att[p] = "uBody" /\ Control = "clone-starts-during-the-body"
     /\ lease[p] < MaxLeases
     /\ lease' = Set(lease, p, lease[p] + 1)
     /\ UNCHANGED <<pc, att, areq, schema, reg, bystanders>>
@@ -172,10 +175,13 @@ EndOp(p) ==
 StartUpgrade(p) ==
     /\ Upgrader(p) /\ pc[p] = "idle" /\ att[p] = "attached"
     /\ (rphase[p] = "none" \/ Control = "upgrade-from-inside-an-operation")
+    /\ (UpSteps = 0 \/ upgrades < MaxUpgrades)
+    /\ upgrades' = IF UpSteps > 0 THEN upgrades + 1 ELSE upgrades
     /\ pc' = Set(pc, p, "converting")
     /\ att' = Set(att, p, "draining")
     /\ areq' = Set(areq, p, "pending")
-    /\ UNCHANGED <<schema, rest>>
+    /\ UNCHANGED <<schema, lease, reg, req, eligible, coord, store, handle, reader,
+                   diedIn, requests, deaths, crashes, reads, discoveries>>
 
 RefuseUpgrade(p) ==
     /\ Upgrader(p) /\ att[p] = "attached" /\ InsideOperation(p)
@@ -232,13 +238,14 @@ TakeGateX(p) ==
 \* Under Control = "unsafe-writer-tier-first" it takes the writer tier first.
 TakeFirstTier(p) ==
     /\ att[p] = "uGate"
-    /\ IF TakesReaderTier(p) /\ Control # "unsafe-writer-tier-first"
-          THEN /\ ~ReaderSHeld /\ ~ReaderXHeld
-               /\ att' = Set(att, p, "uRd")
-          ELSE /\ ~WriterSHeld /\ ~WriterXHeld
-               /\ att' = Set(att, p, IF TakesReaderTier(p) THEN "uWr"
-                                                           ELSE "uTiers")
-    /\ UNCHANGED <<pc, areq, schema, rest>>
+    /\ LET rt == DecideReaderTier(p) IN
+       /\ rtier' = Set(rtier, p, rt)
+       /\ IF rt /\ Control # "unsafe-writer-tier-first"
+             THEN /\ ~ReaderSHeld /\ ~ReaderXHeld
+                  /\ att' = Set(att, p, "uRd")
+             ELSE /\ ~WriterSHeld /\ ~WriterXHeld
+                  /\ att' = Set(att, p, IF rt THEN "uWr" ELSE "uTiers")
+    /\ UNCHANGED <<pc, areq, recorded, rest>>
 
 TakeSecondTier(p) ==
     /\ \/ att[p] = "uRd" /\ ~WriterSHeld /\ ~WriterXHeld
@@ -248,32 +255,52 @@ TakeSecondTier(p) ==
 
 \* Holding its tiers, an upgrader checks the schemas again. If they are as it
 \* found them and no upgrade is under way, the upgrade begins; one that leaves
-\* readers attached lets the gate reopen to them.
+\* readers attached lets the gate reopen to them. Without a body (UpSteps = 0)
+\* the upgrade is recorded as in progress at once. With one, the upgrader takes
+\* writer exclusion, which no one else can hold while it holds the writer tier,
+\* and goes on as a holder; the intent is recorded under it.
 BeginUpgrade(p) ==
     /\ att[p] = "uTiers"
-    /\ current[UpLayer] = SpeaksOf[p][UpLayer] /\ upState = "ordinary"
-    /\ upState' = IF RoleOf[p] = "unsafeUpgrader" THEN "unsafe" ELSE "safe"
+    /\ current[UpL(p)] = SpeaksOf[p][UpL(p)] /\ upState = "ordinary"
     /\ att' = Set(att, p, "uBody")
-    /\ UNCHANGED <<oldest, current, pc, areq, rest>>
+    /\ IF UpSteps = 0
+          THEN /\ upState' = IF SafeFor(p) THEN "safe" ELSE "unsafe"
+               /\ ulayer' = UpL(p)
+               /\ utgt' = UpTarget(p)
+               /\ ufloor' = UpF(p)
+               /\ UNCHANGED <<oldest, current, dfloor, ustep, rtier, pc, areq, rest>>
+          ELSE /\ lockHolder' = p
+               /\ pc' = Set(pc, p, "locked")
+               /\ UNCHANGED <<schema, areq, lease, reg, req, eligible, owner, fence,
+                              trusted, count, gen, store, handle, reader, diedIn,
+                              counts>>
 
 \* Otherwise it gives up, and its handle is left detached.
 UpgradeMoved(p) ==
     /\ att[p] = "uTiers"
-    /\ ~(current[UpLayer] = SpeaksOf[p][UpLayer] /\ upState = "ordinary")
+    /\ ~(current[UpL(p)] = SpeaksOf[p][UpL(p)] /\ upState = "ordinary")
     /\ att' = Set(att, p, "off")
     /\ pc' = Set(pc, p, IF pc[p] = "convertingX" THEN "held" ELSE "detached")
     /\ areq' = Set(areq, p, "refused")
-    /\ UNCHANGED <<schema, rest>>
+    /\ rtier' = Set(rtier, p, FALSE)
+    /\ UNCHANGED <<recorded, rest>>
 
-\* The upgrade completes: the layer moves to its target, and an upgrade unsafe
-\* for readers raises the oldest reader schema with it.
+\* The upgrade completes: the layer moves to its target, the data's floor rises to
+\* the upgrade's, and an upgrade unsafe for readers raises the oldest reader schema
+\* to that floor with it.
 EndUpgrade(p) ==
+    /\ UpSteps = 0
     /\ att[p] = "uBody"
     /\ (pc[p] = "convertingX" \/ lph[p] = "none")
     /\ upState' = "ordinary"
-    /\ current' = Set(current, UpLayer, Target[UpLayer])
-    /\ oldest' = IF RoleOf[p] = "unsafeUpgrader"
-                    THEN Set(oldest, UpLayer, Target[UpLayer]) ELSE oldest
+    /\ ustep' = ustep
+    /\ current' = Set(current, ulayer, utgt)
+    /\ dfloor' = Set(dfloor, ulayer, Max(dfloor[ulayer], ufloor))
+    /\ oldest' = OldestAfterCompleting
+    /\ ulayer' = 0
+    /\ utgt' = 0
+    /\ ufloor' = 0
+    /\ rtier' = Set(rtier, p, FALSE)
     /\ att' = Set(att, p, "off")
     /\ pc' = Set(pc, p, IF pc[p] = "convertingX" THEN "held" ELSE "exited")
     /\ areq' = Set(areq, p, "served")
@@ -433,13 +460,13 @@ Detach(p) ==
 \* entry live only if the attempt was refused. It says at the end whether it
 \* may be incomplete.
 ListStart(p) ==
-    /\ RegistryOn /\ lph[p] = "none" /\ lists < MaxListings
+    /\ RegistryOn /\ lph[p] = "none" /\ Room(lists, MaxListings)
     /\ pc[p] \notin {"exited", "dead"}
     /\ lph' = Set(lph, p, "next")
     /\ lcur' = Set(lcur, p, 1)
     /\ lunk' = Set(lunk, p, FALSE)
     /\ lfree' = Set(lfree, p, FALSE)
-    /\ lists' = lists + 1
+    /\ lists' = Tick(lists)
     /\ UNCHANGED <<core, rlock, rdata, ovf, rown, ltok, lrep, lres>>
 
 \* Under Control = "list-without-claim" it does not claim the entry at all.

@@ -4,11 +4,12 @@
 #
 # Usage:
 #   pwsh tools/run-tlc.ps1 -Spec crates/canopy/spec/PointerPublication.tla
-#   pwsh tools/run-tlc.ps1 -Spec <spec.tla> -Config <other.cfg> -Workers 4
+#   pwsh tools/run-tlc.ps1 -Spec <spec.tla> -Config <other.cfg> -Workers 4 -HeapGB 8
 #
 # The config defaults to the spec's sibling `.cfg`. TLC's full output goes to
 # .scratch/tlc/<config-name>.out and its state files under .scratch/tlc/states,
-# so nothing is written beside the spec.
+# so nothing is written beside the spec. -HeapGB caps the JVM's heap; without it Java takes its
+# default, a quarter of physical memory.
 #
 # Exit code is TLC's own: 0 when every invariant and property holds, non-zero
 # for a violation, a deadlock, or a parse or semantic error -- so a spec check
@@ -23,6 +24,7 @@ param(
     [string]$Spec,
     [string]$Config,
     [string]$Workers = 'auto',
+    [int]$HeapGB = 0,
     [string]$Jar = (Join-Path $env:USERPROFILE '.tla\1.8.0\tla2tools.jar')
 )
 
@@ -60,7 +62,9 @@ $configPath = (Resolve-Path -LiteralPath $Config).Path
 # TLC resolves EXTENDS against the spec's directory, so run from there.
 Push-Location (Split-Path -Parent $specPath)
 try {
-    & java -XX:+UseParallelGC -cp $Jar tlc2.TLC `
+    $jvm = @('-XX:+UseParallelGC')
+    if ($HeapGB -gt 0) { $jvm += "-Xmx$($HeapGB)g" }
+    & java @jvm -cp $Jar tlc2.TLC `
         -config $configPath `
         -workers $Workers `
         -metadir (Join-Path $outDir 'states') `

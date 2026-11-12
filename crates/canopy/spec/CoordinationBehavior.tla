@@ -18,6 +18,7 @@ Die(p) ==
     /\ diedIn' = IF owner = p THEN pc[p] ELSE diedIn
     /\ deaths' = deaths + 1
     /\ att' = Set(att, p, "off")
+    /\ rtier' = Set(rtier, p, FALSE)
     /\ areq' = IF areq[p] = "pending" THEN Set(areq, p, "dead") ELSE areq
     /\ lease' = Set(lease, p, 0)
     /\ Forget(p)
@@ -34,8 +35,8 @@ Die(p) ==
     /\ lfree' = Set(lfree, p, FALSE)
     /\ lres' = Set(lres, p, "none")
     /\ UNCHANGED <<rdata, ovf, lists>>
-    /\ UNCHANGED <<schema, eligible, owner, fence, trusted, count, gen, store,
-                   requests, crashes, reads>>
+    /\ UNCHANGED <<recorded, eligible, owner, fence, trusted, count, gen, store,
+                   requests, crashes, reads, discoveries, upgrades>>
 
 \* EXTERNAL: power loss. Every process dies and every lock is released. The
 \* coordination state cannot be vouched for afterwards, and the record, the
@@ -60,7 +61,9 @@ Crash ==
     /\ rseenB' = [p \in Procs |-> NoVal]
     /\ rpart' = [p \in Procs |-> NoVal]
     /\ scache' = [p \in Procs |-> NoVal]
+    /\ disc' = [p \in Procs |-> "none"]
     /\ att' = [p \in Procs |-> "off"]
+    /\ rtier' = [p \in Procs |-> FALSE]
     /\ areq' = [p \in Procs |-> IF areq[p] = "pending" THEN "dead" ELSE areq[p]]
     /\ lease' = [p \in Procs |-> 0]
     /\ cl' = [s \in Slots |-> None]
@@ -78,7 +81,8 @@ Crash ==
     /\ lunk' = [p \in Procs |-> FALSE]
     /\ lfree' = [p \in Procs |-> FALSE]
     /\ lres' = [p \in Procs |-> "none"]
-    /\ UNCHANGED <<schema, eligible, gen, store, requests, deaths, reads, lists>>
+    /\ UNCHANGED <<recorded, eligible, gen, store, requests, deaths, reads, lists,
+                   discoveries, upgrades>>
 
 \* Every process has ended. It is the only step then, so a state in which a
 \* process is stuck waiting is the only kind of deadlock.
@@ -105,6 +109,11 @@ Next ==
           \/ Request(p) \/ Withdraw(p) \/ Refuse(p)
           \/ Lock(p) \/ SetFence(p) \/ Record(p)
           \/ BeginOpen(p) \/ EndOpen(p) \/ OpenFails(p)
+          \/ Begin(p) \/ Ingest(p) \/ Prepare(p) \/ PrepareFails(p) \/ Abort(p)
+          \/ End(p) \/ Sweep(p) \/ Quiesce(p)
+          \/ RecStart(p) \/ RecWhole(p) \/ RecSwap1(p) \/ RecSwap2(p) \/ RecEnd(p) \/ RecReset(p)
+          \/ RecSweep(p) \/ RecCount(p) \/ RecClear(p) \/ RecStop(p) \/ Discover(p)
+          \/ RecordIntent(p) \/ UpStep(p) \/ UpAdvance(p) \/ UpClear(p) \/ UpFails(p)
           \/ FirstEffect(p) \/ LastEffect(p) \/ FailUnresolved(p)
           \/ EndEmpty(p) \/ Rollback(p)
           \/ EnterInner(p) \/ LeaveInner(p)

@@ -10,111 +10,103 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
 
 - [x] **ODI-1** -- Writers of different versions: schema versions with one-way exclusive upgrades, attachment in the contract, and a diagnostic registry of attached handles. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#odi-1)
 
-- [ ] **MP-1** -- Extend [PointerPublication.tla](spec/PointerPublication.tla) with a set of
-  processes that interact only through the coordination contract:
-  - the creation reservation, published complete or not at all and made durable before any other
-    artifact, by a creator already holding its implementation's creation exclusion, and an
-    interrupted creation resumed only with identical inputs;
-  - the admission gate in its shared (ordinary) and exclusive (upgrade) modes, and attachment in
-    its reader and writer tiers, acquired in the contract's order, with no handle waiting for the
-    gate while it holds a tier, and the per-layer admission rules over `oldest` and `current`;
-  - a handle's clones sharing its attachment, each operation holding a lease on it; an upgrade
-    draining the leases while still holding its tiers, refusing to start from inside an
-    operation, and cancellable while draining with the handle left attached; and a conversion
-    cancelled or failed after the drain leaving the handle detached;
-  - writer exclusion with its ownership record, the fence set before an abandoned record is
-    replaced;
-  - the modification count bracketing whole logical operations, left odd by an unresolved one,
-    and published atomically -- each sample modelled as an individual read, so that a control
-    which assembles a sample from separately written slots is refuted; a failed opening
-    publication with no effect, a failed closing publication leaving the count odd and the fence
-    set, and state that cannot be vouched for reading as odd until recovery;
-  - the registry's claim and liveness locks, every change to and inspection of an entry made
-    under its claim lock taken without waiting, entries following attachment rather than the
-    handle's life, and a listing never reporting a dead handle live;
-  - the fence and the generation, with each handle's caches kept only when the generation it
-    finds is the one it last advanced to;
-  - every wait -- writer exclusion, the admission gate, the attachment tiers -- with no queue or
-    ticket in the state: whenever access is free, acquisition is enabled for every waiting
-    process and the checker chooses among them, so every safety invariant is checked against
-    every service order; and every wait as an individual request, which ends served, withdrawn,
-    dead with its process, or refused as ineligible.
+- [x] **MP-1.1** -- Processes, death and writer exclusion modelled in `Coordination.tla`, with the waiting model later steps reuse. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#mp-1-1)
 
-  Each process keeps its own execution state. A process's death is distinct from a host crash:
-  it loses only that process's state, leaves the live filesystem as it was, and abandons its holds
-  rather than releasing them cleanly. Death may happen at any step, including before a holder's
-  first effect, mid-publication, after its last effect but before release, between taking a
-  registry entry's claim lock and its liveness lock, while publishing the count, and while an
-  upgrade drains its clones' leases. Opening
-  attaches without changing store data; acquiring exclusion after a holder died sets the fence,
-  reports that recovery is required, and recovers nothing. Readers in any process take
-  sequential samples and classify with them; an optimistic snapshot taken between two swaps of
-  one transaction, or after a transaction failed part-way, must not be accepted. Add
-  configurations with two and three processes, and a control in which a cached sample is
-  invalidated late (an unacknowledged lease break), which must violate the read classification.
+- [x] **MP-1.2** -- The modification count, the fence, the generation and reads modelled in `Coordination.tla`. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#mp-1-2)
 
-- [ ] **MP-2** -- Model the part of transactions that processes interact through: `begin` /
-  ingest / `prepare` / namespace apply / `end`, the commit-log reset (refused while the log holds
-  unresolved work), the fence set by an ambiguous failure, and recovery's roll-forward under its
-  own capability (the fence refuses ordinary writes, not recovery, and is cleared only after
-  recovery succeeds). Work counts toward recovery only once abandoned; discovery while a live
-  holder is mid-transaction reports it as not requiring recovery. Recovery runs as idempotent
-  steps that a stopped or dead recoverer leaves for the next one to resume. Model the schema
-  upgrade the same way: the upgrader releasing its tiers, then taking the gate, then the tiers
-  exclusively, and checking the schemas again; the gate reopening to readers during a
-  reader-safe upgrade; the per-layer admission rules, with each completion setting `oldest` and
-  a later upgrade unsafe for any schema from `oldest` up draining every reader first; the
-  durable intent; resumable steps; the version advanced only after the last step; and an
-  interrupted upgrade resumed as the store's recovery by a handle speaking the target schemas. Include a holder dying with a transaction in flight while another
-  process is attached, a recoverer dying between steps, an upgrader dying mid-migration, two
-  upgraders at once, a cancelled conversion, an upgrader waiting while an attached writer waits
-  for exclusion, a clone of the upgrader trying to write during the upgrade, and two reader-safe
-  upgrades in a row with a reader of the first source still attached.
+- [x] **MP-1.3** -- The admission gate and the attachment tiers modelled in `Coordination.tla`. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#mp-1-3)
 
-- [ ] **MP-3** -- Refine the durable publication record in the model: separate its live and
-  durable state, so writing and clearing it are a mutation followed by an fsync that can fail,
-  and mix logged with unlogged writes on one document, settling a pending record before every
-  precondition check, publication, collection and repair. Include a failed clear followed by
-  another operation and then power loss.
+- [x] **MP-1.4** -- Clones, leases and the upgrade drain modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-1-4)
 
-- [ ] **MP-4** -- Check both guards that hold with one process (resolve before each write; a
-  durable publication record) and every existing invariant with several processes, and check
-  that every condition that sets the fence is recoverable from durable state, so a host restart
-  -- which forces recovery -- loses nothing the fence knew. Then squeeze out what the absence of
-  a fairness requirement does. Liveness needs its own configurations: a finite-state, cyclic
-  workload in which processes keep issuing writes, admissions and upgrades -- the existing
-  bounded-attempt configurations stop contention after a few writes -- with deadlock checking
-  on and no symmetry reduction. Two specifications:
-  - `Spec` carries only the fairness the contract guarantees or assumes: weak fairness on each
-    holder's release and on I/O completion (the stated assumptions that every handle eventually
-    detaches and every I/O eventually succeeds), and, for each synchronization resource
-    separately -- writer exclusion, each mode of the admission gate, each attachment tier --
-    weak fairness on the disjunction of that resource's acquisitions, so that when it stays
-    available some waiter for it is served, with no fairness on any individual acquisition.
-    Under it, check that the store as a whole makes progress, that an upgrade holding its tiers,
-    not cancelled and whose process survives completes, and that a driven recovery completes;
-    and check, for each kind of request -- a writer's, an upgrader's, an attaching handle's --
-    that a request which persists and stays eligible is eventually served, expecting each to
-    fail. A request withdrawn, killed or refused is not starved. Record every counterexample as
-    a named starvation schedule: who is passed over, by whom, and what that leaves undone (an
-    upgrade that never starts, a recovery never driven, a writer never served). From the
-    schedules, list every point of conflict -- which waits contend with which holds -- as the
-    input to CQ-1 and ODI-2.
-  - `FairSpec` adds strong fairness on each individual acquisition. Every behaviour of
-    `FairSpec` is one of `Spec`, so it inherits every safety and store-progress result; check
-    which per-request properties then hold, which shows what fairness can buy. Strong fairness
-    cannot help an exclusive acquirer that is never enabled because overlapping shared holders
-    keep a resource continuously occupied, so check the upgrader's property separately under a
-    variant that withholds shared admission while an exclusive waiter is pending -- an option
-    for ODI-2, not a contract rule. `FairSpec` proves eventual service, never a bound on how
-    often a waiter is passed over. Run it on the small configurations, since strong fairness is
-    costly to check.
+- [x] **MP-1.5** -- The registry modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-1-5)
 
-  Use temporal properties for the stuttering controls, alongside deadlock negative controls
-  that must fail -- an upgrader waiting for the gate while holding a tier. Record the results in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md).
+- [x] **MP-1.6** -- The creation reservation modelled in `Creation.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-1-6)
 
-- [ ] **CQ-1** -- Build a quantitative model of contention for the points of conflict MP-4
+- [x] **MP-2** -- The part of transactions that processes interact through, recovery, and the schema upgrade's body modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2)
+
+- [x] **MP-2.1** -- Transactions and the commit log modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-1)
+
+- [x] **MP-2.2** -- Recovery and its discovery modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-2)
+
+- [x] **MP-2.3** -- The schema upgrade's body modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-3)
+
+- [x] **MP-2.4** -- Cumulative reader compatibility modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-4)
+
+- [x] **ODI-3** -- Both forms of a write and of an upgrade stay in the model for now. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#odi-3)
+
+- [x] **SPEC-1** -- The tools that keep the TLA+ configurations honest are in the repository, and the probe mutants are data beside the spec. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#spec-1)
+
+- [x] **CM-1** -- Each property of the models in `spec/` is tagged client or internal, and a client-visible one states its guarantee and the outcome it shows through. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#cm-1)
+
+- [x] **MP-3** -- The model of one document's publication is refined until the choice between the two guards that hold rests on equal evidence. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3)
+
+- [x] **MP-3.1** -- The `PointerPublication*.cfg` configurations are written from tables. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-1)
+
+- [x] **MP-3.2** -- The publication record has live and durable state, and a settle makes it durable before it rolls forward. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-2)
+
+- [x] **MP-3.3** -- Logged writes on one document, mixed with unlogged writes, and a settle that looks at the durable record. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-3)
+
+- [x] **MP-3.4** -- The operations that settle before they act: checks, collection, repair, scrub and a lost pointer replica are modelled, and a control omits each settle. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-4)
+
+- [ ] **MP-4** -- Check the model with several processes, in two independent halves. The first
+  composes the coordination contract in `spec/Coordination.tla` with the publication model in
+  [PointerPublication.tla](spec/PointerPublication.tla), so that FM-2.2 chooses between the two
+  guards that hold on evidence from several processes (MP-4.1 to MP-4.5). The second checks what
+  the contract's lack of a fairness requirement does, which CQ-1 and ODI-2 take as input (MP-4.6
+  to MP-4.8), and moves those results into a model of the acquisition layer that the
+  coordination model builds on (MP-4.9 to MP-4.11). The half M4 waits for comes first. Each refinement is behind a switch that leaves
+  every earlier configuration exploring the states it did, every new property is tagged by its
+  audience, and the results are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+- [x] **MP-4.1** -- The composition is a model of its own that extends `Coordination.tla` with documents, so it refines the contract by construction. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-1)
+
+- [x] **MP-4.2** -- `Coordination.tla` recovers an unlogged write behind the `UnloggedRecovery` switch. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-2)
+
+- [x] **MP-4.3** -- `SharedPublication.tla` composes both guards with the contract over several documents, with two writers, a death and a host crash. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-3)
+
+- [x] **MP-4.4** -- Every condition that sets the fence is checked in `SharedPublication.tla`, with three writers, three documents and three requests in the milestone tier. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-4)
+
+- [x] **MP-4.5** -- Each write chooses its form behind `Coordination`'s `MixedWrites` switch, and the composition mixes logged and unlogged writes across processes. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-5)
+
+- [x] **MP-4.6** -- A cyclic workload for `Coordination.tla` behind the `Cyclic` switch, and the tools to check liveness. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-6)
+
+- [x] **MP-4.7** -- The contract's fairness is checked on the cyclic workload: the store makes progress, a writer and an upgrader can each be passed over forever, and the points of conflict are listed. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-7)
+
+- [x] **MP-4.8** -- Strong fairness on each acquisition serves a writer and an upgrader beside one handle, not an upgrader beside two whose holds of the gate overlap, and withholding shared admission serves it. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-8)
+
+- [x] **MP-4.9** -- The acquisition layer is a model of its own, `spec/Acquisition.tla`, which establishes the service results in seconds under the assumption that every hold ends. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-9)
+
+- [ ] **MP-4.10** -- `Coordination.tla` takes and releases writer exclusion, the gate and the tiers
+  with `Acquisition.tla`'s own steps, so that it inherits the acquisition layer's results rather
+  than duplicating its steps (the duplicate-then-decide merge for the acquisition model, recorded
+  in [DESIGN-NOTES.md](DESIGN-NOTES.md) "The acquisition layer is a model of its own"). The
+  coordination model's take and release actions conjoin the acquisition model's, instanced over
+  a mapping of `att`, `pc` and `lockHolder`, with its own effects on the rest of its state beside
+  them; where its states are finer than the acquisition model's (registration, the check before
+  the writer tier, the controls that change the order of takes), the mapping says which
+  acquisition state each one is. Every existing `Coordination` configuration explores the states
+  it did, and a refinement property `AcquisitionRefined`, checked in the item-tier mains, states
+  that each `Coordination` behaviour is one of `Acquisition`'s under the mapping, so a step that
+  drifts from the acquisition layer fails a check rather than an inspection.
+
+  Verify: `run-tlc-all.ps1 -Spec crates/canopy/spec/Coordination.tla -Tier item`, with the main
+  configurations' distinct-state counts unchanged, and the acquisition model's sweep.
+
+- [ ] **MP-4.11** -- `Coordination.tla` discharges the acquisition layer's assumption that every
+  hold ends, on bounded configurations: every write releases exclusion or its process dies, every
+  attached handle can detach, and every upgrade holding its tiers finishes or gives up. Each is a
+  property of one operation, one attachment or one upgrade body, so it needs neither the cyclic
+  workload nor fairness among waiters, only the fairness of a holder's own steps. Then decide, for
+  each evidence-tier liveness configuration of `Coordination`, whether to retire it, its finding
+  now carried by the acquisition model, or keep it as a cross-check of the composition, and record
+  the decision in [DESIGN-NOTES.md](DESIGN-NOTES.md); if the cyclic workload has no remaining
+  use, the `Cyclic` switch goes with it.
+
+  Verify: the hold-ends properties hold in the item or milestone tier, and a control that keeps a
+  hold forever fails each.
+  variant, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md) beside MP-4.7's schedules.
+
+- [ ] **CQ-1** -- Build a quantitative model of contention for the points of conflict MP-4.7
   lists:
   - a queueing baseline for a single exclusion, stated with the assumptions its results need --
     stable, work-conserving, non-preemptive M/G/1 with service times independent of the order
@@ -138,7 +130,7 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   enough, raise a probabilistic model checker (PRISM or Storm) as a toolchain decision rather
   than adopting one silently.
 
-- [ ] **ODI-2** -- From MP-4's starvation schedules and conflict points and CQ-1's predictions,
+- [ ] **ODI-2** -- From MP-4.7's starvation schedules and conflict points, MP-4.8's results and CQ-1's predictions,
   decide, for each point of conflict, first whether the conflict can be avoided -- shorter
   holds, finer-grained exclusion, keeping readers out of the wait -- and only where it cannot,
   whether any fairness returns to the contract, choosing the weakest form that addresses the
@@ -150,6 +142,49 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   [DESIGN-NOTES.md](DESIGN-NOTES.md); avoidance or a fairness requirement adopted becomes work
   in MP-5, MP-8 and MP-11, and the prediction it rests on is tested by CQ-2.
 
+- [ ] **ODI-4** -- Decide whether a timeline has an executable form. A timeline in
+  [DESIGN-NOTES.md](DESIGN-NOTES.md) is prose, confirmed against the model once, when it is
+  written; nothing checks it again, so a later edit to the model can leave it describing a
+  behaviour the model no longer has. Either it stays prose; or each timeline carries a
+  machine-readable scenario that TLC replays as a script against the current spec, so a stale
+  timeline is reported together with the changed definitions it exercises; or that scenario is a
+  member of the trace corpus FM-3.1 exports, so one artifact is the document's evidence, the
+  model's replay and FM-3.2's replay against the code. A replay takes seconds, so scoping it by
+  dependency attributes a stale timeline to a change rather than saving time. Record the
+  decision in [DESIGN-NOTES.md](DESIGN-NOTES.md); a form adopted becomes work in SPEC-2, or in
+  M7 when the replay against the code is part of it.
+
+- [ ] **SPEC-2** -- Scope the runs that follow a change to what the change can affect, so that
+  once a model's rules are authored the standard cost of a spec edit is small. Build in
+  `tools/` an impact analysis over a spec's module chain: the definitions each definition refers
+  to (resolved by name where the chain has no `INSTANCE`, from SANY's semantic export where it
+  does), the definitions each configuration reaches from the names its `.cfg` lists, and the
+  definitions that differ from the last green run. A configuration is selected when it reaches
+  a changed definition, when its own `.cfg` changed, or when a declaration (`VARIABLES`,
+  `CONSTANTS`, `ASSUME`) changed; a probe is selected by the same rule, applied to the
+  configuration it runs on and the definition it mutates. A reference by name over-approximates,
+  so a selection is never too small, but it cannot see that a new disjunct is dead behind a
+  switch: an edit to a definition every configuration reaches -- `Init`, `vars`, `Next` --
+  selects every configuration. That is accepted while a model's rules are being authored and is
+  not the standard; selection narrows as edits become local to a property, a scenario or a
+  witness, and it can stand in for a hand-written `Verify:` line.
+
+  The last green run is recorded per configuration as a digest of what it reaches, its `.cfg`,
+  the TLC version and its options, in git-ignored state or a workflow's cache and never in a
+  checked-in document. The record also holds each configuration's distinct-state count, so that
+  an edit meant to leave earlier configurations exploring exactly the same states -- a switch
+  added behind a default that changes nothing -- is checked by comparing counts, which replaces
+  a list of counts kept by hand. `run-tlc-all.ps1` takes the selection as an option, and a full run
+  ignores the record. A scheduled workflow runs the full sweep and the full probe run -- weekly
+  is the proposal -- only when the spec, its configurations, the tools or the pinned TLC changed
+  since the last green run; the repository's weekly code-scanning schedule is the pattern, and
+  whether a hosted runner finishes the sweep within its time limit decides whether the runner
+  is hosted or self-hosted. A timeline's replay joins the selection as ODI-4 decides.
+
+  Verify: an edit to one witness selects that witness only, an edit to `vars` selects every
+  configuration, a run with no change selects none, a full run ignores the record, and a run
+  reports each configuration whose distinct-state count differs from the record.
+
 ## M4 -- Decide and implement the `STRANDED-VOTE` fix from the model
 
 Decisions: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Naming the stranded pointer vote
@@ -158,17 +193,25 @@ Decisions: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Naming the stranded pointer vote
 
 - [x] **FM-2.1** -- Four candidate guards modelled and checked; resolving before each write and a durable publication record both hold. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#fm-21)
 
-- [ ] **FM-2.2** -- Choose between the guards that hold with several processes (M3) --
+- [ ] **FM-2.2** -- Choose between the guards that hold with several processes (MP-4.1 to MP-4.5) --
   resolving before each write, or a durable publication record
   ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Guards against `STRANDED-VOTE`, compared in the model")
   -- and implement it in `canopy`. If the publication record is chosen, every operation on a
   document settles a pending record first: precondition checks, logged and unlogged
-  publication, collection, repair and scrub; and because an older binary would ignore a pending
+  publication, collection, repair and scrub. A settle makes the record durable with an fsync
+  before it rolls the replicas forward, and one whose fsync fails fails its operation with the
+  record still pending, as the model checks ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The publication
+  record's live and durable state, modelled in `PointerPublication.tla`"). That section also
+  records two findings to decide on: repair and scrub do not need the settle for any property the
+  model checks, and a lost pointer replica is restored by the resolve guard's next write and by
+  nothing under the record guard but a repair. Because an older
+  binary would ignore a pending
   record, the format barrier and the migration of existing roots (the first part of MP-6) move
   into this milestone and land before the record can be written. Add regression tests for the `STRANDED-VOTE`
   sequence followed by warm reopen and by power loss. Make the chosen guard's configuration the
   spec's default, so [PointerPublication-Settled.cfg](spec/PointerPublication-Settled.cfg)
-  checks the protocol as built.
+  checks the protocol as built, and change that configuration's header to say every invariant
+  and property holds, which `tools/run-tlc-all.ps1` reads.
 
 - [ ] **FM-2.3** -- Distinguish a stable no-majority state from contention in
   `read_document`: sample the modification count before and after the vote, and report a
@@ -185,35 +228,60 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store", and decide which
   crate holds it. Implement in the file-based implementation, built on `Vfs` primitives so it
   runs over `OsFs` on Windows and Linux, `MemFs` and `FaultyFs` alike:
-  - the creation reservation: the creator takes its implementation's creation exclusion, then
-    publishes the reservation -- implementation, every creation input, nonce -- with an
-    exclusive publish-if-absent, so it is complete or absent, and makes it and its directory
-    entry durable before creation makes any other artifact; a mismatched open is refused; an
-    interrupted creation is resumed only through the same implementation, once its creation
-    exclusion is free, after re-reading the reservation, and only with identical inputs,
-    completing exactly creation's artifacts in creation's order;
+  - the creation reservation: the creator reads the root and, finding no marker, no reservation
+    and nothing that creation does not make, takes its implementation's creation exclusion and
+    reads the root again under it, then publishes the reservation -- implementation, every creation
+    input, nonce -- with an exclusive publish-if-absent, so it is complete or absent even if power
+    is lost, and makes it and its directory entry durable before creation makes any other
+    artifact, then makes each artifact durable before the next, the marker last; a mismatched
+    open is refused; an open makes the marker durable before it relies on it, since its creator
+    may have died between publishing the marker and making it durable; an interrupted creation is
+    resumed only through the same implementation, once its creation exclusion is free, after
+    reading the root again for a marker, the reservation it decided on and nothing else beneath
+    it, and only with identical inputs, completing exactly creation's artifacts in creation's
+    order ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Creating a store root, modelled in
+    `Creation.tla`");
   - creation exclusion;
   - the admission gate, taken shared by ordinary admission only until the handle holds its
     reader tier and exclusively by an upgrade, with no order among waiters promised; and
     attachment in reader and writer tiers, held shared for a handle's life and
-    taken exclusive, released when the holder dies;
+    taken exclusive, released when the holder dies; an upgrade taking the gate, then the reader
+    tier when it is unsafe for readers, then the writer tier, never the writer tier first, which
+    deadlocks against a handle holding the reader tier shared and waiting for the writer tier
+    ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The admission gate and the attachment tiers, modelled in
+    `Coordination.tla`");
   - the registry of attached handles: an entry registered when a handle attaches, updated when
     its tiers or draining state change, and removed when it detaches; every change to and
     inspection of an entry made under its claim lock, taken without waiting; a reuser holding
     the claim lock from before it takes the liveness lock until its token is written; a listing
     reporting an entry it cannot claim as unknown, and liveness as of its shared probe; a
-    handle that finds every entry held attaching unregistered; a dead handle's entry never
-    reported as live, and a listing saying when it may be incomplete;
+    handle that finds every entry held attaching unregistered, recording that in the registry so
+    that a listing says it may be incomplete from the record and not from what it sees (a claim
+    lock held for a moment sends a registrant on, so an entry can be free when it does), the
+    record discarded only by a host restart; registration finishing before the attach returns and
+    unregistration starting before the tiers are released, an upgrade's conversion included, an
+    entry the owner cannot claim when it leaves left with only its liveness lock released; a dead
+    handle's entry never reported as live, and a listing saying when it may be incomplete
+    ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The registry of attached handles, modelled in
+    `Coordination.tla`");
   - a diagnostic view, taking no tier and granting no document access, offering the registry
     listing, store-level properties and recovery discovery;
   - the modification count, published atomically (a fresh file renamed over the published
     one) so a sample is one lock-free read of a complete value, with a dead holder's odd count
     left odd; a failed opening publication permitting no effect and a failed closing
     publication leaving the count odd and the fence set; and state that cannot be vouched for
-    reading as odd until a completed recovery publishes a trusted even value;
+    reading as odd until a completed recovery publishes a trusted even value; with a raise
+    ordered before the holder's next filesystem effect and a sample ordered with the sampler's
+    own reads, a cached sample invalidated synchronously with the publication that outdates it,
+    and only the outermost operation under a hold raising it -- the ordering is assumed, not
+    checked, by the model ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The modification count, the
+    generation and reads, modelled in `Coordination.tla`");
   - the fence and the generation, acquisition returning the generation it found before
     advancing it;
-  - the ownership record, with the fence set before an abandoned record is replaced;
+  - the ownership record, with the fence set before an abandoned record is replaced and a
+    clean release clearing the record before it drops the lock, so a record found under the lock
+    always means its holder died ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion and its
+    ownership record, modelled in `Coordination.tla`");
   - restart recognition from the OS boot identity on each platform, with state it cannot vouch
     for reported as requiring recovery;
   - abandonment, for tests: releasing a simulated process's holds without clean-release
@@ -223,7 +291,10 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   cases that spawn real processes, a sampler running while the updating process is suspended or
   killed part-way through publishing the count, simultaneous creation through two
   implementations, a creator suspended before and after publishing its reservation, an
-  interrupted creation resumed and one refused for different inputs, registry entries reused
+  interrupted creation resumed and one refused for different inputs, a resumer that waited while
+  its creation finished, a root holding something creation does not make refused to a creator and
+  to a resumer, a creator that dies after making its marker and before making it durable followed
+  by an open and a host crash, registry entries reused
   after a death including a reuser paused between taking the liveness lock and writing its
   token, simultaneous listings, an entry removed by a cancelled upgrade's detachment, an attempt to reuse a live entry, the fence surviving the clean release of the
   holder that found an abandoned record, a crash between each step of creation, each count
@@ -247,10 +318,19 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   recovery, which runs only under exclusion (in this milestone, the lifetime root lock) and
   includes directory-sync debt discharge. Recovery's public API: a discovery call that reports
   whether recovery is required and why, treating work a live holder owns as not requiring it,
-  without mutating anything; an incremental run whose steps each do bounded, idempotent work and
-  report progress (phase, units done of units known, and whether the known total grew);
-  resumption by a later recovery after one is stopped or its process dies; and a convenience
-  that runs to completion. While recovery is required, apply the permission table in
+  without mutating anything, and making its observation of the fence, the restart state, the
+  ownership record and the lock consistent -- by trying the writer lock without waiting and
+  reading under it, for example -- so that a live holder's transaction is never reported as
+  abandoned while its holder acquires or releases; an incremental run whose steps each do bounded,
+  idempotent work and report progress (phase, units done of units known, and whether the known
+  total grew); resumption by a later recovery after one is stopped or its process dies; and a
+  convenience that runs to completion. Recovery reads the commit log and never the coordination
+  state; rolls a prepared transaction forward through its swaps and its end record, and one that
+  was begun and not prepared back by sweeping its staging before it resets the log; publishes the
+  even count and the trusted state in one publication that also drops cached samples; and clears
+  the fence last, so that a stop or a death at any step leaves the fence set
+  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Recovery and its discovery, modelled in
+  `Coordination.tla`"). While recovery is required, apply the permission table in
   [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store": writes, repairs,
   scrub, resets and upgrades are refused with `StoreError::RecoveryRequired`, and none of them
   replays anything; callers that relied on `open` recovering move to the explicit calls. A
@@ -272,14 +352,32 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   - a schema upgrade following the decision's protocol: every operation on a clone holding a
     lease on the attachment; the upgrader draining those leases while still holding its tiers,
     refusing to start from inside an operation, and cancellable while draining with the handle
-    left attached; then releasing its tiers, taking the admission gate, acquiring its tiers
+    left attached; the refusal decided by the caller's own operation context and not by whether
+    the handle has any lease, so that the leases of other clones are waited for
+    ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Clones, leases and the upgrade drain, modelled in
+    `Coordination.tla`"); then releasing its tiers, taking the admission gate, acquiring its tiers
     exclusively and checking the schemas again, a cancelled or failed conversion returning
-    promptly with the handle detached; the gate reopened to readers during a reader-safe
-    upgrade; the per-layer admission rules applied to every attaching handle, with each
-    completion setting the oldest admissible reader schema and an upgrade unsafe for any schema
-    from it up draining every reader first; a durable intent; resumable steps reporting
-    progress; the version advanced only after the last step; and an interrupted upgrade resumed
-    as the store's recovery by a handle speaking the target schemas;
+    promptly with the handle detached, every operation on a detached handle refused until it
+    attaches again, as an ordinary admission, or is dropped once its clones' operations have
+    ended; the gate reopened to readers during a reader-safe
+    upgrade; the per-layer admission rules applied to every layer of every attaching handle; an
+    upgrade stating the oldest reader schema that can read what it leaves, which canopy judges
+    against the layer's oldest admissible reader schema and never against the current one,
+    recording the judgment in the intent with the layer, the floor and the target, so that one
+    that some admissible reader schema cannot read takes the reader tier exclusively, draining
+    every reader before it begins, and sets the layer's oldest admissible reader schema to its
+    target when it completes, while a safe one leaves it alone ([DESIGN-NOTES.md](DESIGN-NOTES.md)
+    "Cumulative reader compatibility, modelled in `Coordination.tla`"); the body taking writer
+    exclusion after its tiers and refused, taking nothing, when it finds recovery required, then
+    inside the count's bracket recording a durable intent naming the layer and its source and
+    target schemas before its first step, making idempotent resumable steps that each take what
+    they need from the intent and the progress durable state shows and that report progress,
+    advancing the schema durably only after the last step and clearing the intent only after
+    that; a failure or a cancellation in the body setting the fence and leaving the intent; and
+    an interrupted upgrade resumed as the store's recovery, before the rest of it, by a handle
+    speaking the target schemas, no handle that speaks only the source schemas writing while the
+    intent stands ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The schema upgrade's body, modelled in
+    `Coordination.tla`");
   - a management call that changes the description, the start of a surface for store-level
     settings;
   - a call that lists the attached handles from the registry, saying when the list may be
@@ -292,9 +390,12 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   Test an upgrade interrupted at each step and resumed, a cancellation while draining leaving
   the handle attached, a cancelled conversion leaving the handle detached, a clone of the
   upgrader refused during the upgrade, an operation in flight on a clone finishing before the
-  upgrade proceeds, an upgrade started from inside a callback refused, readers of both versions
+  upgrade proceeds, an upgrade started from inside a callback refused while one started beside
+  another clone's operation waits for it, readers of both versions
   attaching during a reader-safe upgrade, two reader-safe upgrades in a row with a reader of the
-  first source still attached, writers of versions A, B and A again each leaving their version
+  first source still attached, an upgrade that an older admissible reader schema cannot read
+  waiting for a reader of that schema to leave and refusing it afterwards, an upgrade of one layer
+  beside handles that speak another, writers of versions A, B and A again each leaving their version
   recorded, a failed write leaving it unchanged, and a stamp whose sync fails after its rename.
   Upgrades contended between processes are tested in M6, once independent writers can coexist.
   > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> M2 -> `AC-2` (a
@@ -304,8 +405,10 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
 
 - [ ] **MP-8** -- Implement the contract's writer exclusion in every implementation: across
   every thread of every process, waiting, with no order among waiters promised, released when the
-  holder dies, with the ownership record telling the next acquirer so; extend the conformance
-  suite to cover it, on Windows and Linux.
+  holder dies, with the ownership record telling the next acquirer so and a clean release
+  clearing it before it drops the lock ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion and
+  its ownership record, modelled in `Coordination.tla`"); extend the conformance suite to cover
+  it, including a release that overlaps another acquirer, on Windows and Linux.
   > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M2 -> `AC-2` (a blocking exclusive
   > lock) must land first. See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-2).
 
@@ -324,10 +427,18 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   processes interleaving writes and transactions; a writer killed while holding exclusion
   before its first effect, mid-publication, mid-transaction and after its last effect; the
   survivors refused with `RecoveryRequired` until an explicit recovery converges the store; a
-  recovering process killed between steps and another process resuming its recovery; a schema
-  upgrade waiting for attached writers to leave, with the registry naming them and never listing
+  recovering process killed after each of its steps -- the first swap, the swaps, the end record,
+  the sweep, the count's publication -- and another process resuming its recovery; discovery
+  called beside a live holder's transaction, which it never reports as abandoned, and beside a
+  dead holder's, which it always does; a schema
+  upgrade waiting for attached writers to leave, and one that is unsafe for readers waiting for
+  attached readers of any schema to leave, with the registry naming them and never listing
   a killed process as attached, and new handles waiting while it holds the gate; an upgrader killed
-  mid-migration and its upgrade resumed; two upgraders in different processes at once,
+  after its intent, between its steps, after its last step and after the schema advanced, and its
+  upgrade resumed by a writer that speaks the target schema while a writer that speaks only the
+  source schema is refused; an upgrader that finds recovery required refused, taking nothing; a
+  failure injected in the body leaving the fence and the intent; two upgraders in different
+  processes at once,
   without deadlock; a commit-log reset never overlapping another process's
   transaction; two handles opened in one process taking turns; and an open through a different
   coordination implementation refused.
@@ -367,8 +478,13 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
 
 ## M8 -- Extend the protocol model
 
-- [ ] **FM-4.1** -- The rest of transactions beyond what M3 models: rollback of an unprepared
-  transaction, collection of what it ingested, and the sweep of its staging.
+- [ ] **FM-4.1** -- The rest of transactions beyond what M3 models. `Coordination.tla` models a
+  transaction's records in the commit log, its staging as one unit that is swept, its swaps of
+  the namespace, the rollback of one that fails before its prepare record, and recovery's
+  roll-forward and roll-back ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A transaction and the commit
+  log, modelled in `Coordination.tla`" and "Recovery and its discovery, modelled in
+  `Coordination.tla`"). What is left is the content beneath those: the collection of what a
+  transaction ingested, and how rollback and the sweep of its staging act on it.
 
 - [ ] **FM-4.2** -- Node paths and node removal: documents and nodes as one namespace tree,
   the collision rules (a write against a node removal in the same set, a node removal at or
@@ -388,3 +504,78 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   one.
   > **CROSS-COMPONENT HANDOFF:** this work lives in component `crates/acadia`; its
   > checklist is created when this item starts and the item moves there.
+
+## M10 -- The model clients rely on
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "The model clients rely on, and the model the code is
+held to". Discussion:
+[DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md](design-sessions/DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md).
+These items follow the primary deliverable, the milestones above: what is promised rests on ODI-2's
+decision about fairness and on what MP-4 and CQ-1 find, the refinement is written against the state
+MP-3 and MP-4 change, the oracle for tests at the API uses M7's harness, and the documentation for
+dependents describes the multi-process behaviour of M6. CM-1, which needed none of them and steers
+MP-3 and MP-4, was done in M3.
+
+- [ ] **ODI-5** -- Decide what canopy advertises to the code that depends on it. From CM-1's
+  client-visible guarantees and the results of MP-4, CQ-1 and ODI-2, decide which guarantees are
+  promised and which are explicitly not -- an order or a bound on waiting, the outcome of a write
+  whose holder was told recovery is required until recovery has run, a networked filesystem --
+  and how the promise is versioned, since a change to it is a change a dependent can feel.
+  Decide how it is delivered: prose in the crate documentation, a TLA+ module a dependent can
+  compose with, or both. A promise is a commitment, so this is the engineer's decision; record it
+  in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+- [ ] **CM-2** -- The client model: a small TLA+ module over what a `Store` user can observe --
+  the logical contents, which handles are attached and in what role, each request's outcome,
+  whether the store needs recovery -- and none of the mechanism: no count, fence, generation,
+  commit log or lock order. Its invariants are ODI-5's promised guarantees in a user's terms, and
+  it promises no more, so the implementation keeps the freedom the promise leaves. It follows
+  the conventions of the other models: controls that reverse a promise and must fail, witnesses
+  that show each outcome a caller can meet is reachable, and configurations whose headers state
+  the outcome [run-tlc-all.ps1](../../tools/run-tlc-all.ps1) must find.
+
+- [ ] **CM-3** -- Check that the code's model refines the client model. For each form of the
+  coordination model that is kept -- the abstract and the detailed write and upgrade -- write in
+  the spec the mapping from its state to the client model's, and have TLC check in its main
+  configurations that every behaviour projects onto a behaviour of the client model. The mapping
+  is where the commit point is written down: when a write counts as having happened, including
+  when its holder was told it failed. The probes at the milestone boundary include mutants that
+  break a promise, and each must fail the refinement.
+
+  Verify: the refinement holds in each main configuration, and a control that breaks a promise
+  fails it.
+
+- [ ] **FM-3.4** -- Check `Store` against the client model at the API: sequences of calls on
+  `MemFs` + `FaultyFs`, with injected faults, crashes and several `Store`s over one root, and the
+  client model as the oracle -- every outcome the code returns must be one the model allows from
+  the state its earlier calls put it in. FM-3.2 compares internal state step by step; this
+  compares only what a user can see, so it keeps passing through any change of mechanism that
+  CM-3's refinement still admits.
+
+- [ ] **CM-4** -- Tell dependents how to use canopy reliably. From ODI-5's decision and the
+  client model, write in the crate documentation the contract as a user relies on it and a guide
+  to acting on each outcome: what a caller does when told recovery is required or a read is
+  disturbed, how to learn whether a write whose outcome is unknown took effect and how to retry
+  it safely, what waiting to expect under contention, and what is not promised. Each statement
+  names the property of the client model it rests on, so a reader can follow a promise to its
+  check.
+
+## M10+ -- TLA futures
+
+Work on how the models are checked that waits until the milestones above are done.
+
+- [ ] **SPEC-3** -- Generate mutants of a spec mechanically, to find the rules no property checks.
+  The probe corpus under `spec/probes/` is written by hand, one mutant per rule someone named, so
+  it shows whether each named rule's property can fail and says nothing about a rule nobody
+  named. Build in `tools/` a generator that applies a small set of operators to every action of a
+  spec -- drop a conjunct, negate a guard, leave a primed variable unchanged, widen a set
+  membership -- and runs each mutant against the configurations that reach the action, the way
+  `cargo mutants` is run over code. A mutant no configuration catches is triaged into a new
+  property, a new scenario or bound that exposes it, or a recorded equivalent, and the triage is
+  what the pass is for. Deferred by the engineer on 2026-11-11 until the milestones above are
+  done: building the generator is substantial work, and a full pass is expected to take days of
+  TLC time, which the current work cannot spare. When it is taken up, its runs belong with
+  SPEC-2's scheduled full run, scoped by SPEC-2's impact analysis.
+
+  Verify: a spec edit that removes a guard checked by no property yields a surviving mutant, and
+  one checked by a property does not.

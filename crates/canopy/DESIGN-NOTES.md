@@ -570,6 +570,16 @@ imported here.
 
 ## Guards against `STRANDED-VOTE`, compared in the model, 2026-11-10
 
+> **SUPERSEDED in part, 2026-11-11, by "The publication record's live and durable state,
+> modelled in `PointerPublication.tla`" below.** The record guard's "holds" is no longer
+> provisional: it was checked with the record's live and durable state separate, beside logged
+> writes, and with checks, collection, repair, scrub and a lost pointer replica, and it holds.
+> It holds only with a settle that fsyncs the record in every operation, not where one is found,
+> which adds one fsync per operation to the cost stated here. The resolve guard holds under the
+> same refinements, and the two differ in one respect that is not a safety failure: the resolve
+> guard restores a lost pointer replica at the next write and the record guard leaves it to a
+> repair. Read that section before acting on this one.
+
 Four guards were modelled in [PointerPublication.tla](spec/PointerPublication.tla), selected by
 its `Fix` constant, each checked against every invariant (one configuration per guard,
 `PointerPublication-Fix<Guard>.cfg`). Pointer replica counts are odd
@@ -1195,3 +1205,1990 @@ pass. Cost is not part of the contract.
   changed in the directory rather than its size, and each test opens a `MemFs::fork` of a store
   populated once per replica count instead of populating its own. Losing either puts the
   module well past 2 s.
+
+## Writer exclusion and its ownership record, modelled in `Coordination.tla`, 2026-11-10
+
+- **The coordination contract is modelled in its own module, [Coordination.tla](spec/Coordination.tla),
+  and [PointerPublication.tla](spec/PointerPublication.tla) stays the model of one document's
+  publication.** The two interact where a holder's death or a host restart leaves unfinished
+  publication behind, so they are composed for that check and kept apart otherwise: a
+  coordination concern gets its own configurations without multiplying the publication model's
+  state space. Each part of the contract is added to `Coordination.tla` with its own invariants and
+  a control that must fail.
+- **A clean release clears the ownership record while it still holds the lock, and only then
+  drops the lock.** The contract's rule -- an acquirer that finds a record under the lock is told
+  its holder died holding exclusion -- is true only in that order. Dropping the lock first lets
+  another acquirer find the record of a holder that is alive and releasing, report a death that
+  did not happen, and set the fence on a healthy store (T2 below). Implementations and their
+  conformance suite carry the order as a requirement[^mp-5][^mp-8].
+- **An acquirer decides that a holder died from the record alone.** An OS lock reports no
+  owner, and nothing in the contract lets an acquirer ask whether a process is alive, so the
+  model gives it no such question; the checker compares its decision with what really happened.
+- **Acquiring is three steps -- take the lock, set the fence if a record was left behind, then
+  replace the record -- and a process may die between any two.** The fence comes before the
+  replacement so that no state exists in which a holder's death is neither recorded nor fenced:
+  the evidence is the record naming a dead holder until the fence carries it, and the fence
+  outlives the acquirer's own clean release (T1 below). A death between the steps leaves the
+  previous record for the next acquirer.
+- **A host restart needs no abandoned holder to require recovery.** After one, the coordination
+  state is untrusted: the record and the fence may be gone, so an acquirer is told recovery is
+  required even when it finds neither. This is distinct from a process's death, which loses only
+  that process and leaves the live filesystem and the record as they were.
+- **An acquirer told recovery is required changes no store data and writes nothing.** It may
+  only release exclusion; running recovery is a separate capability.
+- **A wait is a request that ends in exactly one of four outcomes: served, withdrawn, dead with
+  its process, or refused as ineligible.** The state holds no queue and no ticket. Whenever the
+  lock is free, acquisition is enabled for every eligible waiter and the checker chooses among
+  them, so each invariant is checked against every service order; the contract's silence about
+  fairness is the model's.
+- **Each rule has a control that must fail and each interesting state a witness that must be
+  reached.** The controls reverse a rule: replacing an abandoned record without setting the
+  fence, dropping the lock before clearing the record, and ignoring a host restart. The witnesses
+  are runs that must violate an invariant stating that a holder died before its first effect, in
+  the middle of a write, or after its last effect and the next acquirer is told; that a restart
+  alone requires recovery; and that refused, withdrawn and dead requests all occur. A property
+  that holds only because its states are unreachable would pass without them.
+
+### T1 -- a holder dies mid-write; the evidence outlives two clean releases
+
+Status: `[verified]` against the model, which reaches this state. A, B and C have attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `EFF1` | A | applies the first effect of its write | store data: half applied |
+| 5 `KILL` | EXTERNAL | A's process dies | lock: none; record still names A; store data unchanged |
+| 6 `REQ2` | B | requests writer exclusion | -- |
+| 7 `LCK2` | B | is granted the lock | lock: B |
+| 8 `FNC` | B | finds a record left behind and sets the fence | fence: set |
+| 9 `REC2` | B | replaces the record and is told recovery is required; it writes nothing | record: B |
+| 10 `CLR` | B | clears the record while holding the lock | record: none |
+| 11 `ULK` | B | drops the lock | lock: none |
+| 12 `REQ3` | C | requests writer exclusion | -- |
+| 13 `LCK3` | C | is granted the lock | lock: C |
+| 14 `REC3` | C | finds no record, finds the fence set, and records itself; it is told recovery is required and writes nothing | record: C |
+
+### T2 -- releasing the lock before clearing the record reports a death that did not happen
+
+Status: `[verified]` against the model, in the control that reverses the order. A and B have
+attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `ULK` | A | drops the lock first, still holding the record | lock: none; record: A |
+| 5 `REQ2` | B | requests writer exclusion | -- |
+| 6 `LCK2` | B | is granted the lock | lock: B |
+| 7 `FNC` | B | finds a record under the lock, concludes its holder died, and sets the fence; A is alive | fence: set |
+| 8 `REC2` | B | replaces the record and is told recovery is required | record: B |
+
+[^mp-5]: `MP-5` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-8]: `MP-8` in [CHECKLIST.md](CHECKLIST.md)
+
+## The modification count, the generation and reads, modelled in `Coordination.tla`, 2026-11-10
+
+- **A read is modelled as the store classifies it today**: a sample of the count, an
+  observation of the data, a second sample, and `Store::undisturbed` -- the two samples equal and
+  even -- as the verdict that the read saw a settled store. The data is two cells a transaction's
+  two swaps change in turn, observed in two separate steps, so a read can see one swap and not
+  the other. The property checked is that a read classified as settled saw both cells equal and
+  as they still are. That one property carries both of the contract's uses of the count: a
+  snapshot that accepts only an undisturbed run, and a verdict that a disagreement is real rather
+  than raced.
+- **A publication is two steps -- prepare, then publish -- and only the second is visible.** A
+  holder that dies or fails between them leaves the previous value published, which is what the
+  contract's atomic publication (a fresh file renamed over the published one) provides. The
+  opening raise is published before the first effect and the closing raise after the last, so a
+  death at any point leaves the count odd if any effect landed.
+- **Every way an operation ends is a separate step with its own rule.** It completes; it ends
+  without an effect; it fails after its first effect and is rolled back, then closes normally; it
+  fails unresolved, setting the fence and leaving the count odd; its opening publication fails,
+  with no effect and the count unchanged; or its closing publication fails, setting the fence and
+  leaving the count odd. A nested operation under the same hold publishes nothing.
+- **A host crash may roll the count back over a writer that was mid-operation**, as the
+  contract says a count raised without an fsync can. That is why state that cannot be vouched for
+  must read as odd rather than as stored: with the ownership record and the fence also lost in the
+  crash, an even rolled-back count is the only thing a reader would have, and it would accept
+  half-applied data (T3 below).
+- **A cached sample is invalidated synchronously with the publication that outdates it.** The
+  model lets a reader serve its next sample from the value it last read; a cache invalidated any
+  later lets a read compare two samples that bracket nothing.
+- **The generation is checked by the use it guards.** A holder caches state another holder can
+  change, relies on it without reading again, and keeps it only when the generation it finds is
+  the one it last advanced to. A holder that kept it on any other value would act on state it
+  never read.
+- **The contract's ordering rules are an assumption of the model, not a result.** Its steps are
+  sequentially consistent, so a raise is ordered with the holder's effects and a sample with the
+  sampler's observations by construction. Those orderings are requirements on each
+  implementation, which the model cannot check[^mp-5].
+- **Controls and witnesses.** Five controls reverse a rule and must fail: a sample assembled from
+  two separately read parts, a cached sample invalidated late, state that cannot be vouched for
+  read as stored, a cache kept across a generation the handle did not advance to, and a nested
+  operation that raises the count when it ends. Witnesses show each way an operation ends, each
+  death point during a publication, a settled read accepted, a torn read and a read over a failed
+  transaction rejected, a read meeting untrusted state, a read spanning a whole completed
+  operation, and a cache both kept and reloaded. The configurations are named
+  `Coordination-Control-*.cfg` and `Coordination-Witness-*.cfg`, and each states in its header
+  what TLC must report.
+
+### T3 -- a crash rolls the count back over a half-applied write
+
+Status: `[verified]` against the model, in the control that reads untrusted state as stored. A
+and B have attached; the read is B's.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, records itself and advances the generation | record: A |
+| 4 `OPN` | A | prepares the opening raise | -- |
+| 5 `PUB` | A | publishes it | count: 1 |
+| 6 `EFF1` | A | applies the first swap | data: half applied |
+| 7 `CRSH` | EXTERNAL | the host loses power; A dies | count rolled back to 0; record lost; fence never set; coordination state untrusted |
+| 8 `SMP1` | B | samples the count and gets 0 | -- |
+| 9 `OBSA` | B | observes the first swap's cell, applied | -- |
+| 10 `OBSB` | B | observes the second swap's cell, not applied | -- |
+| 11 `SMP2` | B | samples the count again, gets 0, and classifies the read as settled | -- |
+
+Under the contract, both samples in steps 8 and 11 read as 1, because the state cannot be vouched
+for, and the read is contended instead.
+
+## The admission gate and the attachment tiers, modelled in `Coordination.tla`, 2026-11-10
+
+- **Where a process is says what it holds.** The model gives each process one attachment state
+  and derives from it which of the gate and the tiers it holds, shared or exclusive, so there is
+  no lock state to fall out of step with the processes. A process's death moves it to detached,
+  which releases all of it at once, as the OS does. Death can therefore happen holding or
+  waiting for any of them.
+- **An ordinary handle takes the gate shared, the reader tier, drops the gate, takes the writer
+  tier if it may write, and only then is checked**, under the shared tiers, so an upgrade cannot
+  complete between its check and its attachment. A handle that is not admitted releases
+  everything and is gone; a handle that is waiting may give up. A control that checks before it
+  waits for the writer tier admits a handle against a store an upgrade then moved.
+- **The per-layer admission rules are a table the model states once** (reader and writer, by
+  ordinary, reader-safe upgrade in progress and reader-unsafe upgrade in progress), over the
+  oldest admissible reader schema, the current schema and the upgrade's target. What is checked
+  is that the protocol keeps the rules true as the store moves -- every admitted handle was
+  admissible when admitted, and none stays attached once it is not -- and that the cases the
+  table distinguishes all occur: a reader speaking the target admitted during a reader-safe
+  upgrade, a reader refused after an interrupted unsafe one, a writer speaking the target
+  admitted only to resume an interrupted upgrade.
+- **An upgrader takes the gate exclusively, then the reader tier if the upgrade is unsafe for
+  readers, then the writer tier -- the contract's order, gate then reader tier then writer tier
+  then writer exclusion.** The upgrade's description in the contract names the writer tier first
+  and the reader tier "too"; that is a list of what is taken and not an order to take it in. An
+  upgrade that follows the sentence takes the writer tier first and deadlocks against a handle
+  that holds the reader tier shared and waits for the writer tier (T4 below). The order is a
+  requirement on every implementation and on the interface that exposes the tiers[^mp-5].
+- **An upgrader releases its shared tiers before it waits for the gate.** An upgrader that kept
+  them deadlocks against a second upgrader (T5 below); one that began while holding writer
+  exclusion deadlocks against an attached writer that waits for it (T6 below).
+  The contract already says neither; the controls confirm that each rule is the thing that
+  prevents the deadlock and not an incidental safeguard.
+- **Holding the gate while waiting for the writer tier is a violation whether or not it
+  deadlocks**, since the gate is held only until the reader tier is held, so that no handle waits
+  behind another's wait for the gate.
+- **The order is checked as a rank.** Gate, reader tier, writer tier and writer exclusion are
+  ranked in that order and no process waits for a resource ranked at or below one it holds. That
+  one property fails in all three deadlock controls, and is how the contract's "nothing is
+  acquired against that order" is stated checkably.
+- **The model checks for a deadlock directly**, with no process allowed to give up or die, so
+  the only state with no successor in a deadlock-free model is every process ended. The
+  contract lets a waiting handle give up, which turns a deadlock into a wait that ends only
+  when someone gives up; the model keeps that behaviour behind a constant so the deadlock is
+  visible where the contract would hide it. A deadlock-free configuration per mix of upgraders,
+  writers and readers states the contract's claim for that mix.
+- **A schema upgrade is modelled here only as far as the locks need.** It completes in one
+  step, which moves the layer to its target and the oldest reader schema with it if the upgrade
+  is unsafe for readers; an upgrader that dies in its body leaves the upgrade recorded as in
+  progress. The upgrade's body, its durable intent, resumable steps and cumulative reader
+  compatibility are modelled by the upgrade's own item[^mp-2], and the handle's clones and the drain
+  by theirs[^mp-1-4]. Nothing here is a claim about those.
+- **Some checks follow from the locks and are not protocol.** An ordinary handle's check for an
+  exclusive reader tier, and an upgrader's check for shared writer tier holders before it takes
+  the writer tier exclusively, can be removed from the model without any property failing,
+  because the gate and the order already exclude the situations they guard. They are the lock's
+  own mode compatibility, so an implementation gets them from the OS lock and not from extra
+  code.
+- **Attachment multiplies the three-process state space, so three processes are checked in two
+  configurations.** Splitting attaching into the contract's steps lets several processes be
+  part-way through it at once. The three-process configuration with every dimension on
+  was therefore split into one that keeps three-way contention and a death and one that keeps a
+  host crash and a read; the two-process configuration keeps every dimension at once.
+- **A configuration cannot state a sequence, so the processes' roles and schemas are named
+  scenarios** in the specification's table, which the configuration selects by name.
+- **Controls and witnesses.** The controls reverse a rule: an upgrader that keeps its tiers while
+  it waits for the gate (deadlock), one that begins holding writer exclusion (deadlock), an
+  unsafe upgrade that takes the writer tier first (deadlock), a handle that holds the gate
+  through the writer tier, an unsafe upgrade that leaves readers attached, and a check made
+  before the writer tier is waited for. The witnesses reach each case of the admission table,
+  each way an upgrade ends, and each wait the protocol creates. The configurations follow the
+  existing naming and each states in its header what TLC must report; a header that says
+  `TLC must report a deadlock` names a control for a wait that never ends.
+
+### T4 -- an unsafe upgrade that takes the writer tier first deadlocks against a writer
+
+Status: `[verified]` against the model, in the control that takes the writer tier first. U is an
+upgrader whose upgrade is unsafe for readers and W a handle that may write.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `BGN1` | W | begins to attach and asks for the gate shared | -- |
+| 2 `GTS1` | W | holds the gate shared | gate: shared by W |
+| 3 `BGN2` | U | begins to attach | -- |
+| 4 `GTS2` | U | holds the gate shared | gate: shared by W and U |
+| 5 `RDS1` | U | takes the reader tier shared | reader tier: shared by U |
+| 6 `DRP1` | U | drops the gate | gate: shared by W |
+| 7 `WRS1` | U | takes the writer tier shared | writer tier: shared by U |
+| 8 `ADM1` | U | passes the check and is attached | -- |
+| 9 `SUP` | U | starts its upgrade: releases its tiers and asks for the gate exclusively, which W holds shared | reader tier: none; writer tier: none |
+| 10 `RDS2` | W | takes the reader tier shared | reader tier: shared by W |
+| 11 `DRP2` | W | drops the gate and asks for the writer tier shared | gate: none |
+| 12 `GTX` | U | takes the gate exclusively | gate: exclusive by U |
+| 13 `WRX` | U | takes the writer tier exclusively, before the reader tier | writer tier: exclusive by U |
+| 14 `DLK` | W, U | W waits for the writer tier, held exclusively by U; U waits for the reader tier exclusively, held shared by W; neither can proceed | -- |
+
+Under the contract's order step 13 takes the reader tier exclusively, which waits for W; W takes
+the writer tier, is attached, and U waits for it to detach, which is a wait and not a deadlock.
+
+### T5 -- an upgrader that keeps its tiers while it waits for the gate deadlocks against another upgrader
+
+Status: `[verified]` against the model, in the control that keeps the tiers. U1 and U2 are
+upgraders whose upgrades are safe for readers.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `BGN1` | U1 | begins to attach | -- |
+| 2 `GTS1` | U1 | holds the gate shared | gate: shared by U1 |
+| 3 `RDS1` | U1 | takes the reader tier shared | reader tier: shared by U1 |
+| 4 `BGN2` | U2 | begins to attach | -- |
+| 5 `GTS2` | U2 | holds the gate shared | gate: shared by U1 and U2 |
+| 6 `RDS2` | U2 | takes the reader tier shared | reader tier: shared by U1 and U2 |
+| 7 `DRP1` | U1 | drops the gate | gate: shared by U2 |
+| 8 `WRS1` | U1 | takes the writer tier shared | writer tier: shared by U1 |
+| 9 `ADM1` | U1 | passes the check and is attached | -- |
+| 10 `SUP1` | U1 | starts its upgrade keeping its tiers, and asks for the gate exclusively, which U2 holds shared | -- |
+| 11 `DRP2` | U2 | drops the gate | gate: none |
+| 12 `WRS2` | U2 | takes the writer tier shared | writer tier: shared by U1 and U2 |
+| 13 `GTX1` | U1 | takes the gate exclusively and, holding it, gives up its tiers | gate: exclusive by U1; reader tier: shared by U2; writer tier: shared by U2 |
+| 14 `ADM2` | U2 | passes the check and is attached | -- |
+| 15 `SUP2` | U2 | starts its upgrade keeping its tiers, and asks for the gate exclusively, which U1 holds | -- |
+| 16 `DLK` | U1, U2 | U1 waits for the writer tier exclusively, held shared by U2; U2 waits for the gate, held by U1 | -- |
+
+### T6 -- an upgrader that begins holding writer exclusion deadlocks against an attached writer
+
+Status: `[verified]` against the model, in the control that starts the upgrade while holding
+exclusion. U is an upgrader whose upgrade is safe for readers and W a handle that may write.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `BGN1` | U | begins to attach | -- |
+| 2 `GTS1` | U | holds the gate shared | gate: shared by U |
+| 3 `RDS1` | U | takes the reader tier shared | reader tier: shared by U |
+| 4 `BGN2` | W | begins to attach | -- |
+| 5 `DRP1` | U | drops the gate | gate: none |
+| 6 `GTS2` | W | holds the gate shared | gate: shared by W |
+| 7 `WRS1` | U | takes the writer tier shared | writer tier: shared by U |
+| 8 `ADM1` | U | passes the check and is attached | -- |
+| 9 `REQ1` | U | requests writer exclusion | -- |
+| 10 `RDS2` | W | takes the reader tier shared | reader tier: shared by U and W |
+| 11 `LCK1` | U | is granted the lock | lock: U |
+| 12 `REC1` | U | finds no record and no fence, and records itself as holder | record: U |
+| 13 `SUPX` | U | starts its upgrade while holding exclusion: releases its tiers and asks for the gate exclusively, which W holds shared | reader tier: shared by W; writer tier: none |
+| 14 `DRP2` | W | drops the gate | gate: none |
+| 15 `WRS2` | W | takes the writer tier shared | writer tier: shared by W |
+| 16 `GTX` | U | takes the gate exclusively | gate: exclusive by U |
+| 17 `ADM2` | W | passes the check and is attached | -- |
+| 18 `REQ2` | W | requests writer exclusion, which U holds | -- |
+| 19 `DLK` | U, W | U waits for the writer tier exclusively, held shared by W's attachment; W waits for exclusion, held by U | -- |
+
+[^mp-2]: `MP-2` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-1-4]: `MP-1.4` in [CHECKLIST.md](CHECKLIST.md)
+
+## Clones, leases and the upgrade drain, modelled in `Coordination.tla`, 2026-11-11
+
+- **A handle's operations are its leases, and the drain depends on them only by their ending.**
+  The model counts the operations in flight on each handle. A clone's operation holds a lease
+  and does nothing else; the process's own read, and its own write from request to release, are
+  operations on its handle too. The attachment is the handle's, shared by all its clones, so a
+  clone's lease is a lease on the same tiers and a process that ends drops every one at once.
+- **An upgrade begins by draining, and drains while still attached.** The upgrader refuses new
+  operations on every clone, waits for the leases to end holding its shared tiers, and only then
+  releases them and asks for the gate exclusively. Holding the tiers through the drain is what
+  keeps every operation in flight beneath them, so no upgrade completes under one; releasing
+  them before the gate is what keeps it from waiting for the gate while holding a tier, which a
+  drain that kept them past its end would break (T5 above, which the model now reaches through
+  the drain).
+- **A call made from inside an operation is refused at the door.** The drain would wait for an
+  operation that cannot end while its own call is blocked, so the call returns at once as
+  refused and the handle stays attached; a refused call is an outcome and not a wait. What the
+  implementation must tell apart is the *caller's own* operation context, not whether the handle
+  has any lease: leases of other clones are waited for, and only a lease the caller holds makes
+  the call refusable. An upgrade started from inside a read's callback deadlocks on that read
+  (T7 below), and one begun while holding writer exclusion is the same fault with a different
+  victim[^mp-7].
+- **Cancelling while draining ends the drain and leaves the handle attached and usable**, with
+  operations in flight carrying on, because the tiers never left. **A conversion cancelled or
+  failing after the drain leaves the handle detached, promptly and in one step**: the tiers are
+  already released and nothing remains to wait for, so there is no unbounded obligation to
+  restore the attachment. Cancellation and failure -- including the recheck finding that the
+  layer moved -- have the same successor, and differ only in the outcome they report.
+- **A detached handle holds nothing and refuses every operation until it attaches again or is
+  dropped.** Attaching again is an ordinary admission, checked against the store as it then is,
+  so it may be refused; dropping needs every clone's operation to have ended, since the
+  attachment lasts until the last clone is gone.
+- **The rule that makes the drain safe is stated on the state, not on the steps.** An operation
+  is in flight only while its handle holds the tiers it was admitted under, and no conversion
+  begins with an operation in flight. Both are written over the raw counts, so a fault in the
+  model's own notion of a lease cannot hide them.
+- **A clone's operation waits for nothing in this model.** An operation that waited, for
+  exclusion say, would add a wait the drain depends on. The drain cannot form a cycle through
+  such a wait because no upgrader holds exclusion while it drains or converts, which is the
+  rule the exclusion-holding control of the previous section reverses; the model does not
+  check a clone's wait on its own.
+- **The cancelled drain, the failed conversion and the call refused at the door are separate
+  outcomes of a request** (`withdrawn`, `refused`, `refused`), and the first two differ in
+  where they leave the handle. A conversion in the upgrade's body cannot be cancelled here: the
+  body is the migration's, and cancelling or failing within it is modelled with it[^mp-2].
+- **Controls and witnesses.** The controls reverse a rule: an upgrade started from inside an
+  operation (deadlock), a conversion that begins without waiting for the leases, a clone that
+  starts an operation on a draining handle, a cancelled drain that detaches the handle, and a
+  conversion cancelled after the drain that leaves the handle usable. The witnesses show an
+  upgrade waiting for a clone's operation, operations ending while the handle drains, a drain
+  that ends and goes on, one cancelled with operations still running, a conversion cancelled and
+  one that fails at the recheck, a detached handle attaching again and being dropped, a call
+  refused from inside a read and from inside a write, an upgrader dying while it drains, and a
+  death ending the leases. Operations of clones are bounded by a constant, and a configuration
+  that needs none leaves it at zero.
+- **Earlier accounts omit the drain.** T4 to T6 predate it: the model now passes through a drain
+  step, `DRN`, between an upgrade starting and its asking for the gate, which ends at once when
+  no operation is in flight, and those accounts stand with that step added.
+
+### T7 -- an upgrade started from inside a read waits for the read it is blocking
+
+Status: `[verified]` against the model, in the control that lets an upgrade start from inside an
+operation. U is an upgrader whose upgrade is safe for readers. The scenario's other process
+attaches and exits and takes no part, so its steps are omitted.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `BGN1` | U | begins to attach | -- |
+| 2 `GTS1` | U | holds the gate shared | gate: shared by U |
+| 3 `RDS1` | U | takes the reader tier shared | reader tier: shared by U |
+| 4 `DRP1` | U | drops the gate | gate: none |
+| 5 `WRS1` | U | takes the writer tier shared | writer tier: shared by U |
+| 6 `ADM1` | U | passes the check and is attached | -- |
+| 7 `RDB` | U | begins a read and takes its first sample | -- |
+| 8 `SUPI` | U | starts an upgrade from inside the read, as a callback would: refuses new operations and begins to drain, holding its tiers | -- |
+| 9 `DLK` | U | waits for the read's lease to end; the read cannot go on while U's call is blocked, so the drain never ends | -- |
+
+Under the contract step 8 is refused: U stays attached, the read goes on and ends, and U may
+then start the upgrade from outside any operation.
+
+[^mp-7]: `MP-7` in [CHECKLIST.md](CHECKLIST.md)
+
+## The registry of attached handles, modelled in `Coordination.tla`, 2026-11-11
+
+- **An entry exists exactly while its handle is attached, and that is stated on the locks.** An
+  entry's liveness lock is held only by a handle that holds an attachment, so an entry exists
+  neither before its handle is admitted nor once the attachment is given up -- by a clean drop,
+  or by the conversion that detaches an upgrader -- and a handle that is attached has an entry
+  it holds or the registry says some handle is missing. A handle leaves the registry before it
+  lets go of its tiers and registers after its check and before its attach returns, so the
+  window in which an attached handle has no entry is inside the call and never visible to the
+  caller. An upgrade that kept its entry through the conversion would list a handle that holds
+  nothing.
+- **A listing's verdict depends on one rule: the token and the liveness probe are read under the
+  claim lock.** A listing reports an entry live only if the liveness lock was held when it
+  probed, by the handle the token names. A listing that does not claim the entry can read the
+  token of a handle that died beside the liveness lock of the handle that has since taken the
+  entry, and report the dead handle live (T9 below).
+- **The same rule on the registering side is that the claim lock is held from before the
+  liveness lock until after the token is written.** With the claim lock free, an entry's token
+  names the handle that holds its liveness lock: no one can see a new owner's lock beside an old
+  owner's token. A registrant that lets go of the claim lock early, or takes an entry without
+  trying its liveness lock, breaks that, and the state-form of the rule says so without a
+  listing to witness it.
+- **Every acquisition of a registry lock is a try.** A registrant that finds a claim lock held or
+  a liveness lock held moves on to the next entry, and a listing that finds a claim lock held
+  reports the entry unknown; an owner leaving the registry that finds its claim lock held
+  releases only its liveness lock. No process waits for a registry lock, and a configuration with
+  nothing giving up or dying finds no deadlock.
+- **Clearing an entry is not what makes it dead; releasing the liveness lock is.** An owner that
+  cannot claim its entry when it leaves skips the clearing, and the entry then carries the token
+  of a handle that is gone beside a free liveness lock, which a listing reads as dead. The
+  model checks this: removing the clearing step from unregistration is invisible to every
+  property.
+- **A death releases the locks it held and changes no entry.** An entry left by a handle that
+  died stays as it was, reads as dead because nothing holds its liveness lock, and is reused by
+  the next registrant, including after a death between taking an entry's claim lock and its
+  liveness lock. A host crash discards every entry and the marker with the rest of the
+  coordination state.
+- **Finding: the contract says listings "then say they may be incomplete" after a handle
+  attaches unregistered, and the entries alone cannot carry that.** A listing that infers
+  incompleteness from what it sees -- no free entry, or an entry it could not claim -- misses a
+  handle that attached without an entry while every entry was held and was listed after one
+  freed. The registry therefore records an overflow, set by the handle that attaches without an
+  entry and discarded only by a host restart, and every listing reads it. Never clearing it is
+  conservative and correct; making it precise would need a count updated under a lock, which is
+  not modelled and is not needed for the guarantee. The requirement is queued in MP-5[^mp-5].
+- **Finding: "every entry held" includes an entry whose claim lock is merely held for a moment.**
+  A listing, or another registrant, holding a claim lock sends a registrant on to the next
+  entry, so a handle can attach unregistered while an entry is free (T8 below). That costs
+  diagnosis precision and nothing else, since the overflow is announced; retrying an entry is an
+  implementation choice the model does not constrain.
+- **A listing runs on a thread of its own, on a process that need not be attached, and a process
+  does not end while its listing runs.** Listing needs no attachment, which is what lets an
+  administrator see who blocks an upgrade; the model lets a process that has not attached, or
+  is detached, list. A process that ends with a listing under way would leave the claim lock of
+  an entry held by a process that is gone.
+- **An entry's data is a token and a draining flag.** The flag is updated under the claim lock
+  when its handle starts or stops draining, and nothing claims the entry reflects the handle's
+  other state: the registry is for diagnosis, and its accuracy beyond the token and the liveness
+  probe is not a contract.
+- **Entries are optional in the model.** A configuration with no entries leaves the registry out
+  and every earlier configuration unchanged. Attachment now ends with a registration step and
+  detaching begins with an unregistration step, each a part of the attach or the drop and not an
+  operation, so no operation can start between a handle's admission and its entry.
+- **Controls and witnesses.** The controls reverse a rule: a listing that does not claim the
+  entry it inspects, which must report a dead handle live; a registrant that lets go of the
+  claim lock early; an upgrader that keeps its entry through the conversion; a handle that
+  writes an entry without claiming it; a handle that takes an entry without trying its liveness
+  lock; and a listing that infers incompleteness from fullness. The witnesses show an entry
+  written, reused after its handle died and cleared, a registrant moving on from a held claim
+  lock and from a live entry, an owner updating its entry, a handle leaving at a drop and at a
+  conversion, a clearing skipped because the claim lock was held, a listing seeing an entry live,
+  dead and free, a dead handle's entry reported dead, an entry the listing cannot claim, a
+  listing that says it may be incomplete and one that says it is complete, a handle attaching
+  without an entry, and a death between an entry's claim lock and its liveness lock and one
+  while holding an entry. Three-process configurations leave out listings, which the two-process
+  ones cover, to keep the state space small.
+
+### T8 -- a listing that infers incompleteness from fullness misses a handle that attached without an entry
+
+Status: `[verified]` against the model, in the control that infers from fullness. H is a handle
+and L a listing thread of the same process; the registry has one entry.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `BGN1` | H | begins to attach | -- |
+| 2 `GTS1` | H | holds the gate shared | gate: shared by H |
+| 3 `RDS1` | H | takes the reader tier shared | reader tier: shared by H |
+| 4 `DRP1` | H | drops the gate | gate: none |
+| 5 `WRS1` | H | takes the writer tier shared | writer tier: shared by H |
+| 6 `ADM1` | H | passes the check and goes on to register | -- |
+| 7 `RGS1` | H | starts to look for an entry | -- |
+| 8 `LSB` | L | starts a listing | -- |
+| 9 `LCL` | L | claims the entry | claim lock: L |
+| 10 `RGC1` | H | finds the claim lock held and moves on; no entry is left | -- |
+| 11 `OVF` | H | attaches without an entry; the registry records that a handle is missing | overflow marker: set |
+| 12 `LRD` | L | reads the entry's token and finds none | -- |
+| 13 `LPB` | L | finds the entry free and lets go of the claim lock | claim lock: none |
+| 14 `LDN` | L | says the listing is complete, since it found a free entry and met none it could not claim | -- |
+
+Under the contract step 14 reads the overflow marker and says the listing may be incomplete.
+
+### T9 -- a listing that does not claim an entry reports a dead handle live
+
+Status: `[verified]` against the model, in the control that lists without claiming. A and B are
+handles and L a listing thread of B; the registry has one entry.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `BGN1` | A | begins to attach | -- |
+| 2 `GTS1` | A | holds the gate shared | gate: shared by A |
+| 3 `RDS1` | A | takes the reader tier shared | reader tier: shared by A |
+| 4 `DRP1` | A | drops the gate | gate: none |
+| 5 `WRS1` | A | takes the writer tier shared | writer tier: shared by A |
+| 6 `ADM1` | A | passes the check and goes on to register | -- |
+| 7 `RGS1` | A | starts to look for an entry | -- |
+| 8 `RGC1` | A | claims the entry | claim lock: A |
+| 9 `RGL1` | A | takes the entry's liveness lock | liveness lock: A |
+| 10 `RGW1` | A | writes its token | entry: token A |
+| 11 `KILL` | EXTERNAL | A's process dies | claim lock: none; liveness lock: none; entry still token A |
+| 12 `BGN2` | B | begins to attach | -- |
+| 13 `GTS2` | B | holds the gate shared | gate: shared by B |
+| 14 `RDS2` | B | takes the reader tier shared | reader tier: shared by B |
+| 15 `DRP2` | B | drops the gate | gate: none |
+| 16 `WRS2` | B | takes the writer tier shared | writer tier: shared by B |
+| 17 `ADM2` | B | passes the check and goes on to register | -- |
+| 18 `RGS2` | B | starts to look for an entry | -- |
+| 19 `RGC2` | B | claims the entry | claim lock: B |
+| 20 `RGL2` | B | takes the liveness lock, which no one holds | liveness lock: B; entry still token A |
+| 21 `LSB` | L | starts a listing | -- |
+| 22 `LCL` | L | begins to inspect the entry without claiming it | -- |
+| 23 `LRD` | L | reads the entry's token: A | -- |
+| 24 `LPB` | L | tries the liveness lock in shared mode, is refused because B holds it, and reports A live | -- |
+
+Under the contract step 22 claims the entry, which B holds: L reports the entry unknown and says
+the listing may be incomplete, and no handle is reported live that is not.
+
+## Creating a store root, modelled in `Creation.tla`, 2026-11-11
+
+- **Creation is a model of its own, and the marker is what it hands to the rest of the
+  contract.** [Creation.tla](spec/Creation.tla) ends where [Coordination.tla](spec/Coordination.tla)
+  begins: a root with its marker in place. Creation needs a file's existing and its being
+  durable as separate facts, which Coordination.tla leaves to
+  [PointerPublication.tla](spec/PointerPublication.tla), and nothing in attachment, exclusion or
+  the registry can happen before the marker exists, so one model of both would interleave
+  behaviours that cannot occur together. The interface is the marker: an open succeeds only on
+  one, and the model checks that the marker an open relies on is durable. No work is queued to
+  compose the two models, since neither depends on a property the other establishes beyond that
+  marker.
+- **A creator reads the root, takes its exclusion, and reads the root again.** It reads the root
+  and decides: a marker means the root is a store; anything under the root that creation does
+  not make means it is not a root to create in; a reservation means a creation was begun, which
+  it resumes if the reservation names its implementation and records its inputs, and refuses
+  otherwise; no reservation means it creates. It then takes its own implementation's creation
+  exclusion, waiting for it, and reads the root again under it. A creator publishes the
+  reservation with an exclusive publish-if-absent; a resumer confirms that no marker has
+  appeared, that the reservation is the one it read and that the root is still unoccupied. It
+  makes the reservation durable, then makes the artifacts in order, each durable before the
+  next, the last being the marker, and lets go of the exclusion when the marker is durable.
+- **Only the reservation can arbitrate between implementations.** A creation exclusion excludes
+  only the processes of its own implementation, so two creators of different implementations
+  hold different exclusions at once. The reservation is what they share: whoever publishes it
+  owns the creation, and the other finds it and stops. A publication that replaces a reservation
+  that is there starts two creations (T11 below), and the property that at most one process is
+  creating holds only because publishing is exclusive.
+- **The reservation is complete or absent, across a host crash as well as at every step.** A
+  reservation written in two steps lets another process read one that is not complete (T10
+  below), and a crash can keep the first step and lose the second. The model takes publish-if-absent
+  to leave the complete file or none even when power is lost before the file is durable; that is
+  a requirement on the primitive, queued in AC-1[^ac-1].
+- **Durability is ordered: the reservation, then each artifact, then the marker.** The reservation
+  is durable before any other artifact exists, and each artifact is durable before the next is
+  made, so the marker exists only when every artifact before it is there and durable. Power loss
+  keeps what is durable and keeps or loses each other file on its own, so without that order a
+  crash leaves artifacts whose reservation is gone, or a marker whose artifacts are gone. The
+  reservation's file and its directory entry are one unit in the model, made durable together.
+  A creator that died before making the reservation durable leaves it for its resumer to make
+  durable before going on.
+- **A resumer reads the root again under the exclusion, because the creation it read may be
+  live.** A reservation without a marker looks the same whether its creator died or is still
+  working, and no observer can tell which. The creator holds its exclusion until the marker is
+  durable, so a resumer that waits for the exclusion either meets a creator that died, or one
+  that finished and left a marker. Reading the marker again after the wait is what tells them
+  apart, and a resumer that skips it creates over a store whose creation has finished (T12
+  below). The reread also confirms the reservation is the one it decided on.
+- **A resumer compares its inputs with the reservation's, and the artifacts record the inputs
+  they were made from.** A creation resumed with different inputs would mix two sets in one
+  store. The model gives every creator one number for its inputs and checks that the process
+  creating, and every artifact, carries the inputs the reservation records.
+- **A root holding anything creation does not make is not created in or resumed.** The root is
+  scanned before the exclusion, so a root that is plainly not ours is refused without taking it,
+  and again under it, because something can appear in between. The check applies to a resumer as
+  to a creator, and a refusal changes nothing in the root.
+- **Finding `UNSYNCED-MARKER`: an open must make the marker durable before it relies on it.** A
+  creator publishes the marker and then makes it durable, and holds its exclusion until it has.
+  If it dies between the two, its exclusion is released with the marker visible and not durable,
+  and an opener that trusts a visible marker opens the store; a host crash can then take the
+  marker away from a store whose documents are already durable (T13 below). An open therefore
+  makes the marker durable before it relies on it. Doing so costs one idempotent sync, and the
+  marker's creator has made every artifact before it durable, so nothing else needs it. The
+  requirement is queued in MP-5[^mp-5].
+- **Finding: an opener's wait for the creation exclusion is not what makes an open safe.** The
+  marker is published atomically and last, so an opener that reads the root sees a complete
+  store or none. Removing the opener's exclusion from the model is invisible to every property.
+  The model keeps it because the contract states it; whether an implementation needs it for
+  anything the model does not cover is not decided here.
+- **What the model leaves out.** An artifact is abstract: it exists, is durable, and records
+  inputs. The failure of an I/O step is not a separate event, since a creator that stops at a
+  step because it failed is the same as one that dies there, and the model checks a death, and a
+  host crash, at every step. A waiting creator never gives up. The reservation's file and its
+  directory entry are not made durable separately, so an implementation that syncs only the file
+  is not distinguished here, and is left to MP-5's crash test at each step of creation[^mp-5].
+- **Controls and witnesses.** The controls reverse a rule: a reservation published in two
+  writes, which another creator must read between them; artifacts begun before the reservation is
+  durable; an artifact not made durable before the next, so the marker outlives what it depends
+  on; a publication that replaces a reservation, which runs two creations and replaces a
+  published reservation; a reservation published without holding the exclusion; a resumer that
+  takes no exclusion, or does not read the root again, or ignores the inputs, which makes the
+  marker from different ones; an open through an implementation the reservation does not name;
+  an open that trusts a marker its creator died before making durable; and a creator that does
+  not refuse a root holding something else. The witnesses show a creation completing and one
+  resumed after a death and after a host crash, a crash losing the reservation, a crash leaving
+  only the reservation and one leaving every artifact but the marker, a creator waiting for the
+  exclusion, stopping at another implementation's reservation, at different inputs, after losing
+  the race, at a finished store and at an occupied root, found before and after the exclusion,
+  a resumer finding the store finished while it waited, and an open opening, being refused for
+  another implementation, finding no store or a creation in progress, and making a marker
+  durable that its creator did not. Probes in scratch copies of the spec -- a resumer that does
+  not make the reservation or an artifact durable, a crash that loses what was durable, and each
+  place the root is checked for being occupied -- were caught by the intended property each time,
+  and removing the opener's exclusion, above, was not caught.
+
+### T10 -- a reservation published in two writes is read between them
+
+Status: `[verified]` against the model, in the control that publishes in two writes. A and B are
+creators of one implementation with the same inputs.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LOOK1` | A | reads the root and finds nothing, and decides to create | -- |
+| 2 `LOCK1` | A | takes its implementation's creation exclusion | creation exclusion: A |
+| 3 `PUBP` | A | writes the first part of the reservation: the file exists and is empty | reservation: partial |
+| 4 `LOOK2` | B | reads the root and finds a reservation that is not complete, which no step of the contract produces, and stops | -- |
+
+Under the contract step 3 publishes the complete reservation or nothing, so B finds none or a
+whole one.
+
+### T11 -- a publication that replaces a reservation runs two creations at once
+
+Status: `[verified]` against the model, in the control whose publication replaces. A uses
+implementation 1 and B implementation 2; they carry the same inputs.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LOOK1` | A | reads the root and finds nothing, and decides to create | -- |
+| 2 `LOOK2` | B | reads the root and finds nothing, and decides to create | -- |
+| 3 `LOCK1` | B | takes implementation 2's creation exclusion | creation exclusion 2: B |
+| 4 `PUB1` | B | publishes its reservation, naming implementation 2 | reservation: B's |
+| 5 `LOCK2` | A | takes implementation 1's creation exclusion, which B's exclusion does not hold back | creation exclusion 1: A |
+| 6 `PUB2` | A | publishes its reservation over B's, naming implementation 1 | reservation: A's |
+
+A and B are both creating, each believing it owns the creation. Under the contract step 6 finds
+B's reservation and A stops.
+
+### T12 -- a resumer that does not read the root again creates over a finished store
+
+Status: `[verified]` against the model, in the control that does not read again. A and B are
+creators of one implementation with the same inputs; A creates while B reads.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LOOK1` | A | reads the root and finds nothing, and decides to create | -- |
+| 2 `LOCK1` | A | takes the creation exclusion | creation exclusion: A |
+| 3 `PUB` | A | publishes the reservation | reservation: complete, not durable |
+| 4 `SYNR` | A | makes the reservation durable | reservation: durable |
+| 5 `LOOK2` | B | reads the root and finds A's reservation for its implementation and inputs, and no marker; it cannot tell A's live creation from an interrupted one, and decides to resume | -- |
+| 6 `WRA1` | A | makes the first artifact | artifact 1: exists |
+| 7 `SYA1` | A | makes it durable | artifact 1: durable |
+| 8 `WRM` | A | makes the marker | marker: exists |
+| 9 `SYM` | A | makes the marker durable and lets go of the exclusion | marker: durable; creation exclusion: none |
+| 10 `LOCK2` | B | takes the creation exclusion, which is now free | creation exclusion: B |
+| 11 `CNFM` | B | goes on to create without reading the root again | -- |
+
+Under the contract step 11 reads the root again, finds the marker and stops.
+
+### T13 -- a creator dies before its marker is durable, an opener relies on the marker, and power is lost
+
+Status: steps 1 to 9 are `[verified]` against the model, in the control whose open trusts a
+visible marker; step 10 is a step the model allows and the control does not reach, since the
+property is already violated at step 9. A creates, with an opener O of its implementation.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LOOK` | A | reads the root and finds nothing, and decides to create | -- |
+| 2 `LOCK` | A | takes the creation exclusion | creation exclusion: A |
+| 3 `PUB` | A | publishes the reservation | reservation: complete, not durable |
+| 4 `SYNR` | A | makes the reservation durable | reservation: durable |
+| 5 `WRA1` | A | makes the first artifact | artifact 1: exists |
+| 6 `SYA1` | A | makes it durable | artifact 1: durable |
+| 7 `WRM` | A | makes the marker | marker: exists, not durable |
+| 8 `KILL` | EXTERNAL | A's process dies | creation exclusion: none |
+| 9 `OPEN` | O | reads the root, finds the marker and a reservation naming its implementation, and opens the store on a marker that is not durable | -- |
+| 10 `CRSH` | EXTERNAL | power is lost, and the marker, which was never durable, is lost | marker: absent |
+
+`[projected]` A store opened at step 9 may have made documents durable before step 10, and the root
+then holds them with a durable reservation and artifacts and no marker, which no open accepts and
+no creation resumes over, since the documents are something creation does not make. Under the
+contract step 9 makes the marker durable before it opens, so step 10 loses nothing an open relied
+on.
+
+[^ac-1]: `AC-1` in [CHECKLIST.md](../acadia/CHECKLIST.md#ac-1)
+
+## A transaction and the commit log, modelled in `Coordination.tla`, 2026-11-11
+
+- **A write is a transaction behind a switch, and the abstract write stays.** With `Txn` false a
+  write is the one abstract operation the earlier models use: two cells changed in turn inside
+  the count's bracket. With it true a write is `begin`, ingest, `prepare`, namespace apply and
+  `end` over a commit log, staging and the namespace, with the count bracketing the whole of it.
+  The switch leaves every earlier configuration, and its state space, unchanged, so the gate,
+  tiers, leases and registry are still checked against the cheaper write. Whether the abstract
+  form is retired once the refined one is proven is the engineer's decision, kept open[^odi-3].
+- **The prepare record is the commit point: before it nothing is visible, and after it nothing
+  is undone.** Ingest only stages bodies, which no pointer names, so a failure before `prepare`
+  is rolled back by sweeping the staging and resetting the log, with the namespace as it was and
+  the operation ending without an effect. The swap set is in the prepare record, so from the
+  moment that record may be in the log the transaction can only be rolled forward, whether or not
+  its holder ever learns it was written. The namespace moves only after the record, and the end
+  record follows every swap; each has a control that reverses it.
+- **A failure at or after the commit point is unresolved, including the failure of the prepare
+  append itself.** An append that fails may or may not have written its record, and the holder
+  cannot tell which, so it sets the fence, leaves the count odd and the log as it is, and is told
+  recovery is required; the model takes both outcomes. Failing to make a swap, to append the end
+  record, or to sweep after it, are the same: the store is whole or it is not, and only the log
+  says which. A control that handles such a failure as one before the commit point leaves a
+  half-applied namespace, an even count and nothing to say so.
+- **The log is modelled by its tail.** Transactions are serialised, so only the latest can be
+  incomplete, and the interaction between processes depends on whether that tail is empty,
+  begun, prepared or ended and on nothing earlier. Staging is the version whose bodies are staged,
+  and the prepare record carries the version its swaps move to. The two cells are a transaction's
+  two swaps, and a read sees one and not the other exactly as before.
+- **Staging is always announced by the log.** A begin record is written before anything is
+  staged, so recovery can find and sweep whatever a dead holder staged. A reset that discards a
+  begun transaction while its staging remains leaves it unannounced, and the model checks that no
+  state has staged bodies without a record to say so.
+- **The commit-log reset is made by a holder with nothing in flight, and only of a settled
+  log.** A reset made while a transaction is in flight, or by an acquirer that was told recovery
+  is required, discards a prepared transaction that only the log lets recovery finish; each is a
+  control. A holder that rolls a transaction back resets the log as part of the rollback.
+- **Every record changes what a handle may have cached of the log.** The version of the shared
+  durable state moves with each record appended and each reset, and the holder updates its own
+  cache, so another handle reloads when the generation shows someone came between; that rule is
+  unchanged.
+- **A holder that dies at any phase leaves evidence.** The ownership record names it, so the
+  next acquirer is told recovery is required whether the holder died after `begin`, with its
+  bodies staged, with `prepare` in the log, between its swaps, after the last, or after `end`
+  and before its sweep. A host crash leaves a prepared transaction in the log as well, and the
+  untrusted state is the evidence. Writing past any of it is the one thing a transaction may
+  never do, which the model checks at the start of each.
+- **What the model leaves out.** The content of the bodies and the collection of what a
+  transaction supersedes belong to
+  [PointerPublication.tla](spec/PointerPublication.tla); a torn record at the log's end belongs
+  to the log's own reader; and the nonce claims a transaction's artifacts carry are the
+  implementation's. None changes what processes see of one another.
+- **Controls and witnesses.** The controls reverse a rule and must fail: a reset made while a
+  transaction is in flight and one made by an acquirer told recovery is required, which also
+  changes store data without being a healthy holder; a swap before `prepare`; a `prepare` before
+  ingest; an `end` before the swaps; and a failure after `prepare` handled as a rollback. The
+  witnesses show a transaction committing, a failure before ingest and after it, a prepare append
+  that fails with and without a record, a failure after the prepare record, after the last swap
+  and after `end`, the log reset, and a holder dying after each phase with the next acquirer
+  told, and a host crash leaving a prepared transaction. Probes in scratch copies of the spec
+  that break one rule each -- an empty swap set, an end that keeps it, a rollback that keeps the
+  staging or the log, a sweep that is skipped, a begin before the opening raise, a request that
+  resets the log, a rollback that writes the namespace, and a failure that does not set the
+  fence -- were each caught by the intended property.
+
+[^odi-3]: `ODI-3` in [CHECKLIST.md](CHECKLIST.md)
+
+## Recovery and its discovery, modelled in `Coordination.tla`, 2026-11-11
+
+- **Recovery is a capability of a holder that was told, and it decides what to do from the
+  commit log alone.** A holder told that recovery is required, or whose own transaction failed
+  unresolved, may run recovery; until it does it can only release. The fence refuses ordinary
+  writes and not recovery, so the fence that says recovery is needed never blocks the work that
+  clears it. Recovery looks at the log's last record: a prepared transaction is rolled forward
+  through its swaps and its end record, one that was begun and not prepared is rolled back, and
+  anything else is already resolved. It does not read the fence, the ownership record or the
+  trust flag to choose its steps, since they say that recovery is required and nothing about
+  what it should do. A recovery that rolls a prepared transaction back discards a commit the
+  log says was reached, which a control shows.
+- **The steps run in one order, and each position is what a recoverer's stop or death depends
+  on.** The swaps, the end record and the sweep of the staging come first; a transaction that was
+  only begun has its staging swept and then its log reset. The count and the trusted state are
+  published next, together, and the fence is cleared last.
+  - The staging is swept before the log is reset, so that between the two there is always a
+    record announcing it.
+  - Nothing is published until the namespace is whole. An even count published earlier lets a
+    read sample it on both sides of a recoverer that stopped between its swaps and classify a
+    half-applied store as settled (T14 below).
+  - The count and the trust are one publication, so no state reads as trusted with the odd count
+    it had, and none as an even count that cannot be vouched for.
+  - The fence is cleared last. It keeps writers out and later acquirers told while anything is
+    unresolved; cleared when recovery starts, it leaves a recoverer that stops with unresolved
+    work and nothing to mark it, and the next holder begins a transaction over that work (T15
+    below).
+
+  Between the count's publication and the fence's clearing the store is settled, even and
+  trusted with the fence still set. A recoverer that stops or dies there leaves a store for which
+  the next acquirer is told recovery is required; that acquirer finds nothing to finish,
+  republishes the count unchanged and clears the fence.
+- **Every step takes what it needs from durable state and is idempotent, so a resumed recovery
+  is the same recovery.** A swap made again lands on the cell it already moved, the end record is
+  written only while the log's last record is the prepare record, a sweep removes nothing that is
+  not there, and the count is the even value at or above what a sampler of the store reads now,
+  so republishing it changes nothing. A recoverer that stops between steps goes back to the told
+  state, still holding exclusion with the fence set. One that dies leaves the record, the fence
+  and the count where they were, and the next acquirer is told and starts from what the log says
+  (T16 below).
+- **Publishing the recovered count drops every cached sample, as every publication does.**
+  Restoring trust changes what a sampler of an untrusted store reads -- an even count that cannot
+  be vouched for reads one higher -- so a sample cached while the state was untrusted is stale
+  the moment trust returns.
+- **Discovery is one observation of four things, and it reports abandoned work and never work in
+  progress.** Any attached handle, one that may only read included, may ask whether recovery is
+  required. In one step it reads the fence, the restart state, the ownership record and whether
+  the lock is held, and reports recovery required when the fence is set, when the state cannot be
+  vouched for, or when a record names a holder and the lock is free, which can only mean the
+  holder died. A record beside a held lock is a live holder's transaction and is reported as not
+  requiring recovery; discovery that trusts the record alone reports it as abandoned (T17
+  below). A recovery in progress is still reported, since the fence stays set until it finishes,
+  and when no one holds exclusion every one of the three signals is.
+- **Discovery changes nothing but its own report.** A discovery that clears a fence it finds set
+  while no one holds exclusion makes the answer disappear while the work remains: the next
+  acquirer is not told, and the unresolved transaction has nothing to mark it. The model checks
+  that no step that produces a report changes anything else, and the control that repairs what it
+  finds violates it.
+- **What the model leaves out.** Discovery is one step. An implementation cannot read files and
+  probe a lock in one step, so it must make its observation consistent with one -- by trying the
+  writer lock without waiting and reading under it, for example -- and the model does not say
+  whether a weaker order is also safe. The progress a recovery reports and its cost are not
+  modelled, nor is its handling of the publication record and of directory-sync debt, which
+  belong to [PointerPublication.tla](spec/PointerPublication.tla) and the composition of the
+  two; and whether a driven recovery eventually completes is liveness, which the model of
+  fairness checks[^mp-4].
+- **What it asks of an implementation, queued in the recovery work[^mp-6].** Recovery reads the
+  log and never the coordination state. Its steps run in the order above with the fence last,
+  and a stop or a death at any step leaves the fence set. The publication of the recovered count
+  restores trust and drops cached samples. Discovery's observation is consistent, as above, and a
+  live holder's transaction is never reported as abandoned while the holder acquires or releases.
+- **Controls and witnesses.** The controls reverse a rule and must fail: discovery that trusts
+  the ownership record alone, that does not read the fence, that does not read the restart state,
+  and that clears the fence it finds; recovery that clears the fence when it starts, which a
+  recoverer that stops leaves unprotected and which lets the next holder begin a transaction over
+  unresolved work; recovery that publishes the count before the namespace is whole, which lets a
+  read accept a half-applied store and lets trust return before the swaps; and recovery that
+  rolls a prepared transaction back. The witnesses show a recovery rolling a prepared
+  transaction forward and one that was only begun back, completing and clearing the fence,
+  restoring trust, following a host crash, a holder's death and an unresolved failure of the
+  holder's own, following a crash that rolled the count back over a prepared transaction, being
+  stopped, a recoverer dying after each of its steps with the next acquirer told, and a recovery
+  resumed after an earlier one died, once between its swaps; and discovery finding a dead
+  holder's work, the fence and untrusted state, a healthy store, a live holder's transaction, and
+  being called by a handle that may only read. Probes in scratch copies of the spec -- a sweep
+  skipped, an end record not written, a swap skipped or both, a count left odd, trust not
+  restored, a fence never cleared or cleared when a recoverer stops, a log reset before the
+  sweep, and discovery that reads nothing, always reports, or ignores a dead holder's record --
+  were each caught by the intended property.
+
+### T14 -- a recoverer that publishes the count before its swaps lets a read accept a half-applied store
+
+Status: `[verified]` against the model, in the control that publishes the count first, with a
+read. A has attached; the read is A's own, after it lets go, and any attached handle could take it.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `OPN` | A | prepares the opening raise | -- |
+| 5 `PUB` | A | publishes it | count: 1 |
+| 6 `BEGN` | A | appends the begin record | log: begun |
+| 7 `STG` | A | stages its bodies | staging: version 1 |
+| 8 `PRPF` | A | appends the prepare record; the append fails with the record in the log, which A cannot tell, so it sets the fence and is told recovery is required | log: prepared, naming version 1; fence: set |
+| 9 `RSRT` | A | starts recovery and, in the control, goes to publishing the count | -- |
+| 10 `RCNT` | A | publishes the count, even and trusted, before any swap | count: 2 |
+| 11 `RSWA` | A | makes the first swap | cell a: version 1 |
+| 12 `RSTP` | A | stops recovery between its swaps, holding exclusion | -- |
+| 13 `CLR` | A | clears the record while holding the lock | record: none |
+| 14 `ULK` | A | drops the lock | lock: none |
+| 15 `SMP1` | A | samples the count and gets 2 | -- |
+| 16 `OBSA` | A | observes cell a: version 1 | -- |
+| 17 `OBSB` | A | observes cell b: version 0 | -- |
+| 18 `SMP2` | A | samples the count again, gets 2, and classifies the read as settled | -- |
+
+Under the contract step 10 comes after the swaps, the end record and the sweep, so the samples in
+steps 15 and 18 read 1, an odd count, and the read is contended.
+
+### T15 -- a recoverer that clears the fence when it starts lets the next transaction begin over unresolved work
+
+Status: `[verified]` against the model, in the control that clears the fence at the start. A has
+attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `OPN1` | A | prepares the opening raise | -- |
+| 5 `PUB1` | A | publishes it | count: 1 |
+| 6 `BEGN1` | A | appends the begin record | log: begun |
+| 7 `STG` | A | stages its bodies | staging: version 1 |
+| 8 `PRPF` | A | appends the prepare record; the append fails and leaves no record, which A cannot tell, so it sets the fence and is told recovery is required | fence: set |
+| 9 `RSRT` | A | starts recovery and, in the control, clears the fence now | fence: clear |
+| 10 `RSTP` | A | stops recovery before any step, holding exclusion | -- |
+| 11 `CLR` | A | clears the record while holding the lock | record: none |
+| 12 `ULK` | A | drops the lock | lock: none |
+| 13 `REQ2` | A | requests writer exclusion again | -- |
+| 14 `LCK2` | A | is granted the lock | lock: A |
+| 15 `REC2` | A | finds no record, no fence and a trusted state, and records itself as holder; it is not told anything | record: A |
+| 16 `OPN2` | A | prepares the opening raise | -- |
+| 17 `PUB2` | A | publishes it, and the count reads even while an operation is open | count: 2 |
+| 18 `BEGN2` | A | appends a begin record over the first transaction's, with its staging still there | log: begun |
+
+Under the contract step 9 leaves the fence set, so step 15 finds it and A is told recovery is
+required and writes nothing.
+
+### T16 -- a recovery resumed after its recoverer died between its swaps
+
+Status: steps 1 to 20 are `[verified]` against the model, in the witness for a recovery resumed
+after such a death; step 21 is a step the model allows and the witness does not reach, since it
+is violated at step 20. A and B have attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `OPN` | A | prepares the opening raise | -- |
+| 5 `PUB` | A | publishes it | count: 1 |
+| 6 `BEGN` | A | appends the begin record | log: begun |
+| 7 `STG` | A | stages its bodies | staging: version 1 |
+| 8 `PRPF` | A | appends the prepare record; the append fails with the record in the log, which A cannot tell, so it sets the fence and is told recovery is required | log: prepared, naming version 1; fence: set |
+| 9 `RSRT1` | A | starts recovery, which reads the log: a prepared transaction, to roll forward | -- |
+| 10 `RSWA1` | A | makes the first swap | cell a: version 1 |
+| 11 `KILL` | EXTERNAL | A's process dies | lock: none; record still names A; fence set; store half applied |
+| 12 `REQ2` | B | requests writer exclusion | -- |
+| 13 `LCK2` | B | is granted the lock | lock: B |
+| 14 `REC2` | B | finds a record left behind and the fence already set, replaces the record, and is told recovery is required | record: B |
+| 15 `RSRT2` | B | starts recovery, which reads the log: the prepare record is still its last | -- |
+| 16 `RSWA2` | B | makes the first swap again, which the cell already holds | -- |
+| 17 `RSWB` | B | makes the second swap | cell b: version 1 |
+| 18 `REND` | B | appends the end record | log: ended |
+| 19 `RSWP` | B | sweeps the staging | staging: none |
+| 20 `RCNT` | B | publishes the count, even, and the trusted state, together | count: 2 |
+| 21 `RCLR` | B | clears the fence, its last step | fence: clear |
+
+### T17 -- discovery that trusts the ownership record reports a live holder's transaction as abandoned
+
+Status: `[verified]` against the model, in the control that reports on the record alone. A and B
+have attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `DISC` | B | discovers: finds a record naming A, no fence and a trusted state, and reports recovery required because a record is there, without asking whether the lock is held | -- |
+
+Under the contract step 4 finds the lock held by A and reports that recovery is not required: A's
+record beside a held lock is a transaction in progress.
+
+[^mp-4]: `MP-4` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-6]: `MP-6` in [CHECKLIST.md](CHECKLIST.md)
+
+## The schema upgrade's body, modelled in `Coordination.tla`, 2026-11-11
+
+- **The body is behind a switch, and the one-step upgrade stays.** With `UpSteps` zero an upgrade
+  completes in one step when its upgrader holds its tiers, as the model of attachment has it,
+  and every earlier configuration, with its state space, is unchanged. With it set, the upgrader
+  goes on from its tiers to a body of `UpSteps` migration steps, so the gate, the tiers, the
+  leases and the registry are still checked against the cheaper form. Whether the one-step form
+  is retired once the body is proven is the engineer's decision, kept open[^odi-3].
+- **The upgrader takes writer exclusion last, as the lock order says, and finds it free.** The
+  order is the gate, the reader tier, the writer tier, then writer exclusion. An upgrader holds the
+  writer tier exclusively, so no handle that may write is attached to hold or want the lock, and
+  a dead holder's lock is released with it; the model checks that the lock is free rather than
+  waiting for it. The upgrader then acquires as any holder does: it finds the record, the fence
+  and the trust flag, and is told or not.
+- **An upgrade starts only from a store that needs no recovery.** An upgrader that is told
+  recovery is required releases, its upgrade refused and its handle detached, and runs nothing: it
+  speaks the source schema, which is not the schema a recovery of an upgrade needs, and the
+  permission table already refuses an upgrade while recovery is required. An upgrader that goes
+  on regardless starts a migration over work nothing has resolved (T21 below).
+- **The body is inside the count's bracket, and the order within it is the safety argument.**
+  The opening raise is published first. The upgrader then records the upgrade intent -- the layer
+  is recorded as being upgraded, with no step durable -- makes the migration steps one at a time,
+  each durable when it ends, advances the layer's schema only after the last, clears the intent,
+  and publishes the closing raise.
+  - The intent comes before the first step. A step made first leaves a layer partly migrated with
+    nothing to say it is, so an upgrader that dies after it leaves recovery nothing to resume (T19
+    below).
+  - The schema advances after every step. Advanced earlier, handles are admitted against a layer
+    that is only partly migrated.
+  - The intent clears after the schema has advanced, and takes the progress with it. Cleared
+    earlier, or by a recovery that discards the progress, an upgrade that cannot be undone is
+    undone, and the next writer finds the old schema over steps already made.
+  - The count stays odd from the opening raise to the closing one, so every effect of the body is
+    inside the bracket and a reader's samples bracket nothing while it runs.
+- **The body cannot be rolled back, so a failure in it is unresolved.** A failure between the
+  intent and its clearing, a cancellation there included, sets the fence, leaves the count odd and
+  the intent standing, and the upgrader is told recovery is required. It can only release. Before
+  the intent a failure leaves nothing behind, and the upgrader ends its operation as a writer that
+  found nothing to change does; after the intent clears, one in the closing publication is a
+  failure of that publication and nothing more.
+- **Recovery of an interrupted upgrade is resuming it, by a handle that speaks the target
+  schema.** An upgrader that dies leaves its record, its intent and the progress it made. The next
+  acquirer is told, and a recovery that finds an intent standing resumes the upgrade before it does
+  the rest of recovery: it makes the steps that remain, advances the schema if that has not been
+  done, and clears the intent, and then settles the log and publishes the count as any recovery
+  does. Each of those is decided from the intent, the progress and the schema as durable state
+  shows them, so a resumer that stops or dies leaves the rest to the next, which repeats nothing it
+  need not (T18 below).
+- **A handle that speaks only the source schema never holds exclusion while an intent stands.**
+  The rule is enforced where the contract puts it, at admission: while an upgrade is in progress,
+  recorded or interrupted, a writer is admitted only if it speaks the target schema. The model
+  checks the consequence -- whoever holds exclusion during an upgrade is its upgrader or speaks
+  the target -- and that no resumption is made by any other handle, including the upgrader that
+  failed, which speaks the source schema. A control that admits source writers during an
+  interrupted upgrade violates both (T20 below). A store whose upgrade failed therefore stays
+  recovery-required for every handle that speaks only the source schema, which cannot be
+  admitted to recover it.
+- **A safe upgrade lets readers attach during its body, and an unsafe one does not.** The gate
+  reopens to readers once the body begins when the upgrade is safe for them, and an unsafe one
+  keeps the reader tier exclusively; the oldest reader schema moves with the schema, and only for
+  an unsafe upgrade.
+- **Upgrade starts are bounded apart from write requests.** An upgrade that took exclusion from the
+  budget of write requests would starve whenever writers used it, and the model would report a
+  deadlock that no execution has. Each start counts against its own bound, and only when the body
+  is modelled.
+- **What the model leaves out.** What a migration step does is abstract: it is durable when it ends
+  and idempotent, and the layer is partly migrated between the first and the last. The progress an
+  upgrade reports and what its steps cost are not modelled. Which reader schemas an upgrade must
+  leave readable, across layers and across successive upgrades, is the cumulative compatibility of
+  readers, modelled apart[^mp-2-4]; and whether a driven resumption eventually completes is
+  liveness, checked with the fairness the contract grants[^mp-4].
+- **What it asks of an implementation, queued in the upgrade work[^mp-7].** An upgrade that finds
+  recovery required is refused and takes nothing. The intent names the layer and its source and
+  target schemas, and is durable before the first step. Steps are idempotent and each takes what it
+  needs from the intent and the progress durable state shows. The schema is advanced durably only
+  after the last step, and the intent cleared only after that. A failure or a cancellation in the
+  body sets the fence and leaves the intent. A resumption is the store's recovery, made by a handle
+  that speaks the target schema, and no handle that speaks only the source schema writes while the
+  intent stands.
+- **Controls and witnesses.** The controls reverse a rule and must fail: a migration step made
+  before the intent; a schema advanced before the last step; a recovery that rolls an interrupted
+  upgrade back; a writer that speaks only the source schema admitted while an upgrade is
+  interrupted, which then holds exclusion and resumes it; an upgrader told that recovery is
+  required that goes on; and a clone that starts an operation on a handle whose upgrade is in its
+  body. The witnesses show the intent recorded, a step made, the schema advanced and an upgrade
+  completing through its body, one that gives up before the intent and one that fails in its
+  body, an upgrader refused after being told and its handle detached, an upgrader dying before the
+  intent, before its first step, between steps, after its last step and after the schema
+  advances, each followed by a next acquirer that is told, a recovery resuming before any step,
+  between steps and after the schema advanced, making the remaining steps, advancing the
+  schema, completing and being stopped, one dying in the upgrade with another told, a reader
+  admitted during the body, an upgrade unsafe for readers moving the oldest schema, an upgrade
+  completing with its closing publication failed, and discovery meeting a live upgrader's body and
+  finding an interrupted upgrade. Probes in scratch copies of the spec -- an intent never
+  recorded, an intent cleared before the schema advances, a resumer that starts the steps over,
+  a failure that sets no fence, a completed upgrade reported refused, the oldest schema left
+  alone, the intent recorded before exclusion and outside the count, and a failed upgrader that
+  resumes its own upgrade -- were each caught by the intended property.
+
+### T18 -- an upgrader dies between two migration steps, and a writer that speaks the target schema resumes the upgrade
+
+Status: steps 1 to 18 are `[verified]` against the model, in the witness for a recovery that starts
+resuming an upgrade between two steps; steps 19 to 25 are the model's next steps, which the witness
+does not reach, and are `[projected]`. A is an upgrader that has drained and holds the gate and the
+tiers it needs, the upgrade being safe for readers; B is a writer that speaks the target schema and
+has not attached. The upgrade has two steps.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LCK1` | A | takes writer exclusion, which is free | lock: A |
+| 2 `REC1` | A | finds no record, no fence and a trusted state, and records itself as holder | record: A |
+| 3 `OPN` | A | prepares the opening raise | -- |
+| 4 `PUB` | A | publishes it | count: 1 |
+| 5 `INTN` | A | records the upgrade intent | intent: recorded, progress 0 |
+| 6 `STEP1` | A | makes the first migration step | progress: 1 |
+| 7 `KILL` | EXTERNAL | A's process dies | lock: none; record still names A; intent and progress stand; writer tier: free |
+| 8 `ATT` | B | begins to attach | -- |
+| 9 `GATE` | B | passes the gate shared | -- |
+| 10 `RTIR` | B | takes the reader tier | -- |
+| 11 `DROP` | B | lets go of the gate | -- |
+| 12 `WTIR` | B | takes the writer tier, which A held | -- |
+| 13 `ADMT` | B | is checked against the rules in force, which admit a writer only if it speaks the target while an upgrade is in progress, and is admitted | -- |
+| 14 `REQ2` | B | requests writer exclusion | -- |
+| 15 `LCK2` | B | is granted the lock | lock: B |
+| 16 `FNC` | B | finds a record left behind and sets the fence | fence: set |
+| 17 `REC2` | B | replaces the record and is told recovery is required | record: B |
+| 18 `RSRT` | B | starts recovery, and finds an intent standing, so it resumes the upgrade | -- |
+| 19 `STEP2` | B | makes the step that remains, which the progress shows | progress: 2 |
+| 20 `ADV` | B | advances the schema of the layer | schema: target |
+| 21 `ICLR` | B | clears the intent and its progress | intent: none, progress 0 |
+| 22 `REND` | B | finds the log resolved | -- |
+| 23 `RSWP` | B | finds nothing staged | -- |
+| 24 `RCNT` | B | publishes the count, even, and the trusted state | count: 2 |
+| 25 `RCLR` | B | clears the fence, its last step | fence: clear |
+
+### T19 -- a migration step made before the intent leaves nothing to resume from
+
+Status: `[verified]` against the model, in the control that lets a step precede the intent. A is an
+upgrader that has drained and holds the gate and the tiers it needs.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LCK1` | A | takes writer exclusion, which is free | lock: A |
+| 2 `REC1` | A | finds no record, no fence and a trusted state, and records itself as holder | record: A |
+| 3 `OPN` | A | prepares the opening raise | -- |
+| 4 `PUB` | A | publishes it | count: 1 |
+| 5 `STEP1` | A | makes a migration step before it has recorded the intent | progress: 1; intent: none |
+
+An upgrader that dies after step 5 leaves its record, so the next acquirer is told recovery is
+required; but nothing durable says an upgrade was under way, so that recovery has nothing to
+resume, finishes, and leaves a layer partly migrated at the schema it started from. Under the
+contract step 5 follows the intent, and a death after it leaves the intent for recovery to resume.
+
+### T20 -- a writer that speaks only the source schema, admitted during an interrupted upgrade, resumes it
+
+Status: `[verified]` against the model, in the control that admits such a writer. A is an upgrader
+that has drained and holds the gate and the tiers it needs; B is a writer that speaks only the
+source schema and has not attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LCK1` | A | takes writer exclusion, which is free | lock: A |
+| 2 `REC1` | A | finds no record, no fence and a trusted state, and records itself as holder | record: A |
+| 3 `OPN` | A | prepares the opening raise | -- |
+| 4 `PUB` | A | publishes it | count: 1 |
+| 5 `INTN` | A | records the upgrade intent | intent: recorded, progress 0 |
+| 6 `FAIL` | A | a failure in the body: the layer is partly migrated and cannot be rolled back, so A sets the fence and is told recovery is required | fence: set |
+| 7 `KILL` | EXTERNAL | A's process dies | lock: none; record still names A; intent stands; writer tier: free |
+| 8 `ATT` | B | begins to attach | -- |
+| 9 `GATE` | B | passes the gate shared | -- |
+| 10 `RTIR` | B | takes the reader tier | -- |
+| 11 `DROP` | B | lets go of the gate | -- |
+| 12 `WTIR` | B | takes the writer tier, which A held | -- |
+| 13 `ADMT` | B | is checked against the rules in force and, in the control, is admitted although it speaks only the source schema | -- |
+| 14 `REQ2` | B | requests writer exclusion | -- |
+| 15 `LCK2` | B | is granted the lock | lock: B |
+| 16 `REC2` | B | finds a record left behind and the fence set, replaces the record, and is told recovery is required | record: B |
+| 17 `RSRT` | B | starts recovery, finds the intent standing, and resumes an upgrade to a schema it does not speak | -- |
+
+Under the contract step 13 refuses B: a writer is admitted while an upgrade is in progress only if
+it speaks the target schema, so B never holds exclusion and never resumes.
+
+### T21 -- an upgrader that is told recovery is required goes on
+
+Status: `[verified]` against the model, in the control whose upgrader ignores being told. A is an
+upgrader that has attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `REQ1` | A | requests writer exclusion, as any writer may | -- |
+| 2 `LCK1` | A | is granted the lock | lock: A |
+| 3 `REC1` | A | finds no record and no fence, and records itself as holder | record: A |
+| 4 `OPN1` | A | prepares the opening raise | -- |
+| 5 `PUB1` | A | publishes it | count: 1 |
+| 6 `BEGN` | A | appends the begin record | log: begun |
+| 7 `STG` | A | stages its bodies | staging: version 1 |
+| 8 `PRPF` | A | the append of the prepare record fails and leaves no record, which A cannot tell, so it sets the fence and is told recovery is required | fence: set |
+| 9 `CLR` | A | clears the record while holding the lock | record: none |
+| 10 `ULK` | A | drops the lock | lock: none |
+| 11 `UPST` | A | starts an upgrade, which first drains | -- |
+| 12 `DRN` | A | finds no operation of its handle in flight, so its drain ends | -- |
+| 13 `GTX` | A | takes the gate exclusively | -- |
+| 14 `TRS` | A | takes the tier it needs | -- |
+| 15 `LCK2` | A | takes writer exclusion for the body, which is free | lock: A |
+| 16 `REC2` | A | finds the fence set and, in the control, goes on as a holder that was not told | record: A |
+
+Under the contract step 16 tells A recovery is required, and A releases: it starts nothing, its
+upgrade is refused and its handle is left detached, so no migration step is made over a store with
+an unresolved transaction.
+
+[^mp-2-4]: `MP-2.4` in [CHECKLIST.md](CHECKLIST.md)
+
+## Cumulative reader compatibility, modelled in `Coordination.tla`, 2026-11-11
+
+- **An upgrade states which readers can read its result, and the store judges it.** Reading is
+  cumulative in a layer's schemas: what a schema can read, every later schema can read too. So the
+  readers that can read what an upgrade leaves are those from some schema up, and the model gives
+  each upgrade that schema, its floor, which is at or below the schema the upgrade moves the layer
+  to. An upgrade is safe for readers exactly when its floor is at or below the layer's `oldest`,
+  the oldest reader schema the store still admits, because then every admissible reader schema,
+  from `oldest` up, can read the result. The upgrade does not say whether it is safe, since "safe"
+  means nothing without the `oldest` it is safe against, and only the store holds that; it states
+  its floor and the store judges it.
+- **An upgrade judged against the current schema is wrongly safe.** The schema an upgrade starts
+  from can always read what it leaves, so judged against the current schema an upgrade whose floor
+  is above `oldest` and at or below the current schema counts as safe for readers. It then drains
+  no reader and leaves `oldest` where it was, and a reader of an older schema is left attached over
+  data it cannot read, or is admitted over it afterwards (T22 below). Judged against `oldest` it is
+  unsafe, which is the whole difference. A control that judges against the current schema violates
+  the judgment itself and each of its consequences.
+- **An upgrade that is unsafe for readers drains every reader, and sets `oldest` to its target.**
+  It takes the reader tier exclusively, so it waits for every attached reader, of whatever schema,
+  to leave before it begins; a reader whose schema is at or above the floor is drained too, since a
+  lock cannot tell. When it completes it sets `oldest` for its layer to its target, as the
+  admission rules state, and a reader below that is refused from then on. The floor judges the
+  upgrade and says what the data requires; it is not what `oldest` becomes, so readers from the
+  floor to the target are refused although they could read. That is the decision as it stands, and
+  nothing is scheduled to change it.
+- **The judgment is made under the gate and recorded.** It is made when the upgrader takes its
+  first tier, to decide whether the reader tier is taken, and again when the upgrade is recorded;
+  the schemas cannot change between the two, since the upgrader holds the gate and the start
+  checks the layer's schema again. The intent records the judgment with the layer, the floor and
+  the target, and a resumption by recovery completes the upgrade under the judgment it was begun
+  with and judges nothing again. A judgment of safe where the record says unsafe leaves a reader
+  attached that the rules no longer admit, which the admission properties detect.
+- **Layers are independent.** The admission rules are per layer and an upgrade is of one layer:
+  its intent names the layer, and its judgment, its effect on `oldest` and on the current schema,
+  and the rules for an upgrade in progress are that layer's alone. One upgrade is in progress at a
+  time whatever its layer, since an upgrade holds the gate exclusively, so upgrades of two layers
+  take turns, as the witness `TwoLayersAreUpgradedInTurn` shows. While the first layer is upgraded
+  from 1 to 2, with the second at 3 and `oldest` 1 in both, a handle is admitted if it speaks:
+
+  | handle | in the layer being upgraded | in every other layer |
+  |---|---|---|
+  | reader | 1 or 2 (the target, if the upgrade is safe for readers); none if it is not | 1 to 3 |
+  | writer | 2, the target, and only to resume the upgrade | 3, the current schema |
+
+- **The data floor is the model's device, and the store need not record it.** To say that a reader
+  cannot read the data, the model keeps for each layer the highest floor among the upgrades that
+  have completed there, starting from the layer's first `oldest`. `oldest` is at or above it by
+  construction: a safe upgrade's floor is at or below `oldest`, and an unsafe one sets `oldest` to
+  its target, which is at or above its floor. Two properties use it: `oldest` is never below the
+  data floor, and no attached handle speaks a schema below it.
+- **What the model leaves out.** Which of an agent's schemas can read which data is one number for
+  each upgrade, its floor; the model does not say how an agent works it out. A reader of the target
+  schema reading data a migration has not reached, through the target's definition of the
+  transitional state, is not modelled, and nor is an upgrade whose floor is above its target, which
+  no schema could read. Whether an upgrade that waits for readers is eventually served is liveness,
+  checked with the fairness the contract grants[^mp-4].
+- **What it asks of an implementation, queued in the upgrade work[^mp-7].** An upgrade states the
+  oldest reader schema that can read what it leaves, which is at or below its target. Canopy, not
+  the upgrade, judges it against the layer's `oldest` and never against the current schema, records
+  the judgment in the intent with the layer, the floor and the target, takes the reader tier
+  exclusively when the upgrade is not safe so that every reader has left before it begins, and
+  sets `oldest` to the target when it completes and leaves it alone when the upgrade is safe. The
+  admission rules are applied to every layer of every attaching handle, and the rules of a layer
+  that is not being upgraded are its ordinary ones.
+- **Controls, witnesses and probes.** The controls reverse a rule and must fail: an upgrade judged
+  against the current schema, which violates the judgment, the data floor and a reader's ability to
+  read, in one layer, with a body, and in the second of two layers; an upgrade unsafe for readers
+  that does not drain them, whose reader then cannot read the data; an upgrade that sets the oldest
+  reader schema of every layer and not only its own, with and without a body; and an upgrade of
+  one layer that changes what every layer admits, with and without a body. The witnesses show a
+  reader of an older schema attached through a safe upgrade and a reader two schemas behind
+  through two in a row, an upgrade that is unsafe against the oldest schema and safe against the
+  current one, an upgrade of one layer beside handles of another, a writer admitted to resume an
+  interrupted upgrade of one layer as an ordinary handle of the other, two layers upgraded in turn,
+  and an unsafe upgrade of the second layer, each with and without a body where both can occur.
+  Probes in scratch copies of the spec -- a judgment made with a strict comparison, an unsafe
+  upgrade that leaves `oldest` alone, a completion that moves the first layer and not its own, with
+  and without a body, an intent that records `oldest` as its floor, an admission rule that ignores
+  `oldest`, and a rule for an upgrade in progress that is not specific to its layer -- were each
+  caught by the intended property. Two of them first survived: both layers' upgrades moved to the
+  same schema, so moving the wrong layer changed nothing, and the scenarios now start the layers at
+  different schemas.
+
+### T22 -- an upgrade judged against the current schema leaves a reader of an older schema attached over data it cannot read
+
+Status: `[verified]` against the model, in the control that judges an upgrade against the current
+schema, run in a scratch copy of the model whose only change is a guard that lets the reader attach
+first, which removes behaviours and adds none. A speaks the layer's schema 1 and its upgrade is
+readable by every schema; B speaks 2 and its upgrade leaves data that only schemas from 2 up can
+read; C is a reader that speaks 1. The layer starts at schema 1, with 1 the oldest reader schema,
+and nothing has attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `ATT1` | C | begins to attach | -- |
+| 2 `GATE1` | C | passes the gate shared | -- |
+| 3 `RTIR1` | C | takes the reader tier shared | -- |
+| 4 `DROP1` | C | lets go of the gate | -- |
+| 5 `ADMT1` | C | is checked against the rules in force, which admit a reader that speaks a schema from the oldest, 1, to the current, 1, and is admitted | -- |
+| 6 `ATT2` | A | begins to attach | -- |
+| 7 `GATE2` | A | passes the gate shared | -- |
+| 8 `RTIR2` | A | takes the reader tier shared | -- |
+| 9 `DROP2` | A | lets go of the gate | -- |
+| 10 `WTIR1` | A | takes the writer tier shared | -- |
+| 11 `ADMT2` | A | is checked against the rules in force, which admit a writer that speaks the current schema, and is admitted | -- |
+| 12 `UPST1` | A | starts an upgrade, which first drains | -- |
+| 13 `DRN1` | A | finds no operation of its handle in flight, so its drain ends and it lets go of its tiers | -- |
+| 14 `GTX1` | A | takes the gate exclusively | -- |
+| 15 `TRS1` | A | judges its upgrade against the oldest reader schema, 1: its floor is 1, so the upgrade is safe for readers and A takes only the writer tier exclusively, which C does not hold; C stays attached | -- |
+| 16 `BGN1` | A | records the upgrade of the layer from 1 to 2 as in progress and safe for readers | intent: layer, 1 to 2, safe |
+| 17 `END1` | A | completes it: the layer's schema becomes 2 and the oldest reader schema stays 1; A's handle ends | schema: 2; intent: none |
+| 18 `ATT3` | B | begins to attach | -- |
+| 19 `GATE3` | B | passes the gate shared | -- |
+| 20 `RTIR3` | B | takes the reader tier shared | -- |
+| 21 `DROP3` | B | lets go of the gate | -- |
+| 22 `WTIR2` | B | takes the writer tier shared | -- |
+| 23 `ADMT3` | B | is checked against the rules in force, which admit a writer that speaks the current schema, 2, and is admitted | -- |
+| 24 `UPST2` | B | starts an upgrade, which first drains | -- |
+| 25 `DRN2` | B | finds no operation of its handle in flight, so its drain ends and it lets go of its tiers | -- |
+| 26 `GTX2` | B | takes the gate exclusively | -- |
+| 27 `TRS2` | B | judges its upgrade, in the control against the current schema, 2: its floor is 2, so the upgrade is safe for readers and B takes only the writer tier exclusively, which C does not hold; C stays attached | -- |
+| 28 `BGN2` | B | records the upgrade of the layer from 2 to 3 as in progress and safe for readers | intent: layer, 2 to 3, safe |
+| 29 `END2` | B | completes it: the layer's schema becomes 3 and the oldest reader schema stays 1; B's handle ends, and the data can now be read only by schemas 2 and up, while C, attached, speaks 1 | schema: 3; intent: none |
+
+Under the contract step 27 judges B's upgrade against the oldest reader schema, 1, and B's floor is
+above it, so the upgrade is unsafe for readers: B takes the reader tier exclusively, which it
+cannot while C holds it, and waits for C to leave. When it completes, the oldest reader schema
+becomes 3, so a reader that speaks 1 is refused from then on. That outcome is `[projected]`, the
+model's next steps from step 26, which the control does not reach.
+
+### T23 -- a reader of the first source schema stays attached through two upgrades that are safe for readers
+
+Status: `[verified]` against the model, in the witness for a reader two schemas behind, run in the
+same scratch copy as T22 with the reader attaching first. A speaks the layer's schema 1 and B speaks
+2, and the floor of each upgrade is 1; C is a reader that speaks 1. The layer starts at schema 1,
+with 1 the oldest reader schema, and nothing has attached.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `ATT1` | C | begins to attach | -- |
+| 2 `GATE1` | C | passes the gate shared | -- |
+| 3 `RTIR1` | C | takes the reader tier shared | -- |
+| 4 `DROP1` | C | lets go of the gate | -- |
+| 5 `ADMT1` | C | is checked against the rules in force, which admit a reader that speaks a schema from the oldest, 1, to the current, 1, and is admitted | -- |
+| 6 `ATT2` | A | begins to attach | -- |
+| 7 `GATE2` | A | passes the gate shared | -- |
+| 8 `RTIR2` | A | takes the reader tier shared | -- |
+| 9 `DROP2` | A | lets go of the gate | -- |
+| 10 `WTIR1` | A | takes the writer tier shared | -- |
+| 11 `ADMT2` | A | is checked against the rules in force, which admit a writer that speaks the current schema, and is admitted | -- |
+| 12 `UPST1` | A | starts an upgrade, which first drains | -- |
+| 13 `DRN1` | A | finds no operation of its handle in flight, so its drain ends and it lets go of its tiers | -- |
+| 14 `GTX1` | A | takes the gate exclusively | -- |
+| 15 `TRS1` | A | judges its upgrade against the oldest reader schema, 1: its floor is 1, so the upgrade is safe for readers and A takes only the writer tier exclusively, which C does not hold; C stays attached | -- |
+| 16 `BGN1` | A | records the upgrade of the layer from 1 to 2 as in progress and safe for readers | intent: layer, 1 to 2, safe |
+| 17 `END1` | A | completes it: the layer's schema becomes 2 and the oldest reader schema stays 1; A's handle ends | schema: 2; intent: none |
+| 18 `ATT3` | B | begins to attach | -- |
+| 19 `GATE3` | B | passes the gate shared | -- |
+| 20 `RTIR3` | B | takes the reader tier shared | -- |
+| 21 `DROP3` | B | lets go of the gate | -- |
+| 22 `WTIR2` | B | takes the writer tier shared | -- |
+| 23 `ADMT3` | B | is checked against the rules in force, which admit a writer that speaks the current schema, 2, and is admitted | -- |
+| 24 `UPST2` | B | starts an upgrade, which first drains | -- |
+| 25 `DRN2` | B | finds no operation of its handle in flight, so its drain ends and it lets go of its tiers | -- |
+| 26 `GTX2` | B | takes the gate exclusively | -- |
+| 27 `TRS2` | B | judges its upgrade against the oldest reader schema, 1: its floor is 1, so the upgrade is safe for readers and B takes only the writer tier exclusively, which C does not hold; C stays attached | -- |
+| 28 `BGN2` | B | records the upgrade of the layer from 2 to 3 as in progress and safe for readers | intent: layer, 2 to 3, safe |
+| 29 `END2` | B | completes it: the layer's schema becomes 3 and the oldest reader schema stays 1; B's handle ends, and C, still attached, speaks 1, two schemas behind, and can read what both upgrades left | schema: 3; intent: none |
+
+## The model clients rely on, and the model the code is held to, 2026-11-11
+
+- **There are two models: the one the code is held to and the one clients rely on.** The code's
+  model is the one in `spec/`. It carries the mechanism -- the count, the fence, the generation,
+  the commit log, the lock order, the registry -- because conformance replays it against the
+  code and compares state after every step. The client model[^cm-2] carries only what a `Store`
+  user can observe: the logical contents, which handles are attached and in what role, each
+  request's outcome, and whether the store needs recovery. It hides mechanism and not outcomes: a
+  write whose holder was told recovery is required may or may not have taken effect, a read may be
+  rejected as disturbed, and an upgrade may drain or refuse readers. Which of these canopy
+  promises is decided separately[^odi-5].
+- **The abstract write and the one-step upgrade are not the client model.** They are coarser
+  steps over the same internal state -- the abstract write still has the count, the fence and the
+  ownership record -- so they are a cheaper variant of the code's model and say nothing a user
+  sees. A client model has fewer variables, not coarser steps.
+- **The client model is above the code's model, and the relation between them is checked.** TLC
+  checks that every behaviour of the code's model, projected onto the observable variables, is a
+  behaviour of the client model[^cm-3]. The projection is where the commit point is written
+  down: when a write counts as having happened, including when its holder was told it failed. The
+  code is then held to the client model in two steps, the code to its model and its model to the
+  client's, and the client model is the oracle for tests at the API that pass through any change of
+  mechanism the refinement still admits[^fm-3-4].
+- **A dependent binds to the promise and to nothing else.** The client model is what a user reasons
+  with: what is promised, what is not, and what to do on each outcome[^cm-4]. A dependent that
+  relies on what happens to hold today has bound to something canopy never promised, so what is
+  not promised is stated as plainly as what is.
+- **What is promised is decided before it is modelled.** A promise is a commitment a dependent can
+  feel, so the engineer decides it[^odi-5], starting from the properties classified by
+  audience[^cm-1], and the client model promises no more, which leaves the implementation the
+  freedom the promise leaves. The decision on fairness[^odi-2] settles what is promised about
+  waiting. The refinement waits until the work on the durable publication record[^mp-3] and on
+  composing the models[^mp-4] has settled the state its projection is written against.
+- **Both forms of a write and of an upgrade stay in the code's model, for now.** The abstract write
+  and the one-step upgrade keep the configurations that do not exercise a transaction's phases or
+  an upgrade's body small, and the detailed forms follow the code more closely. Keeping both costs
+  two forms to hold in step. The decision rests on the mechanisms that keep the cost of checking
+  proportionate -- the targeted check of each work item, the tiers, and runs scoped to what
+  changed[^spec-2] -- and stands only while they are acted on. Merging the forms, by defining the
+  abstract form as a coarsening of the detailed one and having TLC check it, and retiring the
+  abstract forms both remain open. The decision schedules no work of its own[^odi-3] and sets no
+  trigger for revisiting it: poor work-item throughput is what prompts inspecting the impediments
+  again.
+
+The discussion is recorded in
+[DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md](design-sessions/DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md).
+
+[^cm-1]: `CM-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#cm-1) [completed 2026-11-11]
+[^odi-5]: `ODI-5` in [CHECKLIST.md](CHECKLIST.md)
+[^cm-2]: `CM-2` in [CHECKLIST.md](CHECKLIST.md)
+[^cm-3]: `CM-3` in [CHECKLIST.md](CHECKLIST.md)
+[^cm-4]: `CM-4` in [CHECKLIST.md](CHECKLIST.md)
+[^fm-3-4]: `FM-3.4` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-3]: `MP-3` in [CHECKLIST.md](CHECKLIST.md)
+[^spec-2]: `SPEC-2` in [CHECKLIST.md](CHECKLIST.md)
+
+## Probe mutants are data in the repository, matched so that they survive edits to the spec, 2026-11-11
+
+- **A probe's mutants are kept as data beside the spec they probe.** `spec/probes/<Name>/` holds
+  one `.psd1` file per subject, each a list of mutants: a name for the rule it breaks, the
+  configuration it runs in, the one property written for the rule, and a text edit.
+  [run-probes.ps1](../../tools/run-probes.ps1) applies the edit to a scratch copy of the spec, runs
+  TLC in that configuration restricted to the property, and the mutant is caught when TLC reports
+  the property violated. The corpus is the record that each property can fail, and it is a record
+  only if the next contributor finds it in the checkout and can rerun it; a mutant kept as a
+  script of its own, or in scratch, is neither[^spec-1].
+- **A mutant stays current by what its text is matched against.** Mutants are used at milestone
+  boundaries, so the spec changes under them for the whole milestone and they must still apply
+  when the boundary arrives. A mutant's `Old` text must occur exactly once in the spec, or in the
+  body of the definition the mutant names, and the matching ignores what an `UNCHANGED` tuple
+  lists: a frame names every variable an action leaves alone, so a variable added to the spec
+  changes nearly every frame and would make nearly every mutant stale. Where `Old` and `New`
+  differ in a tuple, the variables `New` drops are removed from the spec's own tuple and the ones
+  it adds are put in it, and a place whose tuple lacks a variable `New` drops is not an
+  occurrence, so an edit of a frame alone is found by the variable it changes and by its
+  definition.
+- **A mutant that no longer matches is stale, and stale is reported and fails the run; it is never
+  skipped.** A skipped mutant is a property nothing is checking, with no sign that nothing is. The
+  runner finds every stale mutant before it runs TLC and says where its first line is now, so that
+  re-expressing it, or retiring it on purpose, is a matter of reading the edit against the
+  current text. That repair is the first step of a boundary's probe work: the staleness a
+  milestone causes is paid for once, at the point where its diff says what the rules now are, and
+  nothing in the work-item loop reads or edits the corpus.
+- **An edit that changes one component of a derived tuple names the others, and breaks loudly.**
+  A mutant that changes `count` while `coord` also holds the owner and the fence must leave those
+  unchanged by name, so when the tuple gains a component the mutated action no longer defines it.
+  TLC then reports the variable undefined and the run is an error, never a quiet pass; it is
+  repaired as a stale mutant is. A mutant that spans more than one place in a definition lists its
+  edits and each is matched on its own, so that a rule broken in two places is not forced into one
+  long quotation that a change anywhere between them makes stale.
+- **A mutant that was moved or repaired is trusted only after it has run.** A text match says where
+  an edit lands and not that it lands at the rule the mutant is named for: a frame edit can match
+  the one action that now has its shape, and an edit can match a prefix of a construct that has
+  grown. The run is the check -- the mutant comes out caught by the property written for its rule,
+  or recorded as equivalent -- so a boundary's probe work ends with a run of what it repaired.
+- **A rule nothing checks stays on record.** A mutant that says it is expected to pass is the
+  record of a rule with no property; the run reports it as equivalent while TLC finds no error and
+  as unexpected when it does, so the first check written for the rule shows at the next boundary.
+- **The configurations the mutants run in are the generated ones.** A mutant names a base
+  configuration by name and sets only the constants it overrides, so a configuration that moves
+  with its table moves the mutants that run in it; a mutant whose base is gone is reported as an
+  error and not skipped.
+
+The discussion is recorded in
+[DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md](design-sessions/DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md).
+
+[^spec-1]: `SPEC-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#spec-1) [completed 2026-11-11]
+
+## Who a property is for, 2026-11-11
+
+- **Every property a configuration checks says whether it is for a client or for the code.** The
+  first line of its header comment is `Audience: client.` or `Audience: internal.`, and
+  [check-audience-tags.ps1](../../tools/check-audience-tags.ps1) fails a spec in which a property
+  named by a configuration has no tag, so the properties that later work writes[^mp-3][^mp-4] are
+  tagged as they are written[^cm-1]. The `Witness_` definitions are evidence that a state is
+  reachable and not guarantees, and carry none.
+- **A property is client-visible when a `Store` user can see its violation as an outcome of the
+  API.** Its tag goes on to state the guarantee in the words a user would use and to name the
+  outcome it shows through: the result of a write, a read, an attach, an upgrade, a create or an
+  open, a listing or discovery. A property whose violation reaches a user only through another
+  property that is itself client-visible is internal. The caches, the count and the commit log are
+  mechanism, and what a user sees of them is carried by the classification of a read and by the
+  outcome that tells a writer recovery is required.
+- **The client-visible properties are the first draft of what canopy promises, and a draft only.**
+  Which of them are promised is decided separately[^odi-5]; one that is not promised stays in the
+  model as the code's own check. They also say what the next refinements must keep: of the durable
+  publication record[^mp-3], that the version a document is published at has its content after a
+  crash and that a read is never told to wait for a writer that does not exist; of composition[^mp-4],
+  writer exclusion, the classification of a read, and the outcomes that tell a writer recovery is
+  required.
+- **Some outcomes cannot be interpreted without help**, and the guide for dependents teaches a
+  caller to act on them[^cm-4]:
+  - A write whose holder was told recovery is required may or may not have taken effect: the
+    failure came after the first change and before the closing publication, or the transaction was
+    prepared and recovery rolls it forward, or it was not and recovery rolls it back. The caller
+    learns which by reading once recovery has run, and not from the error.
+  - A read may be rejected as disturbed: an operation began or ended during it, and the read says
+    nothing about the data except that it was not settled.
+  - An upgrade may drain, which waits for the operations in flight on the handle and its clones,
+    or be refused: from inside an operation, from a schema that has moved, or for a body that did
+    not complete, which leaves the handle detached. An upgrade unsafe for readers stops older
+    readers being admitted, so a handle that attached before may be refused after.
+  - A discovery's report and a listing's `incomplete` describe a moment that may have passed.
+  - A create or open that stops says why -- another implementation's reservation, other inputs, an
+    occupied root, a race lost, the store already there -- and one that resumes has finished a
+    creation that a dead creator began.
+
+## The publication record's live and durable state, modelled in `PointerPublication.tla`, 2026-11-11
+
+- **The record is two states, what a process reads in its file and what a crash leaves, behind
+  the `RecordDetail` switch.** Writing it is an append followed by an fsync, and clearing it a
+  truncation followed by an fsync, and either fsync can fail. A step that fails ends the
+  operation, leaving the file as it was at that step. A crash reverts the file to what was
+  synced. A torn append, once detected, is the same as a lost one, so it needs no state of its
+  own. With the switch off the record is written and cleared in one step, and every earlier
+  configuration explores the states it did[^mp-3-2].
+- **A settle makes the record durable before it acts on it.** A write whose record fsync failed
+  leaves the record in the file and not durable. If the next settle, by a write or by a reopen,
+  rolls the replicas forward from it, the renames become durable while the record does not, and
+  a crash that follows leaves replicas that name two values with nothing to finish them. The
+  next publication to fail part-way then leaves three and strands the vote (T24). So a settle
+  fsyncs the record before its first rename, and a settle whose fsync fails fails its operation
+  with the record still pending. The model checks that a pointer replica is renamed only once
+  the record naming its version is durable, whether by a write or by a settle, and the control
+  that omits the fsync fails it.
+- **A failed clear leaves a stale durable record, which an unlogged write replaces and a logged
+  write does not.** The unlogged write that follows rewrites the record, and syncs it, before it
+  moves a pointer, so the stale one is replaced before it could be replayed. A write a
+  transaction makes moves pointers and writes no record. If it follows the failed clear it moves
+  them to `B`, ends, and collects what it superseded, and a crash then replays the stale record,
+  which names `A`, over the pointers: they name content that no longer exists (T25).
+- **A settle looks at the durable record and not only at the file.** Only the durable record
+  shows a failed clear, for the file is empty. So the settle that begins every operation, a
+  write of either kind and a reopen, fsyncs the record file first whether or not the file shows a
+  record, rolls forward what it then finds, and clears. The control that fsyncs only when the
+  file shows a record fails `DurablePointerHasBlob` and `LivePointerHasBlob`[^mp-3-3].
+- **A transaction's write is modelled with its own recovery, and both guards hold beside it.**
+  It is the prepare record, the pointer swaps, the end record and the collection of what it
+  superseded, and a prepared transaction is rolled forward by recovery, which settles the
+  record first and collects after. It is mixed with unlogged writes on one document. Neither
+  guard fails `DurablePointerHasBlob`, `LivePointerHasBlob` or `IdleImpliesSettled` in the mix,
+  so the record guard's holding is no longer provisional for it.
+- **A logged write needs the record guard's settle and does not need resolving.** A logged
+  write that skips the record guard fails the two blob invariants, by the same sequence as T25.
+  One that skips resolving fails nothing, because its own recovery sets every replica to the
+  version its prepare record names. That is what the model shows, and it is not a ruling that the
+  code may skip the guard: the model has one process, and composition[^mp-4] is where the claim
+  is tested with several.
+- **What it asks of an implementation, queued in the implementation of the chosen guard[^fm-2-2].**
+  Every operation that begins by settling fsyncs the record file, then rolls forward, then
+  clears, and so pays one fsync whether or not a record is found. That puts the record guard's
+  cost near resolving's. A form that remembers in the process that a clear failed, and fsyncs only
+  then and at open, is cheaper, and holds only while one process writes the record, which the
+  model of one process cannot show.
+- **Every operation on the document settles first, and the model shows which ones need it.** The
+  precondition check, the standalone collection pass, the unlogged write, the logged write and
+  recovery each begin by settling under the record guard, and a control that omits the settle
+  fails for each of them except repair and scrub[^mp-3-4]:
+  - A check that skips it reads a document with a record pending that will replace the value it
+    reads, which fails `ACheckReadsASettledRecord`. A compare-and-set that trusted the read would
+    then succeed against a value a roll-forward is about to replace.
+  - A collection pass that skips it keeps the live majority and removes the version the pending
+    record names, and the settle that follows names content that no longer exists. It fails
+    `DurablePointerHasBlob`.
+  - A write that skips it fails `IdleImpliesSettled`, and a logged write that skips it fails the
+    blob invariants (T25).
+- **A repair and a scrub do not need the settle for the properties the model checks.** Each reads
+  the vote again and writes its version to a replica that has none, so a record pending beside it
+  is rolled forward over a replica that already agrees, and no invariant fails when the settle is
+  omitted. Whether the implementation settles before them anyway, at one fsync per document a
+  scrub touches, is a decision for FM-2.2[^fm-2-2] with this finding in hand. Blob repair is not
+  modelled: it adds a copy of the version the vote names, which no property observes.
+- **A lost pointer replica separates the guards, and no safety property.** The loss is modelled
+  as the first fault, of a document that is whole and settled. Under the resolve guard the next
+  write sets every replica to the majority and so restores the lost one, and every invariant
+  holds. Under the record guard a write does not restore it, a publication that then fails
+  part-way leaves three values and no majority until the next settle (T26), and a read in between
+  is told to wait for a writer that does not exist. `IdleImpliesSettledUnlessAReplicaIsLost` is
+  the form of the property the record guard keeps with a replica lost, and only a repair restores
+  the replica. That is a consequence of two faults, not of the guard failing its own contract, and
+  it is evidence for FM-2.2[^fm-2-2] that the resolve guard absorbs a fault the record guard
+  leaves to repair.
+- **A restart is modelled as recovery, and a clean open is not distinguished from it.** The model
+  has one document, and reopening runs the recovery that settles the record and finishes a
+  transaction. Whether a store opens without settling any record, leaving each to the first
+  operation on its document, is a question about many documents and is carried into the
+  composition[^mp-4].
+
+### T24 -- a settle that rolls forward from a record that is not yet durable, a crash, and then a failed write strand the vote
+
+Status: `[verified]`, the shortest trace of `PointerPublication-Control-SettleWithoutSyncStrandsTheVote.cfg`.
+The pointer replicas are written `[1, 2, 3]`, and all three hold `A` at the start.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `ING` | writer 1 | ingests the blob for `B`, renaming and syncing it | the blob for `B` |
+| 2 `REC` | writer 1 | appends a record naming `B` to the record file | -- |
+| 3 `RSF` | writer 1 | the fsync of the record fails, and the write ends with an error | -- |
+| 4 `OPN` | process | the store is closed and reopened, and the reopen finds the record in the file and begins to settle | -- |
+| 5 `RFA` | settle | renames replica 1 to `B` and syncs its parent | replica 1 is `B` |
+| 6 `RFB` | settle | renames replica 2 to `B` and syncs its parent | replica 2 is `B` |
+| 7 `PWR` | EXTERNAL | power is lost before replica 3 | the record was never durable and is gone; the replicas are `B, B, A` |
+| 8 `OP2` | process | reopens, finds no record, and has nothing to settle | -- |
+| 9 `WR2` | writer 2 | ingests the blob for `C`, writes its record and syncs it | the record names `C` |
+| 10 `PRN` | writer 2 | renames replica 1 to `C` | -- |
+| 11 `FAI` | writer 2 | fails | the live replicas are `C, B, A`, no value has a majority, and nothing is running |
+
+The settle at step 4 is the one the corrected guard prevents: it fsyncs the record first, and
+step 3's failure then repeats and fails the reopen with the record pending.
+
+### T25 -- a logged write follows a failed clear, collects the version the stale record names, and a crash replays the record
+
+Status: `[verified]`, the shortest trace of
+`PointerPublication-Control-SettleLooksOnlyAtTheFile-LivePointerHasBlob.cfg`, which runs the
+record guard with a settle that fsyncs only when the file shows a record. The pointer replicas are
+written `[1, 2, 3]`, and all three hold `A` at the start.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `WR1` | writer 1 | ingests the blob, then writes the record naming `A` and syncs it | the record names `A` |
+| 2 `SW1` | writer 1 | swaps and syncs each replica, which stay `A` | -- |
+| 3 `CLR` | writer 1 | truncates the record file | -- |
+| 4 `CLF` | writer 1 | the fsync of the truncation fails, and the write ends with an error | the file is empty and the durable record still names `A` |
+| 5 `TX` | transaction | begins; the settle looks at the empty file and finds nothing | -- |
+| 6 `ING` | transaction | ingests the blob for `B`, renaming and syncing it | the blob for `B` |
+| 7 `PRP` | transaction | appends its prepare record to the log | the prepare record |
+| 8 `SW2` | transaction | swaps and syncs replicas 1, 2 and 3 to `B` | the replicas are `B, B, B` |
+| 9 `END` | transaction | appends its end record | the end record |
+| 10 `COL` | transaction | removes the blob for `A` and syncs | the blob for `A` is gone |
+| 11 `PWR` | EXTERNAL | power is lost | the file reverts to the durable record, which names `A` |
+| 12 `OPN` | process | reopens, and settles the record naming `A` | -- |
+| 13 `RFA` | settle | renames replica 1 to `A` | replica 1 names `A`, whose content step 10 removed |
+
+The corrected settle fsyncs at step 5, finds the stale record, and rolls it forward, which does
+no harm because the pointers still name `A`, and then clears it durably before the transaction
+moves anything.
+
+### T26 -- a lost pointer replica and a write that fails part-way under the record guard leave no majority
+
+Status: `[verified]`, the shortest trace of `PointerPublication-MaintenanceRecordLostReplica.cfg`.
+The pointer replicas are written `[1, 2, 3]`, and all three hold `A`, with no record pending.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `LOS` | EXTERNAL | the pointer entry on replica 2 is lost | the replicas are `A, none, A` |
+| 2 `WRT` | writer | begins; the settle finds no record | -- |
+| 3 `ING` | writer | ingests the blob for `B` | the blob for `B` |
+| 4 `REC` | writer | appends a record naming `B` and syncs it | the record names `B` |
+| 5 `PRN` | writer | renames replica 1 to `B` | -- |
+| 6 `FAI` | writer | fails before syncing it | the live replicas are `B, none, A`, no value has a majority, and nothing is running |
+
+Under the resolve guard step 2 reads the majority `A` and sets every replica to it, so replica 2
+is restored before the publication starts and the same failure leaves `B, A, A`.
+
+[^mp-3-2]: `MP-3.2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-3-2) [completed 2026-11-11]
+[^mp-3-3]: `MP-3.3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-3-3) [completed 2026-11-11]
+[^mp-3-4]: `MP-3.4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-3-4) [completed 2026-11-11]
+[^fm-2-2]: `FM-2.2` in [CHECKLIST.md](CHECKLIST.md)
+
+## Composing the publication model with the coordination contract, 2026-11-11
+
+- **The composition is a model of its own, [SharedPublication.tla](spec/SharedPublication.tla),
+  which extends [Coordination.tla](spec/Coordination.tla) and adds the documents.** Every step is
+  one of the contract's actions conjoined with what it does to the documents, or a step on the
+  documents alone that leaves every variable of the contract as it was, so every behaviour of the
+  composition is a behaviour of the contract with documents added. It refines the contract by
+  construction: nothing of the contract is restated, and there is no mapping to keep in step with
+  it. `Coordination`'s own configurations and state space are unchanged, which the decision that
+  composes the two models only for this check requires ("Writer exclusion and its ownership
+  record, modelled in `Coordination.tla`"). The composed configurations name a scenario of writers
+  with no registry, upgrade, clones, reads or discovery, and leave those actions of the contract
+  out, so the variables they would change keep their initial values.
+- **Documents exist only in the composed model.** [PointerPublication.tla](spec/PointerPublication.tla)
+  stays the model of one document's publication, with one process and an open that recovers. Its
+  variables are one document's, so the composition restates its publication over a `Docs` constant,
+  and nothing checks the restatement against it: a change to the publication rules is made in both
+  by hand. The configurations use two documents, and three in one configuration of the milestone
+  tier. At least two are needed, because what recovery is asked is whether durable state tells it
+  which document holds the work.
+- **The publication rides on `Coordination`'s two cells.** The step that decides a write's
+  outcome is the contract's first effect: the record's append under the record guard, since a
+  settle rolls a pending record forward, and otherwise the first pointer rename. The step that
+  completes its durable work is the last effect: the clear's fsync under the record guard,
+  otherwise the last pointer's. A failure after the first effect fails unresolved, sets the fence
+  and leaves the count odd, as the contract says of any operation; one before it ends without an
+  effect. Collection runs after the last effect, and a failed collection only leaves garbage.
+- **Each write may choose its form, behind `Coordination`'s `MixedWrites` switch.** A write begins
+  a transaction or makes its first effect directly, and while it is between its effects the log
+  shows which, since only a transaction leaves its prepare record as the log's latest; no
+  variable records the choice. Recovery finishes either kind: a prepared transaction from the
+  log, and an unlogged write by making the store whole. Both guards hold every invariant and
+  property with the two forms mixed across processes, and recovery rolls both kinds forward in
+  one behaviour[^mp-4-5].
+- **`Coordination` had no recovery for an unlogged write, and it gains one behind a switch.**
+  `RecStart` required `Txn`, so a write that failed unresolved left the fence set for good. The
+  contract requires recovery there -- the guard's record is unfinished work -- so this was a gap
+  in `Coordination`, and `UnloggedRecovery` makes a store half applied whole, publishes the count
+  and then clears the fence[^mp-4-2].
+- **The guards' work at the start of a write has nothing to do under the contract.** The fence
+  survives a holder's death and a host restart forces recovery, so every acquirer after an
+  unresolved failure, a death or a restart is told recovery is required, and only recovery may
+  act. The composition checks that a holder who is not told finds every document with no record
+  pending, its replicas unanimous and its live state durable, under both guards and both forms of
+  write (`AHealthyHolderFindsEveryDocumentSettled`). The record guard's settle before a write,
+  with the fsync of the record file that a settle needs, and the resolve guard's resolve before a
+  write, with a parent fsync per replica, are therefore work the contract makes redundant. What
+  each guard asks of a write is only its own publication: under the record guard the record's
+  append and clear, each with its fsync, and under the resolve guard nothing beyond the renames.
+  This rests on the fence being durable and on a restart forcing recovery. The model of one
+  process has no fence, so its next write follows a failed one directly, which is why
+  `PointerPublication` needs the settle[^mp-4-3].
+- **Recovery does each guard's work on every document.** No durable state names the document an
+  unlogged write was publishing. Under the record guard recovery syncs each record file -- so a
+  failed clear is seen -- rolls forward what it names and clears it. Under the resolve guard it
+  sets every replica of every document to its majority and syncs it: a write that renamed replicas
+  without syncing them leaves the live and durable majorities different, and a crash after
+  recovery would then change what the document reads as (T27). The cost of the resolve guard's
+  recovery is a parent fsync for every replica of every document in the store, against the record
+  guard's work on the records it finds. With no guard, recovery cannot restore a document, and a
+  write that fails part-way over one that did leaves no majority.
+- **Opening changes nothing.** Only a holder of writer exclusion changes a document, and a crash
+  only loses what was not durable; attaching a handle, the open of a store, settles no record. A
+  control in which attaching settles every record fails the property that says so.
+- **Every condition that sets the fence leaves durable state from which recovery does the work,
+  so a restart that loses the fence loses nothing it knew.**
+  - A holder that dies leaves the ownership record. The fence that the next acquirer sets from it
+    keeps every later acquirer told after a told holder releases without recovering; replacing
+    the record without the fence lets a third acquirer find a document unsettled.
+  - A restart leaves the coordination state untrusted, which tells every acquirer whether or not
+    the fence survived; an acquirer that ignores the restart finds a record pending.
+  - A transaction that fails after its prepare record, or whose prepare's append fails
+    ambiguously, leaves the prepare record, from which recovery rolls it forward; rolling it back
+    leaves a document partly swapped.
+  - An unlogged write that fails unresolved leaves the record under the record guard and nothing
+    under the resolve guard, which is why the resolve guard's recovery visits every document.
+  - A failed closing publication leaves the count odd and no work on any document.
+
+  The controls that make an acquirer ignore the first two fail under both guards, and the one
+  that rolls a prepared transaction back fails under the record guard[^mp-4-4].
+- **The in-process fence of `PointerPublication` is the contract's fence without a guard.** The
+  contract's fence survives a death, and trust covers its loss in a restart, which is what the
+  in-process fence lacked. A fence alone says that work is unfinished and not where it is, so with
+  no guard recovery cannot restore a document, and the composition fails as the in-process fence
+  did.
+- **The probe tool copies what a chain depends on.** `tools/run-probes.ps1` copies only a spec's
+  own chain into its scratch directory, which cannot parse a model that extends another spec, so
+  the composition's probes need it to copy the modules the chain depends on as well[^mp-4-4].
+  The module's name keeps clear of another spec's, because the tools gather a spec's modules as
+  `<Name>*.tla` and its configurations as `<Name>*.cfg`.
+
+### T27 -- the resolve guard's recovery leaves a document whose live and durable majorities differ
+
+Status: `[verified]`, the shortest trace of
+`SharedPublication-Control-RecoveryLeavesTheDocumentsResolve.cfg`, in which recovery does no work
+on the documents. The pointer replicas of document 1 are written `[1, 2, 3]`, and all three hold
+version `0`.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `ATT` | process 1 | attaches, takes writer exclusion, records itself and publishes the opening raise | the ownership record names 1; the count is odd |
+| 2 `ING` | process 1 | ingests the blob for version `1` of document 1 | the blob for `1` |
+| 3 `PR1` | process 1 | renames replica 1 to `1` and syncs its parent | replica 1 is `1` |
+| 4 `PR2` | process 1 | renames replica 2 to `1` | -- |
+| 5 `FAI` | process 1 | its sync fails; the write fails unresolved and sets the fence | the fence is set |
+| 6 `REC` | process 1 | runs recovery: the store is made whole at the contract's level, the count published and the fence cleared, and no document is visited | the count is even; the fence is clear |
+| 7 `REL` | process 1 | releases exclusion | the ownership record is cleared |
+
+The live replicas are `1, 1, 0` and read as `1`; the durable ones are `1, 0, 0`, so a crash would
+make the document read as `0` with no write in between. The resolve guard's recovery visits every
+document because nothing durable says that document 1 was the one being published.
+
+## What the contract's lack of a fairness requirement does, modelled in `Coordination.tla`, 2026-11-11
+
+The contract promises no fairness between waiters: writer exclusion, the admission gate and the
+tiers grant to any waiter, in any order. `CoordinationLiveness.tla` checks what that leaves --
+which progress holds without any ordering, which requests can be passed over forever, and what
+fairness on each acquisition would buy -- as the evidence ODI-2 and CQ-1 take as input.
+
+- **Liveness is checked on a cyclic workload, and only there.** A bounded configuration's
+  behaviours all end, so nothing can be passed over forever in it. Behind `Cyclic`, a process that
+  exits may attach again, requests, reads, discoveries and listings are not counted, and the count,
+  the generation and the versions wrap within `1..CycleMod`. Deaths, crashes and upgrades stay
+  bounded: each is monotone, so every infinite behaviour ends in a cycle without them. Two values
+  compared across a wrap can be equal when they should not be, so a cyclic configuration checks one
+  temporal property and no invariant, and the bounded configurations keep checking safety. Every
+  existing configuration explores the states it did with the switch off. Two witnesses show the
+  workload goes on: one with a write in a cycle and one with an admission in a cycle[^mp-4-6].
+- **`ContractSpec` is the fairness the contract guarantees or assumes, and no more.** Every holder
+  eventually releases and every handle eventually detaches; every I/O eventually completes; and
+  for each synchronization resource -- writer exclusion, the gate shared, the gate exclusive, the
+  reader tier, the writer tier -- weak fairness on each process's acquisition. A lock call whose
+  lock stays grantable to it returns: that is an I/O completing, which the contract assumes, not
+  an order among waiters. Waiters stay unordered. One whose take is grantable only now and then,
+  because another waiter wins each time the resource frees, can be passed over forever, and that
+  is the contention the contract allows.
+- **Fairness on the resource alone is too weak to be the contract.** With weak fairness only on
+  the disjunction of a resource's acquisitions by every process, a handle holding the gate shared
+  can wait for the reader tier forever while nothing holds that tier exclusively -- its take is
+  grantable in every state -- because another handle's repeated takes satisfy the resource's
+  fairness. No lock behaves so: a shared request on a lock held only shared is granted. That
+  starvation would say nothing about contention, so the contract's fairness is per process.
+- **Release and I/O completion need strong fairness, not weak.** A holder's own choices interrupt
+  them: an operation nested under the hold disables the outer operation's next step until it
+  returns, and a holder can nest again and again, so the outer step is enabled only infinitely
+  often and never continuously. Weak fairness lets such a holder keep the lock forever, which is
+  not the assumption the contract states -- that every operation eventually ends. The same holds
+  for a handle's exit, which a new request interrupts. An operation's last effect has its own
+  strong fairness for the same reason[^mp-4-6].
+- **The store as a whole makes progress under `ContractSpec`.** While anyone waits for a resource,
+  some resource is acquired again and again -- with two writers, and with an upgrader unsafe for
+  readers beside a reader. An upgrade that holds every tier it needs completes or finds the schema
+  moved, and a recovery under way ends. Each fairness condition dropped on its own makes the store
+  stop, which shows each one is needed: a holder that never releases, an I/O that never
+  completes, or a free resource that no waiter is given each leaves a waiter forever. These are
+  the controls `Coordination-Control-Live-Without*`.
+- **The slow liveness checks are evidence, run on demand.** A liveness check over the cyclic
+  graph takes a quarter of an hour, and under strong fairness hours, because TLC expands every
+  fairness condition and checks each of the graph's cycles against them. Those configurations --
+  the progress properties, the per-request properties that take long, and every `FairSpec` and
+  `UpgraderFairSpec` result that holds -- are in the `evidence` tier: the sweep leaves them out,
+  and they are run when a change touches what their findings rest on, the liveness module or the
+  steps that take and release writer exclusion, the gate and the tiers. The controls, the
+  witnesses and the counterexamples that come quickly stay in the item tier and guard the
+  formulation on every run.
+- **The negative control in which an upgrader keeps its shared tiers while it waits for the gate
+  exclusively deadlocks in the cyclic workload too**, so the rule that an upgrader gives up its
+  tiers before it waits for the gate is still what keeps two upgraders from waiting on each other
+  when they go on attaching.
+- **Under `ContractSpec` a writer and an upgrader can each be passed over forever, and an
+  attaching handle cannot.** A writer waiting for exclusion is passed over by another writer that
+  is granted it each time it frees (T28). An upgrader waiting for the gate exclusively is passed
+  over by a handle that takes the gate shared each time it frees (T29). In both, the waiter's take
+  is grantable only between the other's holds, which the contract's fairness does not cover. A
+  handle waiting to attach is admitted or refused beside a second writer that goes on attaching,
+  and beside an upgrader unsafe for readers: a handle's takes are shared, and only an upgrade holds
+  the gate or a tier exclusively, so its takes stay grantable apart from an upgrade's holds, which
+  end. The checklist expected all three to fail; the attaching handle's does not, which removes it
+  from the points of conflict below as a starvation, though not as a wait[^mp-4-7].
+- **The points of conflict -- which waits contend with which holds -- are these**, as the input to
+  CQ-1 and ODI-2:
+  - *Writer exclusion*: a writer's wait against every other writer's holds, each an operation
+    long, nested operations included. Any writer can be passed over forever (T28), and with it
+    anything that needs exclusion: a recovery is driven only by a writer that gets exclusion, so a
+    recovery that is never driven is a writer that is never served.
+  - *The admission gate, exclusive against shared*: an upgrader's wait for the gate against every
+    attaching handle's shared hold, each as long as the attach takes to pass the reader tier. One
+    handle that goes on attaching can pass an upgrader over forever (T29); two whose holds overlap
+    keep the gate held without a gap, so that no fairness on the upgrader's own take can serve it
+    (T30).
+  - *The tiers, exclusive against shared*: an upgrader holding the gate waits for every attached
+    handle to detach. No new handle can attach past the gate it holds, so the wait ends when the
+    longest attachment does -- a wait as long as the handles choose, but not a starvation.
+  - *The gate and the tiers, shared against exclusive*: a handle that waits to attach waits out an
+    upgrade's exclusive holds. Upgrades end, so this too is a wait and not a starvation.
+- **Strong fairness on each acquisition serves the writer and the upgrader beside one handle,
+  and not an upgrader beside two.** `FairSpec` makes every acquisition strongly fair. Under it an
+  upgrader beside one reader is served, since the gate frees between the reader's attaches and a
+  take enabled again and again is made, and a waiting writer is served, which the acquisition
+  model shows with three writers. TLC cannot carry `FairSpec`'s formula for three
+  processes, so the upgrader beside two readers is checked under `UpgraderFairSpec`, which keeps
+  only the fairness its service depends on -- every handle exits, every I/O completes, a shared
+  take that stays grantable is made, and the upgrader's own takes are strongly fair -- and which
+  `FairSpec` implies. It fails (T30), and the failure stands under `FairSpec` too: in T30's cycle
+  every acquisition that is enabled is made, and the upgrader's take of the gate is never
+  enabled, so strong fairness on it asks nothing[^mp-4-8].
+- **Withholding shared admission while an upgrader waits serves it.** Under
+  `UpgraderFairSpecExclusiveFirst`, which is `UpgraderFairSpec` with no handle passing the gate
+  shared while an upgrader waits for it exclusively, the upgrader beside two readers is served:
+  the holders drop the gate, it frees, and stays free until the upgrader takes it. This is an
+  option for ODI-2, not a rule of the contract. `FairSpec` and the exclusive-first variant prove
+  eventual service and nothing about how often a waiter is passed over first.
+
+### T28 -- a writer is passed over forever by another writer under the contract's fairness
+
+Status: `[verified]`, the shortest trace of `Coordination-Live-AWaitingWriterIsServed.cfg`, two
+writers on the cyclic workload. Steps 13 to 26 repeat forever; the cycle holds two writes because
+the count and the generation wrap.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `ATT1` | process 1 | passes the gate shared, takes the reader tier, drops the gate, takes the writer tier and is admitted | -- |
+| 2 `REQ1` | process 1 | requests writer exclusion and waits | -- |
+| 3 `ATT2` | process 2 | attaches the same way | -- |
+| 4 `REQ2` | process 2 | requests writer exclusion and waits | -- |
+| 5 `GRT1` | process 2 | is granted exclusion and records itself | the ownership record names 2 |
+| 6 `REL1` | process 2 | releases without an operation; exclusion is free and process 1's take is grantable | the record is cleared |
+| 7 `GRT2` | process 2 | requests again and is granted before process 1's take is made | the record names 2 |
+| 8 `REL2` | process 2 | releases without an operation | the record is cleared |
+| 9 `GRT3` | process 2 | requests again and is granted first | the record names 2 |
+| 10 `REL3` | process 2 | releases without an operation | the record is cleared |
+| 11 `GRT4` | process 2 | requests again and is granted first | the record names 2 |
+| 12 `OPN1` | process 2 | opens an operation | the count is odd |
+| 13 `CLS1` | process 2 | writes nothing and closes | the count is even |
+| 14 `REL4` | process 2 | releases; exclusion is free | the record is cleared |
+| 15 `EXIT` | process 2 | detaches | -- |
+| 16 `ATT3` | process 2 | attaches again | -- |
+| 17 `GRT5` | process 2 | requests and is granted first | the record names 2 |
+| 18 `REL5` | process 2 | releases without an operation | the record is cleared |
+| 19 `GRT6` | process 2 | requests and is granted first | the record names 2 |
+| 20 `OPN2` | process 2 | opens an operation | the count is odd |
+| 21 `CLS2` | process 2 | writes nothing and closes | the count is even |
+| 22 `REL6` | process 2 | releases | the record is cleared |
+| 23 `GRT7` | process 2 | requests and is granted first | the record names 2 |
+| 24 `REL7` | process 2 | releases without an operation | the record is cleared |
+| 25 `GRT8` | process 2 | requests and is granted first | the record names 2 |
+| 26 `OPN3` | process 2 | opens an operation | the count is odd |
+
+Process 1's take is grantable at every release and never continuously, so weak fairness on it
+asks nothing; process 1 waits forever while process 2 writes.
+
+### T29 -- an upgrader is passed over forever by a handle that goes on attaching
+
+Status: `[verified]`, the shortest trace of `Coordination-Live-AWaitingUpgraderIsServed.cfg`, an
+upgrader unsafe for readers and a reader on the cyclic workload. Steps 4 to 8 repeat forever.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `ATT1` | process 1 | passes the gate shared, takes the reader tier, drops the gate, takes the writer tier and is admitted | -- |
+| 2 `UPG` | process 1 | starts an upgrade, drains, releases its tiers and waits for the gate exclusively | -- |
+| 3 `BEG1` | process 2 | begins to attach; the gate is free and process 1's take is grantable | -- |
+| 4 `GTS1` | process 2 | takes the gate shared before process 1's take is made | -- |
+| 5 `RDT1` | process 2 | takes the reader tier and drops the gate; the gate is free again | -- |
+| 6 `ADM1` | process 2 | is admitted | -- |
+| 7 `EXIT` | process 2 | detaches | -- |
+| 8 `BEG2` | process 2 | begins to attach again | -- |
+
+The upgrade never starts its body, and the schema it was to move stays where it is.
+
+### T30 -- an upgrader is passed over forever by two handles whose holds of the gate overlap
+
+Status: `[verified]`, the shortest trace of
+`Coordination-Live-AWaitingUpgraderIsServedFairTwoHandles.cfg`, an upgrader unsafe for readers and
+two readers on the cyclic workload under `UpgraderFairSpec`. Steps 7 to 17 repeat forever, and in
+every state of them a reader holds the gate shared.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `GTS1` | processes 2 and 3 | each begins to attach and takes the gate shared | -- |
+| 2 `RDT1` | processes 2 and 3 | each takes the reader tier, still holding the gate | -- |
+| 3 `ATT1` | process 1 | passes the gate shared beside them, takes the reader tier, drops the gate, takes the writer tier and is admitted | -- |
+| 4 `DRP1` | process 3 | drops the gate; process 2 still holds it | -- |
+| 5 `UPG` | process 1 | starts an upgrade, drains, releases its tiers and waits for the gate exclusively | -- |
+| 6 `ADM1` | process 3 | is admitted | -- |
+| 7 `EXIT1` | process 3 | detaches | -- |
+| 8 `GTS2` | process 3 | begins to attach and takes the gate shared, which process 2 still holds | -- |
+| 9 `DRP2` | process 2 | drops the gate, which process 3 holds | -- |
+| 10 `ADM2` | process 2 | is admitted | -- |
+| 11 `EXIT2` | process 2 | detaches | -- |
+| 12 `BEG` | process 2 | begins to attach again | -- |
+| 13 `RDT2` | process 3 | takes the reader tier, still holding the gate | -- |
+| 14 `GTS3` | process 2 | takes the gate shared, which process 3 holds | -- |
+| 15 `DRP3` | process 3 | drops the gate, which process 2 holds | -- |
+| 16 `ADM3` | process 3 | is admitted | -- |
+| 17 `RDT3` | process 2 | takes the reader tier, still holding the gate | -- |
+
+Process 1's take of the gate is never enabled, so no fairness on it can make it; every other
+acquisition enabled in the cycle is made in it, so the behaviour is fair under `FairSpec` as well.
+
+## The acquisition layer is a model of its own, 2026-11-12
+
+Who is served by writer exclusion, the admission gate and the tiers depends only on how they are
+taken and released, and on holds ending -- not on what a holder does while it holds. Checked
+inside `Coordination.tla`, those results carry the count, the generation, the records, recovery
+and the upgrade body through every state, which costs hours under strong fairness, and any change
+to that machinery leaves nothing that says they still hold. So the acquisition layer is a model of
+its own, `spec/Acquisition.tla`, and the layers are split by assume-guarantee:
+
+- **The acquisition layer guarantees, assuming every hold ends**, everything the coordination
+  model found about service: the store makes progress; a writer and an upgrader can each be
+  passed over forever under the contract's fairness (T28, T29), and an attaching handle cannot;
+  under strong fairness on each acquisition a writer and an upgrader beside one handle are
+  served, and an upgrader beside two handles whose shared holds of the gate overlap is not (T30);
+  and each fairness condition dropped stops the store. What a process does while it holds is
+  abstract -- it holds, then releases -- and the model has no counter to wrap, so its invariants
+  (one writer at a time, the gate and each tier exclusive against shared) and its liveness are
+  checked together, every configuration in seconds. Its results are established once and
+  re-checked only when the acquisition steps change[^mp-4-9].
+- **A layer above owes it only that every hold ends**: every write releases exclusion, every
+  handle eventually detaches, every upgrade holding its tiers finishes. Those are properties of
+  one operation, one attachment or one upgrade body, checkable on bounded configurations, which
+  is what keeps a change above the acquisition layer from reopening its results.
+- **Withholding shared admission while an upgrader waits serves it under the contract's fairness
+  alone**, without strong fairness: once no handle passes the gate shared, the holders drop it,
+  it stays free, and a take that stays grantable is made. Strong fairness on the upgrader's take
+  is not what serves it; the gate staying free is.
+- **One fairness condition per process covers all its takes.** Each process waits for at most one
+  thing at a time and leaves a wait only by taking it, so fairness on the disjunction of a
+  process's takes is fairness on each of them. Likewise the steps that are no one's choice once
+  under way are each enabled from the process's own state alone, so one condition covers them.
+  With these, `FairSpec` for three processes is within what TLC can expand, which in the
+  coordination model it was not.
+- **The coordination model's acquisition steps are, for now, a duplicate of these.** Both models
+  state the same takes and releases; the correspondence holds by inspection until the
+  coordination model takes and releases with the acquisition model's own steps, at which point
+  its slow liveness configurations, whose findings this model now carries, are retired or kept
+  as a cross-check of the composition. That merge-or-delete decision is scheduled work, not a
+  standing duplication[^mp-4-10].
+
+[^mp-4-2]: `MP-4.2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-2) [completed 2026-11-11]
+[^mp-4-3]: `MP-4.3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-3) [completed 2026-11-11]
+[^mp-4-4]: `MP-4.4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-4) [completed 2026-11-11]
+[^mp-4-5]: `MP-4.5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-5) [completed 2026-11-11]
+[^mp-4-6]: `MP-4.6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-6) [completed 2026-11-11]
+[^mp-4-7]: `MP-4.7` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-7) [completed 2026-11-12]
+[^mp-4-8]: `MP-4.8` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-8) [completed 2026-11-12]
+[^mp-4-9]: `MP-4.9` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-9) [completed 2026-11-12]
+[^mp-4-10]: `MP-4.10` in [CHECKLIST.md](CHECKLIST.md)

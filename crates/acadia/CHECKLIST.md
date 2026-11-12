@@ -7,8 +7,10 @@ store".
 
 - [ ] <a id="ac-1"></a>**AC-1** -- Add the non-blocking primitives the file-based coordination implementation
   needs for its creation reservation, admission gate, attachment tiers and registry: an
-  exclusive publish-if-absent that leaves a file either complete or absent (`write` today
-  creates or truncates); and shared and exclusive locks on a file or a byte range of one,
+  exclusive publish-if-absent that leaves a file either complete or absent, including when
+  power is lost before it is durable ([DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Creating a
+  store root, modelled in `Creation.tla`"; `write` today creates or truncates); and shared and
+  exclusive locks on a file or a byte range of one,
   acquired without waiting and released when the holder dies, over `OsFs` on Windows
   (`LockFileEx`) and Linux (`flock` or
   open-file-description locks, never process-associated `fcntl` locks), over `MemFs`, and with

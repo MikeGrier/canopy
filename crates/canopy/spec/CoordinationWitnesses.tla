@@ -101,7 +101,7 @@ Witness_AReaderIsAdmittedDuringASafeUpgrade ==
 Witness_AReaderSpeakingTheTargetIsAdmittedDuringASafeUpgrade ==
     [][~(\E p \in Procs :
             ~CanWrite(p) /\ Admitted(p) /\ upState = "safe"
-            /\ SpeaksOf[p][UpLayer] = Target[UpLayer])]_vars
+            /\ SpeaksOf[p][ulayer] = utgt)]_vars
 
 Witness_AReaderIsRefusedDuringAnUnsafeUpgrade ==
     [][~(\E p \in Procs :
@@ -261,4 +261,286 @@ Witness_ADeathBetweenTheClaimAndLivenessLocks ==
 
 Witness_ADeathWhileRegistered ==
     [][~(\E p \in Procs : rst[p] = "in" /\ pc'[p] = "dead")]_vars
+
+-----------------------------------------------------------------------------
+(* Transactions.                                                           *)
+
+Witness_ATransactionCommits ==
+    [][~(\E p \in Procs : pc[p] = "applied" /\ pc'[p] = "ended")]_vars
+
+Witness_AFailureBeforeIngestIsRolledBack ==
+    [][~(\E p \in Procs : pc[p] = "begun" /\ pc'[p] = "wrote")]_vars
+
+Witness_AFailureAfterIngestIsRolledBack ==
+    [][~(\E p \in Procs : pc[p] = "ingested" /\ pc'[p] = "wrote")]_vars
+
+Witness_PrepareFailsWithoutARecord ==
+    [][~(\E p \in Procs : pc[p] = "ingested" /\ pc'[p] = "told"
+                          /\ log' = "begun")]_vars
+
+Witness_PrepareFailsWithARecord ==
+    [][~(\E p \in Procs : pc[p] = "ingested" /\ pc'[p] = "told"
+                          /\ log' = "prepared")]_vars
+
+Witness_ASwapFailsAfterPrepare ==
+    [][~(\E p \in Procs : pc[p] = "prepared" /\ pc'[p] = "told")]_vars
+
+Witness_TheEndRecordFails ==
+    [][~(\E p \in Procs : pc[p] = "applied" /\ pc'[p] = "told")]_vars
+
+Witness_TheSweepFails ==
+    [][~(\E p \in Procs : pc[p] = "ended" /\ pc'[p] = "told")]_vars
+
+Witness_TheLogIsReset ==
+    [][~(\E p \in Procs : pc[p] \in {"held", "closed"} /\ log # "empty"
+                          /\ log' = "empty")]_vars
+
+Witness_ToldAfterDeathAfterBegin ==
+    ~(diedIn = "begun" /\ HoldsTold)
+
+Witness_ToldAfterDeathAfterIngest ==
+    ~(diedIn = "ingested" /\ HoldsTold)
+
+Witness_ToldAfterDeathAfterPrepare ==
+    ~(diedIn = "prepared" /\ log = "prepared" /\ HoldsTold)
+
+Witness_ToldAfterDeathAfterTheSwaps ==
+    ~(diedIn = "applied" /\ HoldsTold)
+
+Witness_ToldAfterDeathAfterEnd ==
+    ~(diedIn = "ended" /\ HoldsTold)
+
+Witness_ACrashLeavesAPreparedTransaction ==
+    ~(diedIn = "crash" /\ log = "prepared")
+
+-----------------------------------------------------------------------------
+(* Recovery and discovery.                                                 *)
+
+Witness_ARecoveryRollsAPreparedTransactionForward ==
+    [][~(\E p \in Procs : pc[p] = "recEnd" /\ log = "prepared" /\ log' = "ended")]_vars
+
+Witness_AnUnloggedWriteIsRolledForward ==
+    [][~(\E p \in Procs : pc[p] = "recWhole" /\ b' # b)]_vars
+
+Witness_AnUnloggedWriteIsRolledBack ==
+    [][~(\E p \in Procs : pc[p] = "recWhole" /\ a' # a)]_vars
+
+Witness_AnUnloggedWriteFollowsATransaction ==
+    ~(\E p \in Procs : pc[p] = "writing" /\ ~TxnOp /\ log = "ended")
+
+Witness_ARecoveryFollowsARestartWithNothingHalfApplied ==
+    [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] = "recEnd" /\ ~trusted /\ ~Partial)]_vars
+
+Witness_ARecoveryRollsABegunTransactionBack ==
+    [][~(\E p \in Procs : pc[p] = "recReset" /\ log' = "empty")]_vars
+
+Witness_ARecoveryCompletes ==
+    [][~(\E p \in Procs : pc[p] = "recClear" /\ pc'[p] = "closed")]_vars
+
+Witness_ARecoveryClearsTheFence ==
+    [][~(fence /\ ~fence')]_vars
+
+Witness_ARecoveryRestoresTrust ==
+    [][~(~trusted /\ trusted')]_vars
+
+Witness_ARecoveryFollowsAHostCrash ==
+    [][~(\E p \in Procs : pc[p] = "recCount" /\ ~trusted)]_vars
+
+\* A prepared transaction means the count was odd, so an even stored count beside
+\* one is a count a crash rolled back.
+Witness_ARecoveryFollowsACrashThatRolledTheCountBack ==
+    [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] \in RecStates
+                          /\ ~trusted /\ Even(count) /\ log = "prepared")]_vars
+
+Witness_ARecoveryFollowsAHoldersDeath ==
+    [][~(\E p \in Procs : pc[p] = "recCount" /\ pc'[p] = "recClear"
+                          /\ diedIn \in TxnStates)]_vars
+
+Witness_ARecoveryFollowsAnUnresolvedFailure ==
+    [][~(\E p \in Procs : pc[p] = "recClear" /\ pc'[p] = "closed"
+                          /\ deaths = 0 /\ crashes = 0)]_vars
+
+Witness_ARecoveryIsStopped ==
+    [][~(\E p \in Procs : pc[p] \in RecStates /\ pc'[p] = "told")]_vars
+
+Witness_ARecovererDiesAfterTheFirstSwap ==
+    ~(diedIn = "recSwap2" /\ HoldsTold)
+
+Witness_ARecovererDiesAfterTheSwaps ==
+    ~(diedIn = "recEnd" /\ HoldsTold)
+
+Witness_ARecovererDiesAfterTheEndRecord ==
+    ~(diedIn = "recSweep" /\ HoldsTold)
+
+Witness_ARecovererDiesAfterTheSweep ==
+    ~(diedIn = "recCount" /\ HoldsTold)
+
+Witness_ARecovererDiesAfterTheCount ==
+    ~(diedIn = "recClear" /\ HoldsTold)
+
+Witness_ARecoveryIsResumedAfterADeath ==
+    [][~(\E p \in Procs : pc[p] = "recCount" /\ pc'[p] = "recClear"
+                          /\ diedIn \in RecStates)]_vars
+
+\* A recoverer that died after its first swap left the namespace half applied; the
+\* next one finishes the swaps, writes the end record and sweeps before it
+\* publishes the count.
+Witness_ARecoveryIsResumedAfterADeathBetweenItsSwaps ==
+    [][~(\E p \in Procs : pc[p] = "recCount" /\ pc'[p] = "recClear"
+                          /\ diedIn = "recSwap2" /\ log = "ended" /\ Settled)]_vars
+
+Witness_DiscoveryFindsAHoldersAbandonedWork ==
+    [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "required"
+                          /\ owner # None /\ lockHolder = None
+                          /\ ~fence /\ trusted)]_vars
+
+Witness_DiscoveryFindsTheFence ==
+    [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "required"
+                          /\ fence /\ lockHolder = None)]_vars
+
+Witness_DiscoveryFindsAnUntrustedState ==
+    [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "required"
+                          /\ ~trusted /\ ~fence /\ owner = None)]_vars
+
+Witness_DiscoveryMeetsALiveHoldersTransaction ==
+    [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "notRequired"
+                          /\ \E h \in Procs : lockHolder = h /\ pc[h] \in TxnStates)]_vars
+
+Witness_DiscoveryFindsAHealthyStore ==
+    [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "notRequired"
+                          /\ lockHolder = None)]_vars
+
+Witness_AReaderDiscovers ==
+    [][~(\E p \in Procs : Discover(p) /\ ~CanWrite(p))]_vars
+-----------------------------------------------------------------------------
+(* The upgrade body.                                                       *)
+
+UpgraderIn(p, s) == Upgrader(p) /\ att[p] = "uBody" /\ pc[p] = s
+
+Witness_TheIntentIsRecorded ==
+    [][~(\E p \in Procs : pc[p] = "open" /\ pc'[p] = "upBody")]_vars
+
+Witness_AnUpgradeCompletesThroughItsBody ==
+    [][~(\E p \in Procs : pc[p] = "upBody" /\ pc'[p] = "wrote")]_vars
+
+Witness_AMigrationStepIsMade ==
+    [][~(\E p \in Procs : pc[p] = "upBody" /\ ustep' > ustep)]_vars
+
+Witness_TheSchemaAdvancesInTheBody ==
+    [][~(\E p \in Procs : pc[p] = "upBody" /\ current' # current)]_vars
+
+Witness_AnUnsafeUpgradeAdvancesTheOldestReaderSchema ==
+    [][~(\E p \in Procs : pc[p] = "upBody" /\ oldest' # oldest)]_vars
+
+Witness_AnUpgraderIsToldAndRefused ==
+    [][~(\E p \in Procs : UpgraderIn(p, "locked") /\ pc'[p] = "told")]_vars
+
+Witness_AToldUpgraderIsDetached ==
+    [][~(\E p \in Procs : UpgraderIn(p, "releasing") /\ pc'[p] = "detached"
+                          /\ areq'[p] = "refused")]_vars
+
+Witness_AnUpgraderGivesUpBeforeTheIntent ==
+    [][~(\E p \in Procs : UpgraderIn(p, "open") /\ pc'[p] = "wrote")]_vars
+
+Witness_AnUpgradeFailsInItsBody ==
+    [][~(\E p \in Procs : pc[p] = "upBody" /\ pc'[p] = "told")]_vars
+
+Witness_AnUpgraderDiesBeforeTheIntent ==
+    [][~(\E p \in Procs : Upgrader(p) /\ att[p] = "uBody"
+                          /\ pc[p] \in {"held", "opening", "open"}
+                          /\ pc'[p] = "dead")]_vars
+
+Witness_AnUpgraderDiesBeforeItsFirstStep ==
+    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep = 0 /\ pc'[p] = "dead")]_vars
+
+Witness_AnUpgraderDiesBetweenSteps ==
+    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep >= 1 /\ ustep < UpSteps
+                          /\ pc'[p] = "dead")]_vars
+
+Witness_AnUpgraderDiesAfterItsLastStep ==
+    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep = UpSteps /\ ~Advanced
+                          /\ pc'[p] = "dead")]_vars
+
+Witness_AnUpgraderDiesAfterTheSchemaAdvances ==
+    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ Advanced /\ pc'[p] = "dead")]_vars
+
+Witness_ToldAfterAnUpgradersDeath ==
+    ~(diedIn = "upBody" /\ HoldsTold)
+
+Witness_AnInterruptedUpgradeIsResumedBeforeAnyStep ==
+    [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] = "recUp" /\ ustep = 0)]_vars
+
+Witness_AnInterruptedUpgradeIsResumedMidMigration ==
+    [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] = "recUp"
+                          /\ ustep >= 1 /\ ustep < UpSteps)]_vars
+
+Witness_AnInterruptedUpgradeIsResumedAfterTheSchemaAdvanced ==
+    [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] = "recUp" /\ Advanced)]_vars
+
+Witness_AResumerMakesTheRemainingSteps ==
+    [][~(\E p \in Procs : pc[p] = "recUp" /\ ustep' > ustep)]_vars
+
+Witness_AResumerAdvancesTheSchema ==
+    [][~(\E p \in Procs : pc[p] = "recUp" /\ current' # current)]_vars
+
+Witness_AnInterruptedUpgradeIsResumedToCompletion ==
+    [][~(\E p \in Procs : pc[p] = "recUp" /\ pc'[p] = "recEnd")]_vars
+
+Witness_AResumerIsStoppedInTheUpgrade ==
+    [][~(\E p \in Procs : pc[p] = "recUp" /\ pc'[p] = "told")]_vars
+
+Witness_AResumerDiesInTheUpgrade ==
+    ~(diedIn = "recUp" /\ HoldsTold)
+
+Witness_AReaderIsAdmittedDuringTheBody ==
+    [][~(\E p, q \in Procs : ~CanWrite(p) /\ Admitted(p) /\ pc[q] = "upBody")]_vars
+
+Witness_AnUpgradeCompletesAfterAFailedClosingPublication ==
+    [][~(\E p \in Procs : UpgraderIn(p, "releasing") /\ pc'[p] = "exited"
+                          /\ fence)]_vars
+
+Witness_DiscoveryMeetsALiveUpgradersBody ==
+    [][~(\E p, q \in Procs : Discover(p) /\ disc'[p] = "notRequired" /\ pc[q] = "upBody")]_vars
+
+Witness_DiscoveryFindsAnInterruptedUpgrade ==
+    [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "required" /\ IntentStands
+                          /\ lockHolder = None /\ ~fence /\ trusted)]_vars
+
+-----------------------------------------------------------------------------
+(* Cumulative reader compatibility.                                        *)
+
+Witness_AReaderOfAnOlderSchemaSurvivesASafeUpgrade ==
+    [][~(\E q \in Procs :
+            current' # current /\ upState = "safe"
+            /\ ~CanWrite(q) /\ att[q] = "attached" /\ att'[q] = "attached"
+            /\ SpeaksOf[q][ulayer] < current[ulayer])]_vars
+
+Witness_AReaderTwoSchemasBehindSurvivesASafeUpgrade ==
+    [][~(\E q \in Procs :
+            current' # current /\ upState = "safe"
+            /\ ~CanWrite(q) /\ att[q] = "attached" /\ att'[q] = "attached"
+            /\ SpeaksOf[q][ulayer] + 2 <= current'[ulayer])]_vars
+
+Witness_AnUpgradeIsUnsafeAgainstTheOldestAndSafeAgainstTheCurrent ==
+    [][~(ulayer = 0 /\ ulayer' # 0 /\ upState' = "unsafe"
+         /\ ufloor' <= current[ulayer'])]_vars
+
+Witness_AnUpgradeOfOneLayerRunsBesideHandlesOfAnother ==
+    [][~(\E q \in Procs :
+            att[q] # "attached" /\ att'[q] = "attached" /\ upState # "ordinary"
+            /\ \E l \in Layers : l # ulayer /\ SpeaksOf[q][l] < current[l])]_vars
+
+Witness_TwoLayersAreUpgradedInTurn ==
+    [][~(\E l, m \in Layers :
+            l # m /\ current'[l] # current[l] /\ current[m] # Current[m])]_vars
+
+Witness_AWriterIsAdmittedBesideAnUpgradeOfAnotherLayer ==
+    [][~(\E q \in Procs :
+            CanWrite(q) /\ att[q] # "attached" /\ att'[q] = "attached"
+            /\ upState # "ordinary" /\ SpeaksOf[q][ulayer] = utgt
+            /\ \E l \in Layers : l # ulayer /\ SpeaksOf[q][l] = current[l])]_vars
+
+Witness_AnUnsafeUpgradeOfTheSecondLayerCompletes ==
+    [][~(upState = "unsafe" /\ ulayer = 2 /\ oldest'[2] # oldest[2])]_vars
+
 =============================================================================
