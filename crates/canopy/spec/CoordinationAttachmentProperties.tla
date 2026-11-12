@@ -101,7 +101,7 @@ SchemasMoveOnlyWhenAnUpgradeCompletes ==
 
 \* What each process's attachment state says about where it is. An upgrader in
 \* its body is in one of the states of a holder.
-BodyStates == {"locked", "held", "opening", "open", "upBody", "wrote", "closing",
+BodyStates == {"locked", "held", "opening", "open", "upBody", "wrote", "observed", "closing",
                "closed", "told", "releasing"}
 
 \* Audience: internal.

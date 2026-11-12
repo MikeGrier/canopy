@@ -303,9 +303,11 @@ impl Store {
     /// [`write_document_replicated`](Store::write_document_replicated), through any clone of this
     /// store; repairs are not reported, since they restore what was already committed.
     ///
-    /// It runs on the writing thread, inside the write and under the writer gate, so it holds
-    /// up every writer in the process while it runs. It must do bounded work, must not block or
-    /// write to this store, and must not panic. Writes to one document are reported in the
+    /// It runs on the writing thread, inside the write and under writer exclusion, so it holds
+    /// up every writer while it runs. It must wait on nothing -- take no lock and make no call
+    /// that can block on another thread, a process or a device, handing data off only without
+    /// waiting -- must not call into this store through any handle, must return without
+    /// panicking, and must do work bounded in time. Writes to one document are reported in the
     /// order they were applied; no order is promised between documents.
     pub fn observe(&self, observer: Arc<dyn CommitObserver>) {
         *self

@@ -48,15 +48,7 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
 
 - [x] **MP-3.4** -- The operations that settle before they act: checks, collection, repair, scrub and a lost pointer replica are modelled, and a control omits each settle. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-4)
 
-- [ ] **MP-4** -- Check the model with several processes, in two independent halves. The first
-  composes the coordination contract in `spec/Coordination.tla` with the publication model in
-  [PointerPublication.tla](spec/PointerPublication.tla), so that FM-2.2 chooses between the two
-  guards that hold on evidence from several processes (MP-4.1 to MP-4.5). The second checks what
-  the contract's lack of a fairness requirement does, which CQ-1 and ODI-2 take as input (MP-4.6
-  to MP-4.8), and moves those results into a model of the acquisition layer that the
-  coordination model builds on (MP-4.9 to MP-4.11). The half M4 waits for comes first. Each refinement is behind a switch that leaves
-  every earlier configuration exploring the states it did, every new property is tagged by its
-  audience, and the results are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+- [x] **MP-4** -- The model is checked with several processes: publication composed with the coordination contract, and the contract's fairness moved into an acquisition model the coordination model refines. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4)
 
 - [x] **MP-4.1** -- The composition is a model of its own that extends `Coordination.tla` with documents, so it refines the contract by construction. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-1)
 
@@ -76,61 +68,30 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
 
 - [x] **MP-4.9** -- The acquisition layer is a model of its own, `spec/Acquisition.tla`, which establishes the service results in seconds under the assumption that every hold ends. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-9)
 
-- [ ] **MP-4.10** -- `Coordination.tla` takes and releases writer exclusion, the gate and the tiers
-  with `Acquisition.tla`'s own steps, so that it inherits the acquisition layer's results rather
-  than duplicating its steps (the duplicate-then-decide merge for the acquisition model, recorded
-  in [DESIGN-NOTES.md](DESIGN-NOTES.md) "The acquisition layer is a model of its own"). The
-  coordination model's take and release actions conjoin the acquisition model's, instanced over
-  a mapping of `att`, `pc` and `lockHolder`, with its own effects on the rest of its state beside
-  them; where its states are finer than the acquisition model's (registration, the check before
-  the writer tier, the controls that change the order of takes), the mapping says which
-  acquisition state each one is. Every existing `Coordination` configuration explores the states
-  it did, and a refinement property `AcquisitionRefined`, checked in the item-tier mains, states
-  that each `Coordination` behaviour is one of `Acquisition`'s under the mapping, so a step that
-  drifts from the acquisition layer fails a check rather than an inspection.
+- [x] **MP-4.10** -- `Coordination.tla` refines `Acquisition.tla` under a mapping, checked as `AcquisitionRefined` in every main configuration. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-10)
 
-  Verify: `run-tlc-all.ps1 -Spec crates/canopy/spec/Coordination.tla -Tier item`, with the main
-  configurations' distinct-state counts unchanged, and the acquisition model's sweep.
+- [x] **MP-4.11** -- `Coordination.tla` shows every hold ends on bounded configurations under the fairness of a process's own steps, and its cyclic workload and liveness configurations are retired. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-11)
 
-- [ ] **MP-4.11** -- `Coordination.tla` discharges the acquisition layer's assumption that every
-  hold ends, on bounded configurations: every write releases exclusion or its process dies, every
-  attached handle can detach, and every upgrade holding its tiers finishes or gives up. Each is a
-  property of one operation, one attachment or one upgrade body, so it needs neither the cyclic
-  workload nor fairness among waiters, only the fairness of a holder's own steps. Then decide, for
-  each evidence-tier liveness configuration of `Coordination`, whether to retire it, its finding
-  now carried by the acquisition model, or keep it as a cross-check of the composition, and record
-  the decision in [DESIGN-NOTES.md](DESIGN-NOTES.md); if the cyclic workload has no remaining
-  use, the `Cyclic` switch goes with it.
+- [x] **MP-4.12** -- Nothing nests under a hold in `Coordination.tla`, since nothing outside the store holds exclusion across a call. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-12)
 
-  Verify: the hold-ends properties hold in the item or milestone tier, and a control that keeps a
-  hold forever fails each.
-  variant, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md) beside MP-4.7's schedules.
+- [x] **ODI-7** -- The rule for caller code under exclusion is a step and three controls in `Coordination.tla`, and the commit observer's documentation states it. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#odi-7)
 
-- [ ] **CQ-1** -- Build a quantitative model of contention for the points of conflict MP-4.7
-  lists:
-  - a queueing baseline for a single exclusion, stated with the assumptions its results need --
-    stable, work-conserving, non-preemptive M/G/1 with service times independent of the order
-    of service and of finite variance -- and applied only where they hold;
-  - a seeded discrete-event simulation (in Rust, using the seeded generator the tests use) of
-    the store's structure, with waiters unordered among threads and processes alike as the
-    contract allows, first-come-first-served within a process compared as an implementation
-    option, upgrades waiting at the admission gate behind a stream of admissions, and recovery.
+- [x] **CQ-1** -- A quantitative model of contention for the three workloads, run against an agreed budget, with its findings recorded. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1)
 
-  Specify the workload before running it: the arrival processes (Poisson and bursty), the
-  hold-time distributions, the process and thread counts, attachment lifetimes, the frequency
-  of upgrades, and for unordered service the probability law by which a waiter is chosen and
-  how often an arriving thread barges ahead; with warm-up and confidence intervals stated.
-  Agree with the engineer, before the simulation runs, a budget on the wait that both CQ-1 and
-  CQ-2 use -- such as the probability of waiting longer than a deadline, or a high percentile.
-  Predict, for each point of conflict, the tail of the wait and the distribution of times a
-  waiter is passed over, under unordered service, first-come-first-served service and bounded
-  bypass, and the contention at which unordered service breaches the budget while FIFO meets
-  it. Record the predictions, the workload and the method in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md). If the simulation cannot answer a question exactly
-  enough, raise a probabilistic model checker (PRISM or Storm) as a toolchain decision rather
-  than adopting one silently.
+- [x] **CQ-1.1** -- The wait budget, the simulator as a crate of its own, unordered service as a uniform random choice with swept barging, and hold times measured on this machine, agreed with the engineer. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1-1)
 
-- [ ] **ODI-2** -- From MP-4.7's starvation schedules and conflict points, MP-4.8's results and CQ-1's predictions,
+- [x] **CQ-1.2** -- `crates/contention-sim` simulates one exclusion under each discipline, a snapshot under writes, and an upgrader behind attachments, checked against the M/G/1 baseline. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1-2)
+
+- [x] **CQ-1.3** -- The three workloads ran against the budget; the predictions, workload and method are in DESIGN-NOTES, and the work they imply is queued. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1-3)
+
+- [ ] **ODI-2** -- From MP-4.7's starvation schedules and conflict points, MP-4.8's results, the
+  acquisition model's finding that a handle waiting to attach is passed over when upgrades recur
+  without end ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The coordination model refines the acquisition
+  model") and CQ-1's predictions ([DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract
+  makes a caller wait": the order among waiters matters for bursts about as large as the number
+  of processors and little for a service's utilization, and a monthly upgrade waits on the drain
+  of long-lived attachments rather than at the gate, so asking attached handles to let go is an
+  avoidance to weigh),
   decide, for each point of conflict, first whether the conflict can be avoided -- shorter
   holds, finer-grained exclusion, keeping readers out of the wait -- and only where it cannot,
   whether any fairness returns to the contract, choosing the weakest form that addresses the
@@ -224,6 +185,38 @@ Decisions: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Naming the stranded pointer vote
 
 Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store".
 
+- [ ] **RG-1** -- The doorbell's spec barrier ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The ring: a
+  portable protocol over one platform primitive, behind a contract spec"): `DoorbellContract.tla`,
+  stating only what a user observes -- work raised is taken, a waiter with something to take is
+  woken, spurious wakes allowed -- and `Doorbell.tla`, the mechanism, each step one atomic
+  operation or fence point of the code: the producer's publish, its test of the record of being
+  rung and its raise; the consumer's take, reset, clearing of the record, check again and wait;
+  and the signal's state. TLC checks that the implementation refines the contract, with controls
+  that must fail it: clearing the record before the reset, skipping the check, checking before
+  clearing, and a producer that tests before it publishes. Several producers, as a completion
+  queue's engine and a coordination notification both ring the engine's doorbell.
+  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M1 -> `AC-3` (the platform signal)
+  > lands before this; see [CHECKLIST.md](../acadia/CHECKLIST.md#ac-3).
+
+- [ ] **RG-2** -- `canopy::ring`'s `Doorbell<S: Signal = PlatformSignal>` over acadia's
+  signal, as `Doorbell.tla` specifies it, with the step each line realizes named beside it, the
+  completion doorbell's `AsHandle` and `AsFd` by `cfg`, and its pumped `wait`. Decide with the
+  engineer, as a toolchain decision, which checker of the Rust memory model runs the protocol over
+  a signal it can model (such as `loom`), and run it with each fence removed, which must fail.
+  Tests drive scripted interleavings over a scripted signal and check every outcome against
+  `DoorbellContract.tla`'s rules, and run the doorbell over each platform's signal from a
+  thread pool's wait and the platform's own wait.
+
+- [ ] **NT-1** -- Model the notification in `Coordination.tla` before it is built: a waiting
+  operation registers, a change to what it waits on notifies it as a step of its own under weak
+  fairness, and the notified operation samples again and decides from what it reads, so the
+  hold-ends and admission properties are checked against the notifier rather than assuming every
+  waiter sees the change ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the coordination state
+  is delivered as a notification", "A client reaches the store through a session and its queue
+  pairs"). Behind a switch off in every earlier configuration; a control in which a notification
+  can be lost must fail the liveness it breaks, and one that notifies spuriously must leave every
+  property holding.
+
 - [ ] **MP-5** -- Define the coordination interface, a layer above `Vfs`, as specified in
   [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store", and decide which
   crate holds it. Implement in the file-based implementation, built on `Vfs` primitives so it
@@ -276,6 +269,12 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
     and only the outermost operation under a hold raising it -- the ordering is assumed, not
     checked, by the model ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The modification count, the
     generation and reads, modelled in `Coordination.tla`");
+  - a notification when the published count differs from a sampled value or a deadline passes,
+    delivered by ringing a doorbell the registrant supplies, so that no waiting work holds a
+    thread; the file-based implementation's default is one poller per process sampling with
+    backoff only while a registration is outstanding, and the interface leaves room for an
+    implementation notified by the OS ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the
+    coordination state is delivered as a notification");
   - the fence and the generation, acquisition returning the generation it found before
     advancing it;
   - the ownership record, with the fence set before an abandoned record is replaced and a
@@ -302,6 +301,26 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   a sample taken after a restart reading odd.
   > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M1 -> `AC-1` (the `Vfs` primitives this
   > needs) must land first. See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-1).
+
+- [ ] **RD-1** -- A snapshot that finds a write in progress, or is disturbed by one, is notified
+  through the coordination interface when the count changes and tries again, up to a deadline,
+  rather than retrying after a yield a fixed number of times, so that a write overlapping a read
+  delays it instead of failing it ([DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract
+  makes a caller wait"). The synchronous snapshot waits on the notification
+  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the coordination state is delivered as a
+  notification"); the form that holds no thread is a snapshot submitted through a queue pair, in
+  API-3. The deadline is a store option with a default no shorter than a write's tail hold;
+  `SnapshotContended` reports a deadline that passed. Tests show a snapshot that overlaps a write
+  succeeds once the write ends, and one held off past its deadline failing.
+
+- [ ] **RD-2** -- A Windows implementation of the notification notified by the OS instead of
+  polling -- an opportunistic lock on the published count requested with overlapped I/O, broken
+  when a fresh count is renamed over it, and delivered from an I/O completion -- with the poller
+  kept as the fallback where the lock is not granted, as on file systems that do not support it
+  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the coordination state is delivered as a
+  notification"). First confirm that a rename over the published count breaks the lock. The
+  conformance suite's notification cases run against both, and a test shows a registration woken
+  by the break with no thread polling or blocked.
 
 - [ ] **MP-6** -- Unless FM-2.2 has already landed them, advance the genesis format version as
   the barrier that makes an older binary refuse the root, and add the one-way migration of an
@@ -515,6 +534,66 @@ decision about fairness and on what MP-4 and CQ-1 find, the refinement is writte
 MP-3 and MP-4 change, the oracle for tests at the API uses M7's harness, and the documentation for
 dependents describes the multi-process behaviour of M6. CM-1, which needed none of them and steers
 MP-3 and MP-4, was done in M3.
+
+- [ ] **API-2** -- Transactions built without exclusion and submitted once
+  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion but the commit
+  observer"): an operation that only checks a document's digest or absence, beside writes and
+  removals; a builder the store hands out that records each document it reads as such a check and
+  holds no lock; `Store::transact`, taking the operation list and an options value that is empty
+  today; and `Store::transform` as the helper that runs a closure against a fresh builder without
+  the lock and retries a commit rejected by a changed read, up to a bounded number of attempts.
+  The closure form of `transform` is retired with it.
+
+- [ ] **QS-1** -- The ring's spec barrier ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The ring: a
+  portable protocol over one platform primitive, behind a contract spec"): `RingContract.tla`,
+  stating what a client observes, and `Ring.tla`, the mechanism, which uses the doorbell only
+  through `DoorbellContract.tla` and is checked by TLC to refine the contract. Together they
+  model a session's queue pairs and their two doorbells, independent of the coordination model: a push that only queues and a submission doorbell rung
+  for a batch; submission reserving a completion slot and refused when none is free; the engine as
+  the one consumer of submissions and producer of completions, woken by its doorbell; an entry
+  started in order within its pair; the completion doorbell rung on empty to not empty and armed
+  by the client's take, clear, check again, wait; a pair dropped by its client at any point; and
+  the engine's work on an entry either withdrawn before it starts or run to completion.
+  Properties: every accepted entry gets exactly one completion while its pair exists; posting a
+  completion is never blocked; a pair's entries take effect in submission order; an entry
+  withdrawn by a drop never takes effect, and one started does; a client waiting on the completion
+  doorbell is never left waiting with a completion queued, nor the engine with a submission rung
+  for ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A client reaches the store through a session and its
+  queue pairs"). Controls: submission without a reservation, which must overflow; a drop that
+  cancels a started entry, which must break the atomicity property; an arming that skips the
+  check after clearing, and one that checks before clearing, each of which must leave a client
+  waiting past a completion.
+
+- [ ] **API-3** -- Sessions and queue pairs as QS-1 specifies them, through which all work is
+  submitted, with API-2's transactions, reads, snapshots and enumerations as entries: a session
+  acquired on a store, pairs acquired from it, ends `Send` and not `Sync` with `&mut` push and pop,
+  completions reserved at submission, a submission doorbell rung by the client for a batch, a
+  completion doorbell that is a waitable object on each platform, and the engine setting aside a
+  waiting entry with a registration on the coordination notification, which rings the engine's
+  doorbell, so that no waiting holds a thread ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A client
+  reaches the store through a session and its queue pairs"). The synchronous methods become a
+  convenience that submits one entry and waits on the completion doorbell. The queues are
+  `canopy::ring`'s, generic over the signal as RG-2's doorbell is, following
+  [durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring)'s
+  ring, with the step of `Ring.tla` each line realizes named beside it, and checked by RG-2's
+  memory-model checker. Tests: exactly one
+  completion per entry under many pairs, per-pair order, a full completion queue refusing a
+  submission, a pair dropped with entries unstarted and started, a client waiting on the
+  completion doorbell from a thread pool's wait, many waiting entries holding no engine thread,
+  and sabotages that reverse the arming protocol's clear and check, and the doorbell's reset and
+  flag, each of which must hang.
+
+- [ ] **API-1** -- Withdraw `Store::plan_and_apply` from the public API, moving its callers to
+  API-2's transactions, whose checks stand for what a plan read, so that ODI-5 decides what canopy
+  advertises from a surface without it ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs
+  under exclusion but the commit observer").
+
+- [ ] **ODI-6** -- Decide which primitives the store evaluates under exclusion -- operations
+  computed from a document's current value, such as add, maximum and append, which never
+  conflict -- from where CQ-1 shows read-modify-write retries failing too often, with the bound on
+  each one's cost, and whether canopy owns a body format so that a primitive can work on more than
+  bytes ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion but the commit
+  observer"). Record the decision; each primitive adopted becomes a work item here.
 
 - [ ] **ODI-5** -- Decide what canopy advertises to the code that depends on it. From CM-1's
   client-visible guarantees and the results of MP-4, CQ-1 and ODI-2, decide which guarantees are

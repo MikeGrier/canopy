@@ -20,9 +20,20 @@ store".
   ranges. Test each platform, including holds released by a real process's death.
   > **CROSS-COMPONENT PREREQUISITE:** `crates/canopy` -> M4 -> `FM-2.3` completes the work
   > before this; see [CHECKLIST.md](../canopy/CHECKLIST.md).
-  >
-  > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M5 -> `MP-5`
-  > (the coordination interface and its file-based implementation). See
+
+- [ ] <a id="ac-3"></a>**AC-3** -- Add `Signal`, the one platform primitive of canopy's ring
+  ([DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The ring: a portable protocol over one platform
+  primitive, behind a contract spec"): a sealed trait with raise, lower and a bounded wait, all
+  level-triggered; a manual-reset event on Windows, implementing `AsHandle`; an `eventfd` on
+  Linux, non-blocking and not in semaphore mode, raised by a write, lowered by a read, and
+  implementing `AsFd`; a mutex and condition variable for every other target; and
+  `PlatformSignal`, naming the platform's implementation by `cfg`. Raising a raised signal and
+  lowering a lowered one change nothing and report nothing, as a full counter or an empty read
+  are those cases on Linux. Test each implementation, including a wait woken by a raise on another
+  thread, a raise before the wait, a bounded wait expiring, and the native handle or descriptor
+  waited on by the platform's own wait.
+  > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M5 -> `RG-1`
+  > (the doorbell's contract and implementation specs). See
   > [CHECKLIST.md](../canopy/CHECKLIST.md).
 
 ## M2 -- Blocking exclusion for canopy's coordination layer

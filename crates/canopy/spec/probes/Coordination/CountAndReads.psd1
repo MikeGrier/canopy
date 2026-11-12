@@ -234,22 +234,6 @@ Cleared == scache
         }
 
         @{
-            Name      = 'inner-raises-on-entry'
-            Base      = 'Coordination'
-            Kind      = 'INVARIANTS'
-            Property  = 'CountIsOddWhileAnOperationIsUnresolved'
-            Def       = 'EnterInner'
-            Old = @'
-UNCHANGED <<coord, reader>>
-'@
-            New = @'
-count' = Nx(count)
-    /\ scache' = Cleared
-    /\ UNCHANGED <<lockHolder, owner, fence, trusted, gen, rphase, rbefore, rseenA, rseenB, rpart, disc>>
-'@
-        }
-
-        @{
             Name      = 'iso-open-fails-raises'
             Base      = 'Coordination'
             Kind      = 'PROPERTIES'

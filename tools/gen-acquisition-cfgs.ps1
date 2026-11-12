@@ -23,7 +23,9 @@ $milestoneTier = @()
 
 function Write-Cfg([string]$name, [string[]]$header, [string]$scenario, [string]$specName,
                    [string[]]$properties, [int]$maxUpgrades = 1, [bool]$exclusiveFirst = $false,
-                   [string[]]$checkInvariants = $invariants) {
+                   [string[]]$checkInvariants = $invariants, [bool]$otherEnds = $false,
+                   [bool]$countUpgrades = $true) {
+    $other = if ($otherEnds) { 'TRUE' } else { 'FALSE' }
     $lines = @($header | ForEach-Object { "\* $_" })
     if ($milestoneTier -contains $name) { $lines += '\* Tier: milestone.' }
     $lines += @(
@@ -31,6 +33,10 @@ function Write-Cfg([string]$name, [string[]]$header, [string]$scenario, [string]
         "    Scenario = `"$scenario`"",
         "    MaxUpgrades = $maxUpgrades",
         "    ExclusiveFirst = $(if ($exclusiveFirst) { 'TRUE' } else { 'FALSE' })",
+        "    CountUpgrades = $(if ($countUpgrades) { 'TRUE' } else { 'FALSE' })",
+        "    Escapes = $other",
+        "    Refusals = $other",
+        "    Deaths = $other",
         "SPECIFICATION $specName"
     )
     if ($checkInvariants.Count -gt 0) { $lines += 'INVARIANTS'; $lines += @($checkInvariants | ForEach-Object { "    $_" }) }
@@ -92,6 +98,43 @@ foreach ($u in $unfair) {
     Write-Cfg "Acquisition-Control-$($u[0])" @("Negative control: $($u[3]), so the store need not make progress.",
         'TLC must report StoreMakesProgress violated.') $u[2] $u[1] @('StoreMakesProgress')
 }
+
+# ---- the positive results again, with every way a wait or a hold ends other than by service ----
+# A waiter gives up, a drain is cancelled, the check refuses, an upgrade finds the schema moved, a
+# process dies and the host crashes, none of them fairly. A model that refines this one with those
+# steps inherits these results. Each with an upgrader is checked again with upgrade starts not
+# counted, which is the model a refinement without an upgrade body maps to. Name, scenario,
+# specification, properties, exclusive first, and the properties that hold with starts not counted
+# (none: not checked).
+$otherEndsResults = @(
+    @('Acquisition', 'UnsafeWriterReader', 'ContractSpec', @('StoreMakesProgress', 'AnUpgradeHoldingItsTiersCompletes'), $false, @('StoreMakesProgress', 'AnUpgradeHoldingItsTiersCompletes')),
+    @('Writers3', 'Writers3', 'ContractSpec', @('StoreMakesProgress'), $false, @()),
+    @('Safe', 'SafeAndReader', 'ContractSpec', @('StoreMakesProgress', 'AnUpgradeHoldingItsTiersCompletes'), $false, @('StoreMakesProgress', 'AnUpgradeHoldingItsTiersCompletes')),
+    @('SafeWriter', 'SafeAndWriter', 'ContractSpec', @('StoreMakesProgress', 'AnUpgradeHoldingItsTiersCompletes'), $false, @('StoreMakesProgress', 'AnUpgradeHoldingItsTiersCompletes')),
+    @('AttachServed', 'Writers3', 'ContractSpec', @('AnAttachingHandleIsServed'), $false, @()),
+    @('AttachServedUpgrade', 'UnsafeWriterReader', 'ContractSpec', @('AnAttachingHandleIsServed'), $false, @()),
+    @('FairWriter', 'Writers3', 'FairSpec', @('AWaitingWriterIsServed'), $false, @()),
+    @('FairUpgrader', 'UnsafeAndReader', 'FairSpec', @('AWaitingUpgraderIsServed'), $false, @('AWaitingUpgraderIsServed')),
+    @('ExclusiveFirst', 'UnsafeAndTwoReaders', 'ContractSpec', @('AWaitingUpgraderIsServed', 'AnAttachingHandleIsServed'), $true, @('AWaitingUpgraderIsServed')),
+    @('ExclusiveFirstWriter', 'UnsafeWriterReader', 'ContractSpec', @('AWaitingUpgraderIsServed', 'StoreMakesProgress'), $true, @('AWaitingUpgraderIsServed', 'StoreMakesProgress'))
+)
+foreach ($o in $otherEndsResults) {
+    # A waiter may now leave its wait for ever, which progress counts as the end of the wait.
+    $leave = { param($ps) @($ps | ForEach-Object { if ($_ -eq 'StoreMakesProgress') { 'StoreMakesProgressOrWaitersLeave' } else { $_ } }) }
+    $base = if ($o[0] -eq 'Acquisition') { 'The main configuration' } else { "Acquisition-$($o[0])" }
+    Write-Cfg "Acquisition-OtherEnds-$($o[0])" @("$base with every way a wait or a hold ends other than by",
+        'service: every invariant and property holds.') $o[1] $o[2] (& $leave $o[3]) 1 $o[4] $invariants $true
+    if ($o[5].Count -gt 0) {
+        Write-Cfg "Acquisition-OtherEnds-Uncounted-$($o[0])" @("$base with every way a wait or a hold ends other than by",
+            'service and upgrade starts not counted: every invariant and property holds.') $o[1] $o[2] (& $leave $o[5]) 1 $o[4] $invariants $true $false
+    }
+}
+
+# ---- an upgrader that goes on upgrading ----
+Write-Cfg 'Acquisition-Uncounted-AttachPassedOver' @('With upgrade starts not counted, a handle waiting to attach can be passed over forever by an',
+    'upgrader that attaches, upgrades and attaches again, so that the gate is held exclusively',
+    'again and again and the handle''s take is grantable only between those holds. TLC must',
+    'report AnAttachingHandleIsServed violated.') 'UnsafeWriterReader' 'ContractSpec' @('AnAttachingHandleIsServed') 1 $false $invariants $false $false
 
 # ---- witnesses ----
 Write-Cfg 'Acquisition-Witness-GrantsGoOnForever' @('Witness: two writers are granted exclusion forever. TLC must report',

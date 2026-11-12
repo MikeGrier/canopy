@@ -1125,3 +1125,99 @@ where a writer cannot reach the writer tier while an upgrader holds it, so it ru
 with an upgrader safe for readers and a writer, which the reopened gate lets reach it.
 `tools/run-tlc-all.ps1` gained `-Parallel` and `tools/run-tlc.ps1` `-HeapGB`, and the sweep an
 `evidence` tier that it runs only on demand.
+
+## Moved 2026-11-12 -- Merging the acquisition model into the coordination model (M3 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="mp-4-10"></a>MP-4.10 -- `Coordination.tla` refines `Acquisition.tla` under a mapping, checked as `AcquisitionRefined` in every main configuration. *(completed 2026-11-12 12:19:00 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "The coordination model refines the
+acquisition model". The item asked for the coordination model's take and release actions to
+conjoin the acquisition model's; with the engineer it was decided instead to keep the coordination
+model's own steps and check them against the acquisition model's by a refinement property, since
+its controls need their own guards and a conjunction would prune a disagreement where a property
+reports it. The mapping is in `spec/CoordinationAcquisition.tla`. The acquisition model gained the
+ways a wait or a hold ends other than by service, behind `Escapes`, `Refusals` and `Deaths`, and
+`CountUpgrades`, all leaving its earlier configurations as they were; its positive results were
+checked again with them on, which needed progress restated where a waiter may leave, and found
+that with upgrade starts not counted an attaching handle can be passed over forever. Two probes
+that break a take or a release only in a way the refinement sees are caught by
+`AcquisitionRefined`; the one that gives up while holding the reader tier, run where a process
+may die, survived as a death until it was moved to a configuration where none dies. TLC names a violated action property by its location,
+so `tools/lib/Tlc.ps1` resolves a location to the definition that holds it, and
+`tools/check-run-tlc-all.ps1` copies `Acquisition.tla` beside its copy of the coordination model.
+
+### <a id="mp-4-11"></a>MP-4.11 -- `Coordination.tla` shows every hold ends on bounded configurations under the fairness of a process's own steps, and its cyclic workload and liveness configurations are retired. *(completed 2026-11-12 13:15:05 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Every hold ends, checked in the
+coordination model". `spec/CoordinationLiveness.tla` now states `HoldSpec` and the hold-ends
+properties -- exclusion released, the gate dropped, an admission, a drain, a detach, an upgrade
+holding its tiers and a recovery under way each ending -- checked on five bounded configurations
+in the milestone tier, since the liveness pass takes minutes each. Each fairness condition dropped
+gives a control that fails the property it guards, the release and the last effect each because a
+holder's own loop -- a recovery stopped and restarted, an operation nested again and again --
+otherwise keeps the hold. With the engineer it was decided to retire every `Coordination-Live-*`
+configuration, the cyclic controls and witnesses, and the `Cyclic` and `CycleMod` constants,
+whose findings the acquisition model now carries; the SharedPublication configurations dropped
+those constants with them.
+
+### <a id="mp-4"></a>MP-4 -- The model is checked with several processes: publication composed with the coordination contract, and the contract's fairness moved into an acquisition model the coordination model refines. *(completed 2026-11-12 13:15:05 -05:00)*
+
+Its parts are `MP-4.1` to `MP-4.11` above and in the earlier groups of this file. The item's own
+text asked for two independent halves, the first composing the coordination contract with
+[PointerPublication.tla](spec/PointerPublication.tla) for FM-2.2, the second checking what the
+contract's lack of a fairness requirement does and moving those results into a model of the
+acquisition layer the coordination model builds on, each refinement behind a switch that leaves
+every earlier configuration exploring the states it did.
+
+### <a id="mp-4-12"></a>MP-4.12 -- Nothing nests under a hold in `Coordination.tla`, since nothing outside the store holds exclusion across a call. *(completed 2026-11-12 15:23:25 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion but the
+commit observer": with a transaction built without exclusion and submitted once, and the rule that
+caller code under exclusion never calls into the store, no caller's operation runs inside another.
+The nested operation, its control `inner-restores-parity`, its witness, its probe, and the strong
+fairness on a write's last effect that only the nesting loop needed are gone from the model, with
+the hold-ends control that dropped that fairness. Every Coordination and SharedPublication
+configuration in the item tier and every hold-ends configuration came out as its header requires;
+without the nesting loop and its fairness condition the hold-ends checks took a third to a fifth of
+the time they had, which is what the change was for.
+
+### <a id="odi-7"></a>ODI-7 -- The rule for caller code under exclusion is a step and three controls in `Coordination.tla`, and the commit observer's documentation states it. *(completed 2026-11-12 15:50:00 -05:00)*
+
+The engineer took the rule -- a callback under exclusion waits on nothing, does not call into the
+store, returns, and does work bounded in time -- as decided, and asked for it in the model's
+precise form, recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion
+but the commit observer". Behind the `Callbacks` switch, off in every earlier configuration, the
+store calls back with `Observe` once an operation's effects are done, and
+`ACallbackChangesOnlyWhereItsHolderIs` holds in every main configuration. Each clause has a
+control that comes out as its header requires: a callback that writes to the store violates that
+property, one that waits for exclusion its holder has deadlocks, and one that never returns keeps
+its hold forever. The time bound is not the model's, since no step has a duration; it is a
+parameter of CQ-1's workload. The store does not check the rule at run time; the commit
+observer's documentation states it as a requirement on its author.
+
+### <a id="cq-1-1"></a>CQ-1.1 -- The wait budget, the simulator as a crate of its own, unordered service as a uniform random choice with swept barging, and hold times measured on this machine, agreed with the engineer. *(completed 2026-11-12 16:13:39 -05:00)*
+
+The budget and the measured hold are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the
+contract makes a caller wait". The holds were measured with the existing ignored throughput test in
+[throughput.rs](tests/throughput.rs).
+
+### <a id="cq-1-2"></a>CQ-1.2 -- `crates/contention-sim` simulates one exclusion under each discipline, a snapshot under writes, and an upgrader behind attachments, checked against the M/G/1 baseline. *(completed 2026-11-12 16:13:39 -05:00)*
+
+The crate is a member of the default workspace. Its unit tests pin the generator, the
+distributions' moments, the statistics, the Pollaczek-Khinchine baseline against the simulated
+mean, each discipline's ordering property (first-come-first-served passes no waiter over, bounded
+bypass passes none over more than its bound), the snapshot approximation and the gate's draw.
+
+### <a id="cq-1-3"></a>CQ-1.3 -- The three workloads ran against the budget; the predictions, workload and method are in DESIGN-NOTES, and the work they imply is queued. *(completed 2026-11-12 16:13:39 -05:00)*
+
+The findings are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract makes a caller
+wait". The snapshot's spinning retry fails a read whenever a write overlaps it, which spawned
+`RD-1` in M5; the findings on bursts and on an upgrade's drain were written into `ODI-2`, which
+decides avoidance and fairness from them.
+
+### <a id="cq-1"></a>CQ-1 -- A quantitative model of contention for the three workloads, run against an agreed budget, with its findings recorded. *(completed 2026-11-12 16:13:39 -05:00)*
+
+Its decisions, its simulator and the work it spawned are recorded under its sub-items `CQ-1.1` to `CQ-1.3`
+above; the findings are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract makes a
+caller wait". The simulation answered every question the item asked, so no probabilistic model
+checker was raised.

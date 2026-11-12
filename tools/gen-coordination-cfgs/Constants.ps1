@@ -10,20 +10,15 @@ $milestoneTier = @(
     'Coordination-CumulativeLayerPairUnsafeBody', 'Coordination-CumulativeChainBody',
     'Coordination-CumulativeChainFloorBody', 'Coordination-RegistryUpgrade',
     'Coordination-ThreeProcs', 'Coordination-TxnThreeProcs', 'Coordination-AttachmentTwoUpgraders',
-    'Coordination-RecoveryUnlogged', 'Coordination-RecoveryMixed'
+    'Coordination-RecoveryUnlogged', 'Coordination-RecoveryMixed',
+    'Coordination-HoldsEnd-Txn', 'Coordination-HoldsEnd-Unlogged', 'Coordination-HoldsEnd-UpgradeBody',
+    'Coordination-HoldsEnd-Registry', 'Coordination-HoldsEnd-Unsafe', 'Coordination-Callback'
 )
 
 # Configurations that take a quarter of an hour to hours: the sweep leaves them out unless asked
 # (-Tier evidence), and they are run when a change touches what their finding rests on -- the
 # liveness module, or the steps that take and release writer exclusion, the gate and the tiers.
-$evidenceTier = @(
-    'Coordination-Live-StoreMakesProgress', 'Coordination-Live-StoreMakesProgressUpgrade',
-    'Coordination-Live-AnUpgradeHoldingItsTiersCompletes', 'Coordination-Live-ADrivenRecoveryCompletes',
-    'Coordination-Live-AWaitingWriterIsServed', 'Coordination-Live-AnAttachingHandleIsServed',
-    'Coordination-Live-AnAttachingHandleIsServedUpgrade',
-    'Coordination-Live-AWaitingWriterIsServedFair', 'Coordination-Live-AWaitingUpgraderIsServedFair',
-    'Coordination-Live-AWaitingUpgraderIsServedExclusiveFirst'
-)
+$evidenceTier = @()
 
 $exclusionInvariants = @('TypeOK', 'AtMostOneHolder', 'LockMatchesHolders', 'OwnerRecordNamesItsHolder',
     'AbandonmentIsNeverForgotten', 'UnresolvedWorkIsNeverInvisible', 'RequestStateMatchesProcess',
@@ -50,7 +45,8 @@ $exclusionProperties = @('AbandonedRecordNeverReplacedUnfenced', 'NormalAcquireF
     'TheVersionAdvancesOnlyAfterEveryStep', 'TheOldestReaderSchemaMovesWithTheSchema',
     'TheIntentClearsOnlyAfterTheSchemaAdvances', 'UpgradeEffectsAreMadeUnderExclusionAndTheCount',
     'AResumptionIsMadeOnlyByAHandleThatSpeaksTheTarget', 'ABodyEndsServedOrRefused',
-    'AnUpgradeIsJudgedAgainstTheOldestSchema', 'AnUpgradeOfOneLayerLeavesTheOthersAlone')
+    'AnUpgradeIsJudgedAgainstTheOldestSchema', 'AnUpgradeOfOneLayerLeavesTheOthersAlone',
+    'ACallbackChangesOnlyWhereItsHolderIs')
 # What cumulative reader compatibility adds, for configurations that carry only the attachment lists.
 $layerInvariants = @('OldestCoversTheDataFloor', 'AnAttachedHandleCanReadTheData', 'TheOtherLayersKeepTheirOrdinaryRules')
 $layerProperties = @('AnUpgradeIsJudgedAgainstTheOldestSchema', 'AnUpgradeOfOneLayerLeavesTheOthersAlone')
@@ -68,7 +64,7 @@ $attachProperties = @('AdmittedHandlesAreAdmissible', 'AttachRequestsEndInExactl
     'ACancelledDrainLeavesTheHandleAttached', 'ACancelledOrFailedConversionLeavesTheHandleDetached',
     'EntryChangesAreMadeUnderTheClaimLock', 'ACrashDiscardsTheRegistry',
     'EntryInspectionsAreMadeUnderTheClaimLock', 'LiveReportIsJustified',
-    'AListingSaysWhenItMayBeIncomplete')
+    'AListingSaysWhenItMayBeIncomplete', 'AcquisitionRefined')
 
 # Scenario: the name the spec gives a set of roles and speaks, since a configuration
 # file cannot state a sequence.
@@ -112,7 +108,7 @@ $layered = @{
     TwoLayerUpgradesFloor = @{ Name = 'TwoLayerUpgradesFloor'; Procs = 3; Upgraders = 2 }
 }
 
-function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $cyclic = $false) {
+function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false) {
     $n = $s.Procs
     $procs = '{' + ((1..$n) -join ', ') + '}'
     $lines = @(
@@ -131,9 +127,8 @@ function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $dead
         "    Txn = $(if ($txn) { 'TRUE' } else { 'FALSE' })",
         "    UnloggedRecovery = $(if ($unloggedRecovery) { 'TRUE' } else { 'FALSE' })",
         "    MixedWrites = $(if ($mixedWrites) { 'TRUE' } else { 'FALSE' })",
-        "    Cyclic = $(if ($cyclic) { 'TRUE' } else { 'FALSE' })",
-        "    CycleMod = $(if ($cyclic) { 4 } else { 0 })",
         "    UpSteps = $upSteps",
+        "    Callbacks = $(if ($callbacks) { 'TRUE' } else { 'FALSE' })",
         "    Scenario = `"$($s.Name)`"",
         "    Control = `"$control`"",
         "SPECIFICATION $spec"

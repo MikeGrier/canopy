@@ -2958,6 +2958,11 @@ document because nothing durable says that document 1 was the one being publishe
 
 ## What the contract's lack of a fairness requirement does, modelled in `Coordination.tla`, 2026-11-11
 
+> **SUPERSEDED in part, 2026-11-12, by "Every hold ends, checked in the coordination model".**
+> The cyclic workload, the `Cyclic` switch and every configuration named below that runs on it
+> are retired; the findings about who is served are carried by the acquisition model, which the
+> coordination model refines. Read that decision before acting on how liveness is checked here.
+
 The contract promises no fairness between waiters: writer exclusion, the admission gate and the
 tiers grant to any waiter, in any order. `CoordinationLiveness.tla` checks what that leaves --
 which progress holds without any ordering, which requests can be passed over forever, and what
@@ -3145,6 +3150,11 @@ acquisition enabled in the cycle is made in it, so the behaviour is fair under `
 
 ## The acquisition layer is a model of its own, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-12, by "The coordination model refines the acquisition model"
+> and "Every hold ends, checked in the coordination model".** The last point's duplication is
+> resolved: the coordination model is checked to take and release as this model does, and its
+> slow liveness configurations are retired.
+
 Who is served by writer exclusion, the admission gate and the tiers depends only on how they are
 taken and released, and on holds ending -- not on what a holder does while it holds. Checked
 inside `Coordination.tla`, those results carry the count, the generation, the records, recovery
@@ -3192,3 +3202,438 @@ its own, `spec/Acquisition.tla`, and the layers are split by assume-guarantee:
 [^mp-4-8]: `MP-4.8` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-8) [completed 2026-11-12]
 [^mp-4-9]: `MP-4.9` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-9) [completed 2026-11-12]
 [^mp-4-10]: `MP-4.10` in [CHECKLIST.md](CHECKLIST.md)
+
+## The coordination model refines the acquisition model, 2026-11-12
+
+`Coordination.tla` takes and releases writer exclusion, the admission gate and the tiers as
+`Acquisition.tla` does, and says so in a check: a refinement mapping in
+`CoordinationAcquisition.tla` names the acquisition state of every coordination state, and
+`AcquisitionRefined` -- the acquisition model's initial state and next-state relation under the
+mapping -- holds in every main configuration. A step that takes or releases differently from the
+acquisition layer fails that property instead of drifting unseen[^mp-4-10].
+
+- **The coordination model keeps its own steps and is checked against the acquisition model's;
+  it does not conjoin them.** Its controls deliberately take and release against the acquisition
+  rules -- an upgrader that keeps its tiers, a writer tier taken first, a gate held through the
+  writer tier -- so its own guards must stay, and a conjoined acquisition step would only repeat
+  them. Where the two disagreed, a conjunction would remove the disagreeing behaviours from the
+  state graph, which hides drift; a property reports it. The property changes no state count, so
+  every configuration explores the states it did, and listing it in a configuration is the
+  switch. It is listed in the main configurations, and in no control and no cyclic configuration.
+- **Where the coordination model is finer, the mapping decides which acquisition state it is.**
+  A handle registering has passed its check and is not yet admitted, so it is `tiers`, and its
+  admission is the registry's last step. A handle unregistering still holds its tiers: one being
+  dropped is still attached, and letting go of them is its exit; an upgrader's is still draining,
+  and letting go of them ends its drain. A detached handle and a dead process hold nothing and are
+  exited. A writer holds exclusion from the take of the lock to its release, with the ownership
+  record, the operation and recovery all inside that one hold. The states only the controls reach
+  are not mapped.
+- **An upgrade body's hold of writer exclusion is not an acquisition.** The upgrader holds the
+  writer tier exclusively while it holds exclusion, so no handle that may write is attached and
+  none can wait for exclusion: the hold is uncontended, and the mapping hides it. The upgrade body
+  is the acquisition model's abstract hold of the tiers.
+- **Upgrade starts are counted where the coordination model counts them.** It bounds them only
+  with the upgrade body (`UpSteps > 0`); without it, a cancelled drain or an upgrade that found the
+  schema moved lets an upgrader start again without bound. The acquisition model's
+  `CountUpgrades` says whether starts are counted, and is mapped to whether the body is modelled.
+- **The acquisition model has every way a wait or a hold ends other than by service, each behind
+  a switch that is off in every earlier configuration.** `Escapes`: a waiter gives up, a writer
+  withdraws or is refused, a drain is cancelled. `Refusals`: the check refuses a handle, and an
+  upgrade holding its tiers finds the schema moved. `Deaths`: a process dies, or the host
+  crashes, and everything it holds is released. None is fair. The mapping turns `Refusals` on
+  always, `Escapes` with the coordination model's own, and `Deaths` when any death or crash is
+  allowed.
+- **The acquisition model's results hold with those steps on, so the coordination model inherits
+  them for the behaviours it has.** Each result that holds -- progress, an upgrade holding its
+  tiers completing, an attaching handle served, a writer and an upgrader served under strong
+  fairness, an upgrader served when shared admission is withheld -- is checked again with all
+  three switches on (`Acquisition-OtherEnds-*`). The results that fail keep failing, since the
+  added steps are not fair and so only add behaviours. Progress needs one change of wording: a
+  handle that begins to attach and gives up, again and again, waits with nothing acquired, yet no
+  one is starved, so where waiters may leave the store's progress is that a resource is acquired
+  or a waiter leaves again and again (`StoreMakesProgressOrWaitersLeave`).
+- **With upgrade starts not counted, an attaching handle can be passed over forever.** That is
+  the acquisition model the coordination model refines when it has no upgrade body, and every
+  other result above holds in it (`Acquisition-OtherEnds-Uncounted-*`). But an upgrader that
+  attaches, upgrades and attaches again holds the gate exclusively again and again, and a handle
+  waiting to attach can take the gate only between those holds, which the contract's fairness
+  does not cover (`Acquisition-Uncounted-AttachPassedOver`). So "a handle waiting to attach is a
+  wait and not a starvation", in the points of conflict above, rests on upgrades being finitely
+  many: the shared-against-exclusive conflict at the gate is a starvation when upgrades recur
+  without end. This is an input to ODI-2 beside T28 to T30.
+- **Where a process may die, a step that lets go of everything a process holds refines a
+  death.** So the refinement is sharp for such a step only in a configuration where no process
+  dies, and a probe of that shape runs in one.
+- **What the coordination model owes in return is that every hold ends.** The acquisition
+  model's service results assume it, and the refinement says nothing about it, since it is a
+  property of behaviours that go on and the refinement a property of each step.
+
+## Every hold ends, checked in the coordination model, 2026-11-12
+
+The acquisition model's results about who is served assume that every hold ends. The
+coordination model discharges that assumption on bounded configurations, and its liveness
+checks on a cyclic workload are retired[^mp-4-11].
+
+- **Each hold ending is a property of one process's own steps.** A write releases writer
+  exclusion; an attach drops the gate and is admitted or refused; a drain ends; a detach lets go
+  of the tiers; an upgrade holding its tiers finishes or gives up; a recovery under way ends. A
+  death ends any of them. None needs another process to be served, so none needs fairness among
+  waiters, nor a behaviour that goes on forever: each is checked on a bounded configuration
+  (`Coordination-HoldsEnd-*`) under `HoldSpec`.
+- **`HoldSpec` is the fairness of a process's own steps.** Its I/O completes, its operation and
+  its registry work move on once begun, a clone's operation ends, and -- strongly, because the
+  holder's own choice interrupts it -- a holder releases. One condition covers each process's
+  own steps, since each leads the process out of where it is apart from the loop its own choice
+  makes, a recovery stopped and started again, which is why release has its own. Each condition
+  dropped lets a hold last forever, which a control for each property shows
+  (`Coordination-Control-HoldsEnd-*`).
+- **These are the acquisition model's assumptions under the refinement mapping.** A write's hold
+  of exclusion is the acquisition model's `held`; an attach's admission, a drain, a detach and an
+  upgrade holding its tiers are the steps that model takes as completing I/O and as holds that
+  end. A handle's choice to detach at all is the client's, not the store's, and stays an
+  assumption of both models.
+- **The cyclic workload is retired, and the `Cyclic` switch with it.** Its liveness
+  configurations found who is served under the contract's fairness, which the acquisition model
+  now establishes in seconds with every way a wait or a hold ends other than by service, and
+  which the coordination model inherits by refinement once its holds end. Kept as a cross-check,
+  they would cost hours each, and one never finished. Their controls and witnesses went with
+  them, since they only showed those checks could fail and the workload went on. The counters
+  no longer wrap, so every configuration explores the states it did.
+
+[^mp-4-11]: `MP-4.11` in [CHECKLIST.md](CHECKLIST.md)
+
+## No caller code runs under exclusion but the commit observer, 2026-11-12
+
+How long writer exclusion is held is the store's to decide, never a caller's. The surface the
+models describe is held to that, and the parts of the API that break it are recorded here with the
+work that brings them into line.
+
+- **Caller code may run under exclusion only if it waits on nothing.** A callback that does
+  nothing is plainly safe, so the line is not "no caller code" but this rule. A callback made
+  while exclusion is held:
+  - *waits on nothing*: it takes no lock and makes no call that can block on another thread, a
+    process or a device -- no I/O, no sleep, no blocking send, no join or await. It may hand
+    data off without waiting, such as a non-blocking send to a bounded queue, and it decides
+    for itself what to do when the hand-off is full;
+  - *does not call into the store*, through any handle;
+  - *returns*: it does not panic or unwind through the store;
+  - *does work bounded in time*.
+
+  The rule is what makes a callback simple to model. A callback that waits on nothing depends
+  on no state but its own thread's, so in the models it is one step of the holder, enabled
+  whenever it is reached: it is among the holder's own steps, so every hold still ends under
+  the fairness of a process's own steps, and it can form no cycle of waits with exclusion, so
+  it adds no deadlock. Its bound makes it a bounded addition to a hold's length in CQ-1, where
+  the bound is a parameter of the workload; the models have no time, and the rule asks only that
+  the callback returns. A lock
+  of the callback's own that nothing holds while waiting would also be safe, but showing it
+  needs an argument about lock order the models would have to carry, so the rule leaves it out.
+- **A transformation is data, not a closure.** `Store::transform` takes a closure and runs it
+  between its read and its commit, under exclusion, so the caller decides how long the hold
+  lasts. That is a misspecified form of the intended API: a transformation is stated as
+  primitives in data, which the store applies without returning control to the caller, so its
+  cost is the store's and bounded by it. A closure that kept the rule above would be safe, but
+  nothing about a closure says it does, so the intended form stays data.
+- **A transaction is built without exclusion and submitted once.** `Store::transact` takes an
+  operation list and an options value. The options are optional and empty today; they are where
+  a later mode, such as a different way of locking, is asked for. The list is built with no lock
+  held, by a builder the store hands out, and the builder is only a way to make the value: it
+  never holds exclusion between calls. Under exclusion the store checks every operation's
+  precondition and applies the list atomically, or rejects it whole, so a hold is the store's
+  own work.
+  - *A read is recorded as a check.* Each document the builder reads is recorded with what it
+    held -- its digest, or its absence -- as an operation that changes nothing and that the
+    commit checks with the rest. So a transaction is safe against everything it read, not only
+    what it writes. This is the entry the swap set lacks: today a precondition rides only on a
+    document the set changes.
+  - *Read-modify-write retries without the lock.* A helper runs a caller's closure against a
+    fresh builder with no lock held and submits what it built; a commit rejected because a read
+    changed is discarded and the closure runs again, up to a bounded number of attempts, after
+    which it fails, as a snapshot does. `Store::transform` takes this form; the closure form,
+    which runs under exclusion, is retired.
+  - *Primitives the store evaluates come later, where retries are too costly.* An operation the
+    store computes from the current value under exclusion -- add, maximum, append -- never
+    conflicts, which is what a document everyone changes needs. They are added only where CQ-1
+    shows retries failing too often. A document's body is opaque to the store, so such an
+    operation works on bytes unless canopy comes to own a body format, which is a larger decision
+    of its own[^odi-6].
+  - *Conflicts are the contention transactions see.* Transactions that keep invalidating each
+    other are passed over in the optimistic form, so how often a commit is rejected is a measure
+    for CQ-1 beside a snapshot's failures, and the bound on attempts is what keeps it from
+    becoming a livelock; whether anything more is owed is ODI-2's question.
+- **`Store::plan_and_apply` is outside the modelled surface.** It runs a caller's plan, reads
+  included, under exclusion, for as long as the plan takes. It is withdrawn from the public
+  surface the models describe, and from the public API itself[^api-1].
+- **The commit observer is the callback the API makes under exclusion, and it keeps the rule.**
+  It is a conceptual exposure: the observer runs on the writing thread inside the write. The
+  models take the rule as an assumption about it and do not model what it does. Its author is
+  held to the rule, which its documentation states; the store does not check it.
+- **In the coordination model the rule is a step and three controls**[^odi-7]. Under the
+  `Callbacks` switch, which is off in every configuration that does not name it, the store calls
+  back once an operation's effects are done, inside the operation's bracket and under exclusion:
+  `Observe`, a step of the holder enabled whenever it is reached, after which the operation
+  closes. `ACallbackChangesOnlyWhereItsHolderIs` states that the step changes nothing but where
+  its holder is. Each clause has a control: a callback that writes to the store violates that
+  property; one that waits until nobody holds exclusion, which its own holder does, deadlocks;
+  and one that never returns keeps its hold forever, so that a hold of exclusion ends fails
+  under the fairness of a process's own steps. With the rule kept, every invariant and property
+  holds and every hold ends.
+- **Nothing nests under a hold.** Exclusion is never held by anything outside the store across
+  a call, and no caller code that runs under it may call into the store, so no operation of a
+  caller's runs inside another. The models have no nested operation: a hold is one request and
+  at most one operation. That the count is raised only at the outermost edges of the store's own
+  internal calls is the implementation's to keep, and its tests show it.
+- **So a hold's length is the store's own work.** Under exclusion a write spends the store's I/O
+  (staging, the commit log's records, the swaps and their syncs), the evaluation of a
+  transformation's primitives, and at most the observer's stated time. The first is measured on
+  the target hardware, not assumed; the rest are bounds the store or the observer's contract
+  sets. This is what CQ-1 models as the hold time.
+- **The workloads canopy is built for**, as the engineer states them, and as CQ-1's input:
+  - *A service*: one process whose asynchronous workers make concurrent requests, a number the
+    service may or may not throttle. Contention is within the process.
+  - *A cooperative database*, like an IDE's project file or a PDB: a few readers, and now and then
+    a burst of workers reading and writing, up to the number of processors as processes or
+    threads, and at worst that number squared (that many processes of that many threads each).
+  - *A ubiquitous metadata store*: many attached clients, nearly all only reading, with very
+    occasional writes. Readers do not take exclusion; a read retries while writes disturb it, and
+    fails after a bounded number of attempts.
+  - Schemas are upgraded at most about once a month, so upgrades contend with attachments, not
+    with each other.
+
+[^odi-6]: `ODI-6` in [CHECKLIST.md](CHECKLIST.md)
+[^api-1]: `API-1` in [CHECKLIST.md](CHECKLIST.md)
+[^odi-7]: `ODI-7` in [CHECKLIST.md](CHECKLIST.md)
+
+## How long the contract makes a caller wait, 2026-11-12
+
+The TLA+ models say what the coordination contract lets happen; `crates/contention-sim` predicts
+how often and for how long, for the three workloads in "No caller code runs under exclusion but the
+commit observer", against a budget the engineer agreed before it ran[^cq-1]. Its report is
+regenerated by `cargo run -p contention-sim --release`; what follows are the findings, which are
+expected to survive a re-run on other hardware because they are stated against the measured hold.
+
+- **The budget.** A service's write waits at most ten times the median hold at the 99th
+  percentile and a hundred times at the 99.9th; a cooperative database's burst member waits at
+  most one second at the 99th; a metadata store's snapshot fails with probability at most one in
+  a million; a monthly upgrade reaches its body within sixty seconds. The service bounds are
+  multiples of the hold, so that they move with the hardware.
+- **The hold is the store's own work, measured.** A write's hold of exclusion is the durable
+  transaction path, dominated by its syncs: on the development machine its median is about 37 ms
+  with one pointer replica and about 52 ms with three, its 99th percentile about 1.6 times the
+  median, and roughly one write in three hundred about eight times as long. The simulator draws
+  holds from that shape. Recovery is folded in as rarer, longer holds, and a callback's time adds
+  to every hold.
+- **Unordered service is a uniform random choice among waiters**, with a swept probability that a
+  request arriving while a released lock is handed to a woken waiter takes it first. Barging made
+  no measurable difference: a handoff takes microseconds against holds of tens of milliseconds.
+- **Method.** One seeded discrete-event simulation per configuration (SplitMix64, as the tests use),
+  ten independent replications, a warm-up discarded, and 95% intervals across replications. The
+  M/G/1 mean wait (Pollaczek-Khinchine) is the check: under Poisson arrivals every discipline's
+  simulated mean matches it, as the conservation law requires, and only the tails differ.
+- **A service is bounded by utilization, not by order.** Every discipline meets the budget up to
+  a utilization of about 0.6 and breaches it from about 0.7 -- with these holds, roughly twenty
+  writes a second -- first-come-first-served included. Unordered service's tail is longer, its
+  99.9th percentile about twice first-come-first-served's at high load, and bounded bypass recovers
+  most of the difference. So for a service the remedy for the budget is throttling below that
+  utilization or shorter holds; an order among waiters moves the breach point little.
+- **A cooperative database's bursts are where order matters.** A burst of as many writers as
+  processors breaches the budget under unordered service, while first-come-first-served and
+  bounded bypass meet it; first-come-first-served within a process does not help when each process
+  has one writer in the burst. A burst several times the number of processors breaches under every
+  discipline, because draining its writes takes longer than the budget: no order can help, only
+  fewer or shorter writes.
+- **A snapshot that spins fails whenever a write overlaps it.** The store's snapshot retries after
+  a yield, sixteen times, which together take microseconds; a write holds the count odd for tens of
+  milliseconds, so a read that begins during a write, or during which one begins, fails outright.
+  Its failure probability is about the write rate times the mean hold, which meets the budget only
+  below about one write in eleven hours. A snapshot that instead waits for the count to be even,
+  up to a deadline of a second, never failed in the simulation and took at most about half a second.
+  This is a defect against the budget, not a contention trade-off[^rd-1].
+- **A monthly upgrade waits for the longest-lived attachment.** Gate holds are a couple of
+  milliseconds, so overlapping shared holds keep an upgrader from the gate only at thousands of
+  attaches a second, and withholding shared admission shortens that wait without changing the
+  outcome. What dominates is the drain of the tiers: the upgrade's body waits until every handle
+  already attached detaches, which for minute-long attachments is minutes, and for hour-long ones
+  hours. So the budget is met only where attachments are short-lived, whatever the gate's
+  discipline; for a metadata store whose clients stay attached, an upgrade needs its attached
+  handles to let go when asked, which is an avoidance ODI-2 weighs before any fairness.
+- **A callback's time is paid by every writer.** It lengthens every hold, so a few milliseconds
+  against a hold of tens raises the utilization and the tail with it, and a callback as long as
+  half a hold pushes a service at moderate load past saturation.
+
+[^cq-1]: `CQ-1` in [CHECKLIST.md](CHECKLIST.md)
+[^rd-1]: `RD-1` in [CHECKLIST.md](CHECKLIST.md)
+
+## A change to the coordination state is delivered as a notification
+
+Work that needs the coordination state to change before it can go on -- a snapshot that found a
+write in progress, and needs it to end so that its read is undisturbed -- does not block a thread
+waiting for it. It registers interest through a primitive of the coordination interface: notify
+when the published modification count differs from this value, sampled earlier, or when this
+deadline passes. A notification rings the store engine's doorbell (see "A client reaches the store
+through a session and its queue pairs"), the same doorbell a client's submission rings, so the
+engine wakes for a change in the coordination state exactly as it wakes for new work, and takes up
+the entry that was waiting on it.
+
+The interface states the contract and never how the change is noticed, so that one implementation
+may look for it and another be told of it, and in neither does waiting work hold a thread. The
+file-based implementation's default keeps one poller per process for every registration on a store,
+sampling the count with backoff while any registration is outstanding and none while there is none,
+so the cost of waiting is one thread per process however much work waits. On Windows an
+implementation can instead request an opportunistic lock on the published count with overlapped
+I/O, which the OS breaks when a writer renames a fresh count over it, so the registration is
+notified from an I/O completion when the write completes and exclusion is released, with no thread
+polling or blocked; where the lock is not granted it falls back to the poller. A write holds the
+count odd for a durable transaction, tens of milliseconds, which is why neither form spins.
+
+A notification is only a hint: the engine samples the count again and decides from what it reads,
+so a spurious or lost notification costs time, never correctness, and the deadline bounds what a
+lost one costs. The primitive is built with the interface[^mp-5]; the synchronous snapshot waits on
+it until the queues replace it[^rd-1]; the Windows notified form is queued work of its own[^rd-2].
+
+[^rd-2]: `RD-2` in [CHECKLIST.md](CHECKLIST.md)
+
+## A client reaches the store through a session and its queue pairs
+
+All work is put on a queue, and the client awaits its completion entry. A client acquires a session
+on a store, and from the session one or more queue pairs: a submission queue the client writes and
+the store's engine reads, and a completion queue the engine writes and the client reads. Nothing the
+store does runs on a client's thread; a synchronous call, where one is offered, is a convenience
+that submits one entry and waits on the completion doorbell. Sessions and queues are strictly
+in-process.
+
+Each queue has one producer and one consumer. On the client's side both ends of a pair have one
+owner, who need not be one thread but is responsible for exclusive access; the types make that
+exclusivity hold by construction -- an end is `Send` and not `Sync`, and pushing or popping takes it
+`&mut` -- so a misuse is a compile error rather than a race. On the store's side the engine is the
+one consumer of every submission queue and the one producer of every completion queue.
+
+- **Two doorbells.** A push only queues. The submission doorbell is rung by the client, once for a
+  batch, to tell the engine there is work; the engine's waking is scheduled work, so ringing it
+  when the engine is already scheduled costs nothing more. The completion doorbell is rung by the
+  engine when a completion queue goes from empty to not empty, and is a waitable object -- an event
+  on Windows, its portable counterpart elsewhere -- so the client waits on it however it likes:
+  in a thread pool's wait, beside other handles in one multiple-object wait, or by pumping from a
+  thread of its own. A client is never made to dedicate a thread to a queue.
+- **The completion doorbell is a level, armed by a fixed protocol.** It means "there is something
+  to take", not "something arrived", so it survives being ignored by a wait that reported another
+  handle. A consumer takes everything, clears the doorbell, checks the queue again, and waits only
+  if that check finds it empty; skipping the check, or clearing after it, is a permanent hang, not
+  an occasional stall. The producer's publish-then-test and the consumer's clear-then-check are the
+  store-buffer shape, which release and acquire do not order, so each side carries a sequentially
+  consistent fence; and the doorbell's own record of being rung is cleared only after the event is
+  reset, so that it never claims rung over a doorbell that is dark. These rules, and the
+  measurements behind skipping a redundant ring, are those of the doorbell in the
+  [windows-waitable-queues](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/windows-waitable-queues)
+  crate, whose design this follows; the pumped delivery of
+  [durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring)
+  is the portable form of the same pattern, draining before it waits.
+- **Submitting reserves the completion.** An entry is accepted only if its completion queue has a
+  free slot, which the submission takes; with none free the submission is refused to the submitter,
+  on its own thread, at the moment it can act on it. So posting a completion never waits, and the
+  engine never waits on a client: a slow or absent reader of a completion queue cannot lengthen a
+  hold, which is the rule that caller code under exclusion waits on nothing (see "No caller code
+  runs under exclusion but the commit observer") applied to completions. Every accepted entry
+  receives exactly one completion while its pair exists.
+- **A pair's entries take effect in the order they were submitted.** Each entry takes effect after
+  every earlier entry of its own pair, so a client sees its own writes in the order it made them.
+  Between pairs nothing is ordered, and the engine may run one pair's reads together once the writes
+  before them have taken effect.
+- **An atomic operation is never cancelled.** Once submitted it is not broken; once the engine has
+  taken exclusion for it, it runs to completion whatever the client does. Dropping a pair is not
+  cancellation: entries the engine has not started are withdrawn and never run, entries it has
+  started complete, and their completions are discarded. A client that drops a pair with a write in
+  flight therefore does not learn that write's outcome, the same position as a write whose outcome is
+  unknown, and finds out the same way, by reading.
+- **A long enumeration ends when its handle is dropped.** An enumeration holds no exclusion, so
+  ending it releases only what a reader holds; it is dropping a handle, not cancelling an operation.
+- **No waiting holds a thread.** An entry that must wait -- for exclusion, for the admission gate,
+  for the modification count to be even -- is set aside by the engine with a registration on the
+  coordination interface's notification, which rings the engine's doorbell when the state changes
+  (see "A change to the coordination state is delivered as a notification"), so the engine's
+  threads do work and never wait for it.
+
+What this changes in the models is small, because the coordination model's process is an OS process
+and never modelled threads: the engine is the one actor in a process that takes its locks, and its
+writes are serialized by writer exclusion, so the entries of all its pairs are that process's
+operations one at a time, as the model already has them. Three things are new. The queues and their
+doorbells -- the reservation, exactly one completion, per-pair order, what dropping a pair does, and
+the arming protocol under which no completion is waited past -- are in-process and independent of
+the coordination state, so they get a small model of their own rather than enlarging the
+coordination model's state space[^qs-1]. The liveness the coordination model checks rests on waiting
+work being taken up again, which a notification makes an assumption about the notifier; the model
+gets the notification as a step of its own, under fairness, with a control in which a notification
+is lost[^nt-1]. And the store-buffer hazard is invisible to TLA+, whose steps are sequentially
+consistent, and to tests, which do not produce the interleaving: the fences are checked by a checker
+of the Rust memory model, chosen as a toolchain decision when the queues are built[^api-3].
+
+[^qs-1]: `QS-1` in [CHECKLIST.md](CHECKLIST.md)
+[^nt-1]: `NT-1` in [CHECKLIST.md](CHECKLIST.md)
+[^api-3]: `API-3` in [CHECKLIST.md](CHECKLIST.md)
+
+## The ring: a portable protocol over one platform primitive, behind a contract spec
+
+The queue pairs and doorbells of "A client reaches the store through a session and its queue pairs"
+follow the ring of
+[durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring),
+the most refined form of the pattern, and its doorbell rules from
+[windows-waitable-queues](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/windows-waitable-queues).
+They are built here, not taken as dependencies, and are meant to be the form those crates follow in
+turn.
+
+**Where it lives.** The ring is a module of canopy, `canopy::ring`, published with canopy and not as
+a crate of its own: it is not offered as a product, and a module keeps it out of the set of
+crates that must be published and versioned apart. The one platform primitive it needs lives in
+acadia, which holds the repository's operating-system calls and its `unsafe`, so canopy stays free
+of both. Lifting the ring into a crate later moves the module and nothing else.
+
+**Specialized by type, at no cost.** There are three layers, and only the lowest knows the platform:
+
+- **A signal, in acadia.** A sealed trait, `Signal`, with raise, lower and a bounded wait, and one
+  implementation per platform: a manual-reset event on Windows; an `eventfd` on Linux, non-blocking
+  and not in semaphore mode, which is readable while its counter is not zero and lowered by a read,
+  so it is a level as the event is; and a mutex and condition variable for every other target and
+  for tests. `PlatformSignal` names the platform's implementation by `cfg`.
+- **The protocol, in `canopy::ring`.** `Doorbell<S: Signal = PlatformSignal>` holds everything
+  that makes a doorbell correct -- the record of being rung that lets a redundant ring skip its
+  system call, the reset before that record is cleared, the sequentially consistent fence on each
+  side of the store-buffer shape -- once, for every platform. The queues are generic in the same
+  way. Every use is monomorphized: no trait object, no branch on the platform at run time, nothing
+  a hand-written Windows or Linux version would not also pay.
+- **Native waiting, by `cfg`.** The completion doorbell implements `AsHandle` on Windows and `AsFd`
+  on Linux, so a client composes it with a thread pool's wait, a multiple-object wait or `epoll`
+  without the ring knowing its event loop. Its portable `wait`, the pumped form, exists everywhere.
+  The platform appears in the public surface only as the standard library's own platform traits,
+  so portable code never names a platform type.
+
+The separation is the pattern's point. windows-waitable-queues joins its doorbell's protocol to
+`CreateEventW`, so its correctness argument cannot be reused on another platform, and its fences
+cannot be model-checked without the kernel object, which a checker of the Rust memory model cannot
+run. With the signal as a type parameter, the protocol is written and argued once, and checked with a
+signal the checker can run; durable-ioring's backend, whose notification is an associated type, is
+the same idea one level up.
+
+**A spec barrier at each layer.** Each layer has two TLA+ modules: a contract, which states only what
+a user of the layer can observe, and an implementation, which states the mechanism and is checked by
+TLC to refine the contract, as the coordination model refines the acquisition model. For the
+doorbell, the contract is that work raised is taken and that a waiter with something to take is
+woken, spurious wakes allowed; the implementation has the record of being rung, the signal's state
+and the consumer's take, clear, check again and wait, each step one atomic operation or fence point
+of the code. For the ring, the contract is exactly one completion per accepted entry, per-pair order,
+a submission refused when its completion has no slot, and what dropping a pair does; its
+implementation uses the doorbell only through the doorbell's contract. Every spec above a layer --
+the ring's over the doorbell's, the coordination model's notification over the ring's -- composes
+with the contract alone, so (a) no consumer can name the mechanism, and its specs stay valid through
+any change the refinement still admits, and (b) the mechanism is validated where it lives, by the
+refinement, by controls that break each rule and must fail it, and by probes.
+
+The barrier has a floor, and it is stated rather than assumed: TLA+'s steps are sequentially
+consistent, so the implementation spec is sound only if the code realizes each of its steps
+atomically, which the fences are for. That is checked below the barrier, by a checker of the Rust
+memory model running the protocol over a signal it can model, with the correspondence between each
+spec step and the code that realizes it written beside the code; and the code is held to the
+contract by tests that drive scripted interleavings over a scripted signal and check every outcome
+against it[^rg-1][^rg-2][^qs-1].
+
+[^rg-1]: `RG-1` in [CHECKLIST.md](CHECKLIST.md)
+[^rg-2]: `RG-2` in [CHECKLIST.md](CHECKLIST.md)

@@ -31,8 +31,8 @@
 (* transaction's two swaps: its first effect changes a and its last        *)
 (* changes b, so a # b is a store half applied. The modification count     *)
 (* brackets the operation: the opening raise is published before the first *)
-(* effect and the closing raise after the last. An operation nested under  *)
-(* the hold changes nothing: only the outermost raises the count. A        *)
+(* effect and the closing raise after the last. Nothing nests under a      *)
+(* hold: no caller code that could call the store again runs under it. A   *)
 (* publication is two steps, prepare and publish, and only the second is   *)
 (* visible, so a writer that dies or fails between them leaves the         *)
 (* previous value published. A write that fails after its first effect, or *)
@@ -183,14 +183,14 @@
 (* oldest admissible schema, and no attached handle speaks a schema below  *)
 (* it.                                                                     *)
 (*                                                                         *)
-(* The cyclic workload (Cyclic). Liveness needs behaviours that go on     *)
-(* forever in a finite state graph. Under Cyclic a process that exits may  *)
-(* attach again, requests, reads, discoveries and listings are no longer   *)
-(* counted, and the count, the generation and the versions wrap within     *)
-(* 1..CycleMod. Deaths, crashes and upgrades stay bounded: they are        *)
-(* monotone, so every behaviour ends in a cycle without them. Two values   *)
-(* compared across a wrap can be equal when they should not, so a cyclic   *)
-(* configuration checks liveness only (CoordinationLiveness.tla).          *)
+(* Callbacks (Callbacks). The store calls back into a caller once an       *)
+(* operation's effects are done, still inside it and under exclusion, as   *)
+(* the commit observer is called. A callback waits on nothing, does not    *)
+(* call into the store and returns, so it is one step of its holder,       *)
+(* enabled whenever it is reached, that changes nothing but where its      *)
+(* holder is (DESIGN-NOTES "No caller code runs under exclusion but the    *)
+(* commit observer"). How long it takes is not the model's concern: no     *)
+(* step has a duration.                                                    *)
 (*                                                                         *)
 (* Steps are sequentially consistent. The contract's ordering rules -- a   *)
 (* raise is ordered with the holder's filesystem operations, and a sample  *)
@@ -213,8 +213,12 @@
 (*                              as it is stored.                           *)
 (*   "cache-always-kept"        a handle keeps its cache whatever the      *)
 (*                              generation it finds.                       *)
-(*   "inner-restores-parity"    a nested operation, when it ends, raises   *)
-(*                              the count as an outermost one does.        *)
+(*   "callback-changes-the-store"                                          *)
+(*                              a callback writes to the store.            *)
+(*   "callback-waits-for-exclusion"                                        *)
+(*                              a callback waits until nobody holds        *)
+(*                              exclusion, which its own holder does.      *)
+(*   "callback-never-returns"   a callback does not return.                *)
 (*   "upgrader-keeps-tiers"     an upgrader keeps its shared tiers while   *)
 (*                              it waits for the gate exclusively.         *)
 (*   "upgrader-holds-exclusion" an upgrader begins while it holds writer   *)
@@ -347,10 +351,9 @@ CONSTANTS
                   \* one abstract operation
     UnloggedRecovery, \* whether a told holder recovers an unlogged write
     MixedWrites,  \* whether each write chooses to be a transaction or not
-    Cyclic,       \* whether processes go on writing, reading and attaching forever
-    CycleMod,     \* under Cyclic, the bound the counters wrap at; even
     UpSteps,      \* how many migration steps an upgrade's body makes; 0 leaves the
                   \* body out, and an upgrade completes in one step
+    Callbacks,    \* whether the store calls back into a caller under exclusion
     Scenario,     \* which of the Scenarios the processes are
     Control       \* the fault under test
 
@@ -448,15 +451,12 @@ UpTarget(p) == SpeaksOf[p][UpL(p)] + 1
 
 Max(a, b) == IF a >= b THEN a ELSE b
 
-\* Under Cyclic the count, the generation and the versions wrap within 1..CycleMod, so a
-\* behaviour can repeat a state; an even bound keeps the count's parity. Nothing that
-\* compares two of their values is checked in a cyclic configuration.
-Nx(x) == IF Cyclic THEN (x % CycleMod) + 1 ELSE x + 1
-Pv(x) == IF Cyclic /\ x <= 1 THEN CycleMod ELSE x - 1
-\* Under Cyclic the bounds on requests, reads, discoveries and listings are lifted, and a
-\* bound of 0 still leaves the step out.
-Room(c, m) == IF Cyclic THEN m > 0 ELSE c < m
-Tick(c) == IF Cyclic THEN c ELSE c + 1
+\* The next and previous value of the count, the generation or a version, and whether a
+\* bounded step has room left and its count once it is taken.
+Nx(x) == x + 1
+Pv(x) == x - 1
+Room(c, m) == c < m
+Tick(c) == c + 1
 
 ASSUME Scenario \in DOMAIN Scenarios
 ASSUME Procs # {} /\ Procs = 1..Len(RoleOf)
@@ -468,15 +468,14 @@ ASSUME MixedWrites \in BOOLEAN /\ (MixedWrites => UnloggedRecovery)
 ASSUME UpSteps \in Nat /\ (UpSteps > 0 => Txn)
 ASSUME UpSteps > 0 => Control # "upgrader-holds-exclusion"
 ASSUME NSlots \in Nat /\ MaxListings \in Nat /\ MaxDiscoveries \in Nat
-ASSUME MaxUpgrades \in Nat
-ASSUME Cyclic \in BOOLEAN /\ CycleMod \in Nat
-ASSUME Cyclic => (CycleMod > 0 /\ CycleMod % 2 = 0)
+ASSUME MaxUpgrades \in Nat /\ Callbacks \in BOOLEAN
 ASSUME \A p \in Procs : RoleOf[p] \in {"reader", "writer", "upgrader"}
 ASSUME \A l \in 1..Len(Oldest) : Oldest[l] <= Current[l]
 ASSUME Control \in {"none", "replace-without-fence", "unlock-before-clear",
                     "ignore-restart", "assembled-sample", "late-invalidation",
                     "read-untrusted-as-stored", "cache-always-kept",
-                    "inner-restores-parity", "upgrader-keeps-tiers",
+                    "callback-changes-the-store", "callback-waits-for-exclusion",
+                    "callback-never-returns", "upgrader-keeps-tiers",
                     "upgrader-holds-exclusion", "unsafe-writer-tier-first",
                     "gate-held-through-writer-tier",
                     "unsafe-upgrade-leaves-readers", "check-before-writer-tier",
@@ -511,9 +510,9 @@ Layers == 1..Len(Oldest)
 \* that takes it for its body.
 Acquisitions == MaxRequests + MaxUpgrades
 
-\* The most any count or sample can reach: two raises per operation, one more
-\* for each operation's nested end under a control, and one for a sample of
-\* state that cannot be vouched for.
+\* The most any count or sample can reach: at most three raises for each acquisition
+\* -- the opening, the closing and a recovery's -- and one for a sample of state
+\* that cannot be vouched for.
 MaxCount == 3 * Acquisitions + 1
 
 \* The most the version of the shared durable state can reach: each transaction
@@ -625,13 +624,13 @@ core   == <<pc, att, areq, lease, schema, bystanders>>
 \* replaced the record.
 \* A holder is then "held" before an operation; "opening" while the opening
 \* raise is prepared and not yet published; "open" once it is published and
-\* before the first effect; "writing" between the effects, or "nested" while an
-\* operation nested under the hold runs there; "wrote" after the last;
+\* before the first effect; "writing" between the effects; "wrote" after the last;
+\* "observed" once a callback has returned, under Callbacks;
 \* "closing" while the closing raise is prepared and not yet published; and
 \* "closed" once the operation is over. Under Txn an operation goes from "open"
 \* through "begun" (the begin record is in the log), "ingested" (the bodies are
 \* staged), "prepared" (the prepare record is in the log: the commit point),
-\* "writing" and "nested" (between the swaps), "applied" (every swap has
+\* "writing" (between the swaps), "applied" (every swap has
 \* landed) and "ended" (the end record is in the log) to "wrote". "told" holds
 \* exclusion having been told recovery is required, or having failed
 \* unresolved, and may only release it or run recovery. A recoverer is in
@@ -653,7 +652,7 @@ core   == <<pc, att, areq, lease, schema, bystanders>>
 \* is being dropped and is leaving the registry before it lets go of its tiers.
 LiveStates == {"attaching", "converting", "convertingX", "idle", "waiting",
                "locked", "held", "opening", "open", "begun", "ingested",
-               "prepared", "writing", "nested", "applied", "ended", "wrote",
+               "prepared", "writing", "applied", "ended", "wrote", "observed",
                "closing", "closed", "told", "releasing", "unlocked", "detached",
                "detaching", "recSwap1", "recSwap2", "recEnd", "recReset",
                "recSweep", "recCount", "recClear", "upBody", "recUp",
@@ -663,11 +662,11 @@ LiveStates == {"attaching", "converting", "convertingX", "idle", "waiting",
 InOperationStates == LiveStates \ {"attaching", "converting", "convertingX",
                                    "idle", "detached", "detaching"}
 States == {"new", "exited", "dead"} \cup LiveStates
-OpenStates == {"open", "begun", "ingested", "prepared", "writing", "nested",
-               "applied", "ended", "wrote", "closing", "upBody"}
+OpenStates == {"open", "begun", "ingested", "prepared", "writing",
+               "applied", "ended", "wrote", "observed", "closing", "upBody"}
 \* Where a holder is inside a transaction, between its begin record and the
 \* sweep of its staging.
-TxnStates == {"begun", "ingested", "prepared", "writing", "nested", "applied",
+TxnStates == {"begun", "ingested", "prepared", "writing", "applied",
               "ended"}
 \* Where a holder is running recovery, which holds exclusion and the record.
 RecStates == {"recWhole", "recSwap1", "recSwap2", "recEnd", "recReset", "recSweep",

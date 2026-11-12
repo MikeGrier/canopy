@@ -61,6 +61,8 @@ $dir = Join-Path $repoRoot '.scratch/sweep-fail'
 Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Copy-Item (Join-Path $specDir 'Coordination*.tla') $dir
+# The coordination model instances the acquisition model it refines.
+Copy-Item (Join-Path $specDir 'Acquisition.tla') $dir
 
 # A configuration made from the real control: its header lines replaced, and optionally its
 # Control constant set to something that breaks no rule.

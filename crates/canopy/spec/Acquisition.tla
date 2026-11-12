@@ -15,8 +15,13 @@ EXTENDS Naturals, Sequences, TLC
 
 CONSTANTS
     Scenario,        \* names the role of each process, from Scenarios
-    MaxUpgrades,     \* how many upgrades may start, in all
-    ExclusiveFirst   \* no handle passes the gate shared while an upgrader waits for it
+    MaxUpgrades,     \* how many upgrades may start, in all, when CountUpgrades
+    ExclusiveFirst,  \* no handle passes the gate shared while an upgrader waits for it
+    CountUpgrades,   \* whether upgrade starts are counted and bounded by MaxUpgrades
+    Escapes,         \* whether a waiter may give up and a drain be cancelled
+    Refusals,        \* whether the check may refuse a handle, and an upgrade holding its
+                     \* tiers find the schema moved and give up
+    Deaths           \* whether a process may die, or the host crash, releasing every hold
 
 \* A configuration cannot state a sequence, so it names one. An upgrader unsafe for
 \* readers takes the reader tier exclusively; a safe one leaves readers attached.
@@ -28,8 +33,18 @@ Scenarios ==
     @@ "SafeAndWriter" :> <<"safeUpgrader", "writer">>
     @@ "UnsafeAndTwoReaders" :> <<"unsafeUpgrader", "reader", "reader">>
     @@ "UnsafeWriterReader" :> <<"unsafeUpgrader", "writer", "reader">>
+    @@ "ReaderAndWriter" :> <<"reader", "writer">>
+    @@ "UnsafeAndWriter" :> <<"unsafeUpgrader", "writer">>
+    @@ "TwoSafe" :> <<"safeUpgrader", "safeUpgrader">>
+    @@ "SafeWriterReader" :> <<"safeUpgrader", "writer", "reader">>
+    @@ "SafeUnsafeWriter" :> <<"safeUpgrader", "unsafeUpgrader", "writer">>
+    @@ "TwoSafeWriter" :> <<"safeUpgrader", "safeUpgrader", "writer">>
+    @@ "SafeWriterWriter" :> <<"safeUpgrader", "writer", "writer">>
+    @@ "TwoSafeAndReader" :> <<"safeUpgrader", "safeUpgrader", "reader">>
+    @@ "SafeUnsafeReader" :> <<"safeUpgrader", "unsafeUpgrader", "reader">>
 
 ASSUME Scenario \in DOMAIN Scenarios /\ MaxUpgrades \in Nat /\ ExclusiveFirst \in BOOLEAN
+ASSUME {CountUpgrades, Escapes, Refusals, Deaths} \subseteq BOOLEAN
 
 RoleOf == Scenarios[Scenario]
 Procs == 1..Len(RoleOf)
@@ -154,8 +169,8 @@ Release(p) ==
 
 StartUpgrade(p) ==
     /\ Upgrader(p) /\ pc[p] = "idle" /\ att[p] = "attached"
-    /\ upgrades < MaxUpgrades
-    /\ upgrades' = upgrades + 1
+    /\ CountUpgrades => upgrades < MaxUpgrades
+    /\ upgrades' = IF CountUpgrades THEN upgrades + 1 ELSE upgrades
     /\ pc' = Set(pc, p, "converting")
     /\ att' = Set(att, p, "draining")
     /\ UNCHANGED lockHolder
@@ -197,14 +212,74 @@ EndUpgrade(p) ==
     /\ UNCHANGED <<lockHolder, upgrades>>
 
 -----------------------------------------------------------------------------
+(* The ways a wait or a hold ends other than by service, each behind its   *)
+(* switch. None is fair: each may happen, and none must.                   *)
+
+\* A handle waiting to attach, or an upgrader waiting for the gate or a tier, gives up
+\* and lets go of whatever it holds; the handle is gone.
+GiveUp(p) ==
+    /\ Escapes
+    /\ att[p] \in {"wGate", "hasGate", "rd", "uWGate", "uGate", "uRd"}
+    /\ att' = Set(att, p, "off")
+    /\ pc' = Set(pc, p, "exited")
+    /\ UNCHANGED <<lockHolder, upgrades>>
+
+\* A writer waiting for exclusion withdraws, or is refused, and stays attached.
+Withdraw(p) ==
+    /\ Escapes /\ pc[p] = "waiting"
+    /\ pc' = Set(pc, p, "idle")
+    /\ UNCHANGED <<att, lockHolder, upgrades>>
+
+\* A drain is cancelled, and the handle stays attached.
+CancelDrain(p) ==
+    /\ Escapes /\ att[p] = "draining"
+    /\ att' = Set(att, p, "attached")
+    /\ pc' = Set(pc, p, "idle")
+    /\ UNCHANGED <<lockHolder, upgrades>>
+
+\* The check, under the tiers it needs, refuses the handle, which lets them go.
+RefuseAttach(p) ==
+    /\ Refusals /\ att[p] = "tiers"
+    /\ att' = Set(att, p, "off")
+    /\ pc' = Set(pc, p, "exited")
+    /\ UNCHANGED <<lockHolder, upgrades>>
+
+\* An upgrade holding its tiers finds the schema moved and gives up, and its handle
+\* with it.
+UpgradeMoved(p) ==
+    /\ Refusals /\ att[p] = "uTiers"
+    /\ att' = Set(att, p, "off")
+    /\ pc' = Set(pc, p, "exited")
+    /\ UNCHANGED <<lockHolder, upgrades>>
+
+\* EXTERNAL: a process dies, and the OS releases everything it holds.
+Die(p) ==
+    /\ Deaths /\ pc[p] \notin {"new", "exited"}
+    /\ att' = Set(att, p, "off")
+    /\ pc' = Set(pc, p, "exited")
+    /\ lockHolder' = IF lockHolder = p THEN None ELSE lockHolder
+    /\ UNCHANGED upgrades
+
+\* EXTERNAL: the host crashes, and every process that has started dies.
+Crash ==
+    /\ Deaths
+    /\ att' = [p \in Procs |-> "off"]
+    /\ pc' = [p \in Procs |-> IF pc[p] = "new" THEN "new" ELSE "exited"]
+    /\ lockHolder' = None
+    /\ UNCHANGED upgrades
+
+-----------------------------------------------------------------------------
 
 Next ==
-    \E p \in Procs :
+    \/ \E p \in Procs :
         \/ BeginAttach(p) \/ TakeGateS(p) \/ TakeReaderS(p) \/ DropGate(p)
         \/ TakeWriterS(p) \/ Admit(p) \/ Exit(p)
         \/ Request(p) \/ Lock(p) \/ Release(p)
         \/ StartUpgrade(p) \/ DrainDone(p) \/ TakeGateX(p) \/ TakeFirstTier(p)
         \/ TakeSecondTier(p) \/ BeginBody(p) \/ EndUpgrade(p)
+        \/ GiveUp(p) \/ Withdraw(p) \/ CancelDrain(p) \/ RefuseAttach(p)
+        \/ UpgradeMoved(p) \/ Die(p)
+    \/ Crash
 
 Spec == Init /\ [][Next]_vars
 
@@ -299,6 +374,17 @@ AnyAcq == \E p \in Procs : Takes(p, Resources)
 \* The store as a whole makes progress: while anyone waits for a resource, some
 \* resource is acquired again and again.
 StoreMakesProgress == []<>NobodyWaits \/ []<><<AnyAcq>>_vars
+
+\* A waiter that gives up or dies leaves its wait, which nothing obliges it to do.
+AnyLeave == \/ \E p \in Procs : GiveUp(p) \/ Withdraw(p) \/ Die(p)
+            \/ Crash
+
+\* Audience: internal.
+\* Where waiters may leave, the store makes progress or they go on leaving: while anyone
+\* waits, some resource is acquired or some waiter leaves again and again. A waiter that
+\* leaves for ever is not one the store failed to serve.
+StoreMakesProgressOrWaitersLeave ==
+    []<>NobodyWaits \/ []<><<AnyAcq \/ AnyLeave>>_vars
 
 \* Audience: client. An upgrade that holds its tiers completes. Shows through: the
 \* return of upgrade_schema.

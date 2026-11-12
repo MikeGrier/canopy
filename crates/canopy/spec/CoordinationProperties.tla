@@ -220,8 +220,19 @@ ReadersAreConsistent ==
 \* back, leaves the store settled: its log resolved and its staging swept.
 AFinishedOperationLeavesTheStoreSettled ==
     \A p \in Procs :
-        pc[p] \in {"wrote", "closing", "closed"} =>
+        pc[p] \in {"wrote", "observed", "closing", "closed"} =>
             (a = b /\ log \in {"empty", "ended"} /\ stage = 0)
+
+\* Audience: internal.
+\* A callback the store makes under exclusion changes nothing but where its holder is: it
+\* does not call into the store, so neither the store, the coordination state nor any
+\* other process sees it.
+ACallbackChangesOnlyWhereItsHolderIs ==
+    [][\A p \in Procs :
+          (pc[p] = "wrote" /\ pc'[p] = "observed") =>
+              /\ \A q \in Procs \ {p} : pc'[q] = pc[q]
+              /\ UNCHANGED <<req, eligible, coord, store, handle, reader, diedIn, counts,
+                             att, areq, lease, schema, reg>>]_vars
 
 \* A read whose last step this is, and the value of its second sample.
 Finishing(p) ==

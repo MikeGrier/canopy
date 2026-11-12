@@ -65,7 +65,7 @@ Refuse(p) ==
 \* write, and only then is checked, so an upgrade cannot complete between the
 \* check and the attachment. A detached handle attaches again the same way.
 BeginAttach(p) ==
-    /\ pc[p] \in {"new", "detached"} \cup (IF Cyclic THEN {"exited"} ELSE {})
+    /\ pc[p] \in {"new", "detached"}
     /\ rst[p] = "out"
     /\ pc' = Set(pc, p, "attaching")
     /\ att' = Set(att, p, "wGate")

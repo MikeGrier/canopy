@@ -13,7 +13,8 @@
 (*   CoordinationTransactionProperties transactions, recovery, discovery   *)
 (*   CoordinationUpgradeProperties     the upgrade body, reader schemas    *)
 (*   CoordinationWitnesses   properties a reachable state or step violates *)
-(*   CoordinationLiveness    fairness, progress and the cyclic witnesses   *)
+(*   CoordinationLiveness    every hold ends, under a holder's fairness    *)
+(*   CoordinationAcquisition the refinement of Acquisition.tla             *)
 (***************************************************************************)
-EXTENDS CoordinationLiveness
+EXTENDS CoordinationAcquisition
 =============================================================================

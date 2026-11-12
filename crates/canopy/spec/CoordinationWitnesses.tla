@@ -46,8 +46,8 @@ Witness_AnOperationIsRolledBack ==
 Witness_AnOperationEndsWithoutAnEffect ==
     [][~(\E p \in Procs : pc[p] = "open" /\ pc'[p] = "wrote")]_vars
 
-Witness_AnInnerOperationRuns ==
-    [][~(\E p \in Procs : pc[p] = "nested" /\ pc'[p] = "writing")]_vars
+Witness_ACallbackReturns ==
+    [][~(\E p \in Procs : pc[p] = "wrote" /\ pc'[p] = "observed")]_vars
 
 Witness_ASettledReadIsAccepted ==
     [][~(\E p \in Procs : Accepted(p))]_vars

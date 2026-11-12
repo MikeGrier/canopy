@@ -28,7 +28,7 @@ TransactionStateMatchesTheLog ==
         \A p \in Procs :
             /\ pc[p] = "begun" => (log = "begun" /\ stage = 0)
             /\ pc[p] = "ingested" => (log = "begun" /\ stage # 0)
-            /\ pc[p] \in {"prepared", "writing", "nested", "applied"} =>
+            /\ pc[p] \in {"prepared", "writing", "applied"} =>
                   (log = "prepared" /\ ptgt # 0 /\ stage = ptgt)
             /\ pc[p] = "ended" => log = "ended"
 

@@ -9,7 +9,7 @@
 # and a header that states what TLC must report and, for a slow one, `Tier: milestone` or
 # `Tier: evidence`; both are
 # read by tools/run-tlc-all.ps1. The tables are the parts under tools/gen-coordination-cfgs/ --
-# constants, main configurations, controls, witnesses and liveness -- which this script runs in that order,
+# constants, main configurations, controls, witnesses, liveness and callbacks -- which this script runs in that order,
 # in its own scope. It removes every existing Coordination*.cfg first, so a configuration dropped
 # from a table leaves the spec directory. Change a configuration by changing its table, never the
 # generated file; regenerating changes no file when the tables have not changed.
@@ -26,6 +26,7 @@ Get-ChildItem $spec -Filter 'Coordination*.cfg' | Remove-Item
 . (Join-Path $parts 'Controls.ps1')
 . (Join-Path $parts 'Witnesses.ps1')
 . (Join-Path $parts 'Liveness.ps1')
+. (Join-Path $parts 'Callbacks.ps1')
 
 $missing = @($milestoneTier + $evidenceTier | Where-Object { -not (Test-Path (Join-Path $spec "$_.cfg")) })
 if ($missing.Count -gt 0) { throw "a tier names no configuration: $($missing -join ', ')" }

@@ -30,8 +30,6 @@ $witnesses = @(
       'an operation fails after its first effect and is rolled back'),
     @('AnOperationEndsWithoutAnEffect', 'PROPERTIES', $ex, 1, 0, 0, 0,
       'an operation ends having found nothing to change'),
-    @('AnInnerOperationRuns', 'PROPERTIES', $ex, 1, 0, 0, 0,
-      'an operation nested under the hold runs and ends'),
     @('ASettledReadIsAccepted', 'PROPERTIES', $ex, 1, 0, 0, 1,
       'a read is classified as settled'),
     @('ATornReadIsRejected', 'PROPERTIES', $ex, 1, 0, 0, 1,

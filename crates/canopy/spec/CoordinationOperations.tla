@@ -173,25 +173,23 @@ PrepareFails(p) ==
     /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, a, b,
                    stage, mygen, reader, diedIn, counts>>
 
-\* An operation nested under the hold changes nothing: the depth is tracked, so
-\* an inner operation never restores even parity early.
-EnterInner(p) ==
-    /\ pc[p] = "writing"
-    /\ pc' = Set(pc, p, "nested")
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
-
-LeaveInner(p) ==
-    /\ pc[p] = "nested"
-    /\ pc' = Set(pc, p, "writing")
-    /\ count' = IF Control = "inner-restores-parity" THEN Nx(count) ELSE count
-    /\ scache' = IF Control = "inner-restores-parity" THEN Cleared ELSE scache
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, fence, trusted, gen, store,
-                   handle, rphase, rbefore, rseenA, rseenB, rpart, disc, diedIn,
-                   counts>>
+\* Under Callbacks the store calls back into the caller once the effects are done, inside
+\* the operation and under exclusion: a step of the holder that waits on nothing and
+\* changes nothing but where the holder is. Each control breaks one clause of that rule.
+Observe(p) ==
+    /\ Callbacks /\ pc[p] = "wrote"
+    /\ Control # "callback-never-returns"
+    /\ Control = "callback-waits-for-exclusion" => lockHolder = None
+    /\ pc' = Set(pc, p, "observed")
+    /\ IF Control = "callback-changes-the-store"
+          THEN /\ a' = Nx(a)
+               /\ UNCHANGED <<adm, req, eligible, coord, b, shared, log, stage, ptgt,
+                              handle, reader, diedIn, counts>>
+          ELSE UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
 
 \* The closing raise is prepared, then published.
 BeginClose(p) ==
-    /\ pc[p] = "wrote"
+    /\ pc[p] = IF Callbacks THEN "observed" ELSE "wrote"
     /\ pc' = Set(pc, p, "closing")
     /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
 
