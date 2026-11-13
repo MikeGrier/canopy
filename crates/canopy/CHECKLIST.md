@@ -11,12 +11,12 @@ names the ID that design notes and the archive cite it by.
 
 Each item here names the event it waits on; it joins a milestone once that event has happened.
 
-- [ ] **G-1** (was `SPEC-2.4`) -- Verify the scheduled TLA+ workflow once it is on the default branch, which is
-  where GitHub dispatches a workflow from: a manual dispatch runs the probes and the sweep, and a
-  second dispatch with nothing changed skips them. Time the first run on the hosted runner, and
-  decide with the engineer whether the runner stays hosted or becomes self-hosted, recorded in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md) "Runs that follow a spec edit are selected by what the edit
-  reaches". Waits on this branch merging.
+- [ ] **G-1** (was `SPEC-2.4`) -- Verify the TLA+ sweep workflow on `main`, as
+  [DESIGN-NOTES.md](DESIGN-NOTES.md) "The full sweep runs when main changes what it covers"
+  specifies: the push that brings it to `main` starts a run of the probes and the sweep, and a push
+  that changes nothing it covers starts none. Time that run on the hosted runner, and decide with
+  the engineer whether the runner stays hosted or becomes self-hosted, recorded in the same
+  decision. Waits on the workflow reaching `main`.
 
 - [ ] **G-2** (was `RG-4`) -- A safe accessor for a consumer's own native wait on the doorbell on Windows, once
   the windows-threadpool-sys crate family provides waits on an event the waiter cannot change, as

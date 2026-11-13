@@ -1900,7 +1900,8 @@ no creation resumes over, since the documents are something creation does not ma
 contract step 9 makes the marker durable before it opens, so step 10 loses nothing an open relied
 on.
 
-[^ac-1]: `AC-1` in [CHECKLIST.md](../acadia/CHECKLIST.md#ac-1)
+[^ac-1]: `AC-1` in [acadia's COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#ac-1)
+    [completed 2026-11-12; `f63b76f`]
 
 ## A transaction and the commit log, modelled in `Coordination.tla`, 2026-11-11
 
@@ -3568,7 +3569,7 @@ consistent, and to tests, which do not produce the interleaving: the fences are 
 of the Rust memory model, chosen as a toolchain decision when the queues are built[^api-3].
 
 [^qs-1]: `QS-1` in [CHECKLIST.md](CHECKLIST.md)
-[^nt-1]: `NT-1` in [CHECKLIST.md](CHECKLIST.md)
+[^nt-1]: `NT-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#nt-1) [completed 2026-11-13; `d01bc42`]
 [^api-3]: `API-3` in [CHECKLIST.md](CHECKLIST.md)
 
 ## The ring: a portable protocol over one platform primitive, behind a contract spec
@@ -3640,8 +3641,8 @@ spec step and the code that realizes it written beside the code; and the code is
 contract by tests that drive scripted interleavings over a scripted signal and check every outcome
 against it[^rg-1][^rg-2][^qs-1].
 
-[^rg-1]: `RG-1` in [CHECKLIST.md](CHECKLIST.md)
-[^rg-2]: `RG-2` in [CHECKLIST.md](CHECKLIST.md)
+[^rg-1]: `RG-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#rg-1) [completed 2026-11-12; `f63b76f`]
+[^rg-2]: `RG-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#rg-2) [completed 2026-11-12; `f63b76f`]
 
 ## The contract promises no order among waiters at any point of conflict, 2026-11-12
 
@@ -3741,6 +3742,11 @@ current spec[^odi-4].
 [^odi-4]: `ODI-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#odi-4) [completed 2026-11-12]
 
 ## Runs that follow a spec edit are selected by what the edit reaches, 2026-11-12
+
+> **SUPERSEDED in part, 2026-11-13, by "The full sweep runs when main changes what it covers".**
+> The full sweep and probe run are not scheduled and keep no record in a workflow cache; the last
+> bullet below, and the workflow's cache in the bullet on the record, no longer hold. Selection by
+> what an edit reaches is unchanged.
 
 Once a model's rules are authored, a spec edit is usually local -- to a property, a witness, a
 scenario -- and running every configuration for it spends hours to learn nothing. So the sweep and
@@ -3937,7 +3943,7 @@ steps composed in the only orders the protocol allows.
   search runs each step to completion, as TLA+ does, so it cannot see a step's stores reordered; that
   floor is the fences', and the engineer owns establishing it[^rg-2-1].
 
-[^rg-2-1]: `RG-2.1` in [CHECKLIST.md](CHECKLIST.md)
+[^rg-2-1]: `RG-2.1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#rg-21) [completed 2026-11-13; `d01bc42`]
 
 ## The doorbell's signal is sealed, 2026-11-13
 
@@ -3989,8 +3995,9 @@ behind its signal, or anything from which safe code can reach a handle or descri
   [WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md](../../WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md)[^rg-4].
   On Linux the descriptor stays behind `unsafe`, and `watch` is the safe path.
 
-[^ac-4]: `AC-4` in [CHECKLIST.md](../acadia/CHECKLIST.md#ac-4)
-[^rg-3]: `RG-3` in [CHECKLIST.md](CHECKLIST.md)
+[^ac-4]: `AC-4` in [acadia's COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#ac-4)
+    [completed 2026-11-13; `191fbf2`]
+[^rg-3]: `RG-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#rg-3) [completed 2026-11-13; `d01bc42`]
 [^rg-4]: `RG-4` in [CHECKLIST.md](CHECKLIST.md)
 
 ## The doorbell's orderings, checked by loom, 2026-11-13
@@ -4042,7 +4049,7 @@ of the Rust memory model the engineer chose for the ring, runs its own code[^rg-
   producer's `Test` acquires, which happens before that producer's raise, so the raise is the
   later change to the level.
 
-[^rg-2-2]: `RG-2.2` in [CHECKLIST.md](CHECKLIST.md)
+[^rg-2-2]: `RG-2.2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#rg-22) [completed 2026-11-13; `d01bc42`]
 
 ## A consumer watches the doorbell from the thread pool, 2026-11-13
 
@@ -4066,7 +4073,7 @@ thread of one's own; the `unsafe` accessors remain for a consumer's own event lo
   doorbell with a thread pool through the `unsafe` accessors, so canopy dropped its
   `windows-threadpool-sys` and Linux `libc` dev-dependencies.
 
-[^rg-3]: `RG-3` in [CHECKLIST.md](CHECKLIST.md)
+[^rg-3]: `RG-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#rg-3) [completed 2026-11-13; `d01bc42`]
 
 ## A notification is a step of the coordination model, 2026-11-13
 
@@ -4095,4 +4102,27 @@ configuration[^nt-1]. With it on, a wait does not see the change it waits for:
   which nearly every step names as unchanged, so only the notification's own steps change it and
   no other step had to be edited to leave it alone.
 
-[^nt-1]: `NT-1` in [CHECKLIST.md](CHECKLIST.md)
+[^nt-1]: `NT-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#nt-1) [completed 2026-11-13; `d01bc42`]
+
+## The full sweep runs when main changes what it covers, 2026-11-13
+
+The full sweep and the probe run run on a hosted Windows runner when a push to `main` changes the
+specs, their configurations and scenario tables, the tools, or the workflow that pins TLC, and on
+demand ([tla-sweep.yml](../../.github/workflows/tla-sweep.yml)). An idle repository runs nothing.
+
+- **The trigger is the change itself.** The workflow's path filter is the whole of "has anything it
+  covers changed", so no run has to start in order to find out that nothing did, and nothing has to
+  remember the last green run. A record kept in a workflow cache would not stay remembered: GitHub
+  evicts a cache entry left unread for seven days, so on an idle repository a weekly run would find
+  its record gone and run the whole sweep again.
+- **A burst of pushes is one run.** The workflow's concurrency group runs one sweep at a time and
+  never cancels it; a newer pending run replaces an older one, and the run that starts checks out
+  the newest commit, so it covers every push it replaced.
+- **A failed sweep stays failed until something it covers changes** or it is run on demand. It is
+  not repeated on an idle repository, and its status on `main` is the record that it failed.
+- **The sweep is a full run.** It ignores the record of green runs that selection keeps (see "Runs
+  that follow a spec edit are selected by what the edit reaches"), which stays local and git-ignored.
+- **Whether a hosted runner finishes within its six-hour limit** is decided from the first run that
+  follows this decision reaching `main`[^g-1].
+
+[^g-1]: `G-1` in [CHECKLIST.md](CHECKLIST.md)
