@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98
+      - uses: dtolnay/rust-toolchain@1.120
       - name: Verify tag matches every publishable crate version
         run: |
           mismatches="$(cargo metadata --no-deps --format-version 1 | jq -r --arg tag "${GITHUB_REF_NAME}" \
