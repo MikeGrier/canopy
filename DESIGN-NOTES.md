@@ -29,3 +29,17 @@ can understand the present one, and it goes stale the moment the code moves agai
 actionable rules, including the check to run on every comment, are in
 [.github/copilot-instructions.md](.github/copilot-instructions.md) under "Comments describe the
 code as it is, never how it got there".
+
+## Windows thread-pool interactions go through the windows-threadpool-sys crates, 2026-11-12
+
+Any code in this repository that interacts with the Windows thread pool -- library or test --
+does so through the crates published from
+[MikeGrier/windows-threadpool-sys](https://github.com/MikeGrier/windows-threadpool-sys)
+(`windows-threadpool-sys` for waits, work, timers and I/O), never through raw
+`CreateThreadpool*` / `SetThreadpool*` calls. Those crates own the pool objects' lifetime rules
+(a wait owns its handle, teardown disarms before it drains, a callback's context outlives every
+callback) and the pool-wide hazards a hand-written teardown reaches without knowing it, such as a
+cancellation that leaves the default pool unable to dispatch. Writing those calls again here would
+duplicate that argument and lose its fixes. An event the pool should watch is a `win-sync-sys`
+`Event`, from the same repository, which a wait takes without `unsafe` because it is known to be
+an event and never a mutex; acadia's `EventSignal` holds one for that reason.

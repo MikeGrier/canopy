@@ -12,6 +12,10 @@ description = "Test fixture: holds a canopy store root's lock until killed (D116
 name = "canopy-lock-holder"
 path = "src/main.rs"
 
+[[bin]]
+name = "vfs-lock-holder"
+path = "src/bin/vfs_lock_holder.rs"
+
 [dependencies]
 acadia.workspace = true
 canopy = { path = "../canopy" }

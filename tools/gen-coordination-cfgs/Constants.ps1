@@ -12,7 +12,16 @@ $milestoneTier = @(
     'Coordination-ThreeProcs', 'Coordination-TxnThreeProcs', 'Coordination-AttachmentTwoUpgraders',
     'Coordination-RecoveryUnlogged', 'Coordination-RecoveryMixed',
     'Coordination-HoldsEnd-Txn', 'Coordination-HoldsEnd-Unlogged', 'Coordination-HoldsEnd-UpgradeBody',
-    'Coordination-HoldsEnd-Registry', 'Coordination-HoldsEnd-Unsafe', 'Coordination-Callback'
+    'Coordination-HoldsEnd-Registry', 'Coordination-HoldsEnd-Unsafe', 'Coordination-Callback',
+    'Coordination', 'Coordination-Attachment', 'Coordination-AttachmentUnsafe',
+    'Coordination-CallbackUpgradeBody', 'Coordination-CumulativeLayerPairReads',
+    'Coordination-CumulativeLayersUnsafeBody', 'Coordination-HoldsEnd-Callback',
+    'Coordination-NoDeadlock-TwoSafeUpgraders', 'Coordination-NoDeadlock-TwoUpgraders',
+    'Coordination-NoDeadlock-UpgradeBodyReader', 'Coordination-NoDeadlock-UpgradeBodyTwoUpgraders',
+    'Coordination-RecoveryRead', 'Coordination-RegistryThreeProcs', 'Coordination-Txn',
+    'Coordination-TxnReader', 'Coordination-UpgradeBody', 'Coordination-UpgradeBodyCrash',
+    'Coordination-UpgradeBodyRegistry', 'Coordination-UpgradeBodySourceWriter',
+    'Coordination-UpgradeBodyTwoUpgraders', 'Coordination-Witness-AResumerDiesInTheUpgrade'
 )
 
 # Configurations that take a quarter of an hour to hours: the sweep leaves them out unless asked

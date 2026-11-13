@@ -75,6 +75,7 @@ mod pointer;
 #[cfg(any(feature = "random-nonce", test))]
 mod random;
 mod read;
+pub mod ring;
 mod store;
 mod transaction;
 
@@ -91,9 +92,9 @@ pub use store::{
     BacklogRepairReport, BlobRead, BlobVerification, Children, Commit, ContentScrubReport,
     DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT, DEFAULT_SHARD_WIDTH,
     GENESIS_FORMAT_VERSION, GenesisConfig, LOCK_NAME, MARKER_NAME, MAX_REPLICA_COUNT,
-    MAX_SHARD_WIDTH, PointerRead, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RejectedPrecondition,
-    RepairOutcome, SNAPSHOT_ATTEMPTS, ShireId, Store, StoreError, StoreOptions, StoreView,
-    TransactionOutcome,
+    MAX_SHARD_WIDTH, MIGRATABLE_FORMAT_VERSION, Migration, PUBLICATION_RECORD_NAME, PointerRead,
+    QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RejectedPrecondition, RepairOutcome, SNAPSHOT_ATTEMPTS,
+    ShireId, Store, StoreError, StoreOptions, StoreView, TransactionOutcome,
 };
 pub use transaction::{Effect, Precondition, Swap, SwapSet, SwapSetError};
 

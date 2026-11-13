@@ -142,6 +142,7 @@ impl Store {
             writer: Arc::default(),
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
+            publication: Arc::default(),
             _lock: lock,
             surface: Arc::default(),
         })
@@ -178,28 +179,140 @@ impl Store {
         root: impl Into<PathBuf>,
     ) -> Result<Self, StoreError> {
         let root = root.into();
-        let marker = root.join(MARKER_NAME);
 
-        let bytes = match vfs.read(&marker) {
+        // Validation is read-only, so it runs first: a directory that turns out
+        // not to be a store never gets a lock file dropped into it. Acquisition
+        // is still the serialization point -- two concurrent opens can both pass
+        // validation, and exactly one gets the lock.
+        Self::read_genesis(&vfs, &root)?;
+        let lock = Self::lock_root(&vfs, &root)?;
+        // Read again under the lock: a migration may have replaced the marker between the first
+        // read and the lock, and the genesis this handle runs by must be the one the lock guards.
+        let genesis = Self::read_genesis(&vfs, &root)?;
+
+        let store = Store {
+            vfs,
+            root,
+            genesis,
+            blob_reads: Arc::default(),
+            pointer_reads: Arc::default(),
+            modifications: Arc::default(),
+            repair_backlog: Arc::default(),
+            writer: Arc::default(),
+            log_durability: Arc::default(),
+            unsynced_dirs: Arc::default(),
+            publication: Arc::default(),
+            _lock: lock,
+            surface: Arc::default(),
+        };
+        // Recovery replays the D53 log and writes, so it must happen under the
+        // lock rather than before it. A pending publication is settled before the log is
+        // replayed, as every operation settles before it acts; the writer gate is held so the
+        // roll-forward's own writes do not settle again.
+        store.discharge_recorded_dirs()?;
+        {
+            let _writer = store.writer.enter();
+            store.settle_publication()?;
+        }
+        store.recover()?;
+        store.release_stale_claims()?;
+        Ok(store)
+    }
+
+    /// Migrates the store under `root` from [`MIGRATABLE_FORMAT_VERSION`] to
+    /// [`GENESIS_FORMAT_VERSION`], which a root must be before this build opens it.
+    ///
+    /// # The root must be offline
+    ///
+    /// No binary may have the root open, or be starting to open it, while it migrates. The
+    /// root's lock, which the migration holds, excludes a process holding the root open; it
+    /// cannot exclude an older binary that read the marker before the migration and takes the
+    /// lock after it, which would go on as if the root were still at the older version.
+    /// Stopping every older binary first is the caller's part.
+    ///
+    /// # It is one atomic step
+    ///
+    /// The marker is written at the new version to a temp sibling, synced, renamed over the
+    /// marker, and the rename made durable, so an interrupted migration leaves the root at one
+    /// version or the other and running it again finishes it. Nothing else in the root changes:
+    /// a root at the older version has no publication record, which reads as none pending. The
+    /// marker is read again under the lock, so two migrations at once both succeed and change
+    /// it once.
+    pub fn migrate(vfs: Arc<dyn Vfs>, root: impl Into<PathBuf>) -> Result<Migration, StoreError> {
+        let root = root.into();
+        if Self::marker_version(&vfs, &root)?.1 == GENESIS_FORMAT_VERSION {
+            return Ok(Migration::AlreadyCurrent);
+        }
+        let _lock = Self::lock_root(&vfs, &root)?;
+        let (bytes, version) = Self::marker_version(&vfs, &root)?;
+        match version {
+            GENESIS_FORMAT_VERSION => return Ok(Migration::AlreadyCurrent),
+            MIGRATABLE_FORMAT_VERSION => {}
+            found => {
+                return Err(StoreError::UnsupportedFormatVersion {
+                    found,
+                    expected: GENESIS_FORMAT_VERSION,
+                });
+            }
+        }
+        let mut genesis = Self::parse_genesis(&vfs, &root, &bytes)?;
+        genesis.format_version = GENESIS_FORMAT_VERSION;
+        let migrated = serde_json::to_vec_pretty(&genesis)?;
+        let marker = root.join(MARKER_NAME);
+        let tmp = root.join(format!("{MARKER_NAME}.tmp"));
+        vfs.write(&tmp, &migrated)?;
+        vfs.fsync(&tmp)?;
+        vfs.rename(&tmp, &marker)?;
+        vfs.fsync(&root)?;
+        Ok(Migration::Migrated)
+    }
+
+    /// The marker's bytes and the genesis version they carry.
+    ///
+    /// The version decides refusal before the marker is read as this build's shape (`D325`):
+    /// a foreign version must never be reported as malformed JSON just because its field set
+    /// differs from the current one.
+    fn marker_version(vfs: &Arc<dyn Vfs>, root: &Path) -> Result<(Vec<u8>, u32), StoreError> {
+        let bytes = match vfs.read(&root.join(MARKER_NAME)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == VfsErrorKind::NotFound => {
-                return Err(StoreError::NotAShire { root });
+                return Err(StoreError::NotAShire {
+                    root: root.to_path_buf(),
+                });
             }
             Err(e) => return Err(StoreError::Vfs(e)),
         };
-
-        // The version decides refusal before the marker is read as this build's shape
-        // (`D325`): a foreign version must never be reported as malformed JSON just because
-        // its field set differs from the current one.
         let probe: GenesisVersion = serde_json::from_slice(&bytes)?;
-        if probe.format_version != GENESIS_FORMAT_VERSION {
-            return Err(StoreError::UnsupportedFormatVersion {
-                found: probe.format_version,
-                expected: GENESIS_FORMAT_VERSION,
-            });
-        }
+        Ok((bytes, probe.format_version))
+    }
 
-        let genesis: Genesis = serde_json::from_slice(&bytes)?;
+    /// Reads and validates the marker of a root this build may open.
+    ///
+    /// An absent marker is [`StoreError::NotAShire`], marker bytes that are not the expected
+    /// JSON are [`StoreError::Json`], a root at [`MIGRATABLE_FORMAT_VERSION`] is
+    /// [`StoreError::MigrationRequired`], any other version this build does not write is
+    /// [`StoreError::UnsupportedFormatVersion`], and a layout inconsistent with what is on disk
+    /// is [`StoreError::MalformedMarker`] or [`StoreError::MissingPartition`].
+    fn read_genesis(vfs: &Arc<dyn Vfs>, root: &Path) -> Result<Genesis, StoreError> {
+        let (bytes, version) = Self::marker_version(vfs, root)?;
+        match version {
+            GENESIS_FORMAT_VERSION => Self::parse_genesis(vfs, root, &bytes),
+            MIGRATABLE_FORMAT_VERSION => Err(StoreError::MigrationRequired {
+                root: root.to_path_buf(),
+                found: version,
+                expected: GENESIS_FORMAT_VERSION,
+            }),
+            found => Err(StoreError::UnsupportedFormatVersion {
+                found,
+                expected: GENESIS_FORMAT_VERSION,
+            }),
+        }
+    }
+
+    /// The marker's genesis, checked against what is on disk.
+    fn parse_genesis(vfs: &Arc<dyn Vfs>, root: &Path, bytes: &[u8]) -> Result<Genesis, StoreError> {
+        let root = root.to_path_buf();
+        let genesis: Genesis = serde_json::from_slice(bytes)?;
 
         if genesis.blob_replica_count == 0 || genesis.blob_replica_count > MAX_REPLICA_COUNT {
             return Err(StoreError::MalformedMarker {
@@ -239,32 +352,15 @@ impl Store {
                 Err(e) => return Err(StoreError::Vfs(e)),
             }
         }
-
-        // Validation is read-only, so it runs first: a directory that turns out
-        // not to be a store never gets a lock file dropped into it. Acquisition
-        // is still the serialization point -- two concurrent opens can both pass
-        // validation, and exactly one gets the lock.
-        let lock = Self::lock_root(&vfs, &root)?;
-
-        let store = Store {
-            vfs,
-            root,
-            genesis,
-            blob_reads: Arc::default(),
-            pointer_reads: Arc::default(),
-            modifications: Arc::default(),
-            repair_backlog: Arc::default(),
-            writer: Arc::default(),
-            log_durability: Arc::default(),
-            unsynced_dirs: Arc::default(),
-            _lock: lock,
-            surface: Arc::default(),
-        };
-        // Recovery replays the D53 log and writes, so it must happen under the
-        // lock rather than before it.
-        store.discharge_recorded_dirs()?;
-        store.recover()?;
-        store.release_stale_claims()?;
-        Ok(store)
+        Ok(genesis)
     }
+}
+
+/// What [`Store::migrate`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Migration {
+    /// The root was at [`MIGRATABLE_FORMAT_VERSION`] and is now at [`GENESIS_FORMAT_VERSION`].
+    Migrated,
+    /// The root was already at [`GENESIS_FORMAT_VERSION`], and nothing was changed.
+    AlreadyCurrent,
 }

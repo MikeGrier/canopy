@@ -527,9 +527,10 @@ configuration of a spec this tool covers states its outcome in one of those thre
 [tools/gen-coordination-cfgs.ps1](../tools/gen-coordination-cfgs.ps1), every `Acquisition*.cfg` by
 [tools/gen-acquisition-cfgs.ps1](../tools/gen-acquisition-cfgs.ps1), every `Creation*.cfg` by
 [tools/gen-creation-cfgs.ps1](../tools/gen-creation-cfgs.ps1), every `PointerPublication*.cfg` by
-[tools/gen-pointer-publication-cfgs.ps1](../tools/gen-pointer-publication-cfgs.ps1) and every
+[tools/gen-pointer-publication-cfgs.ps1](../tools/gen-pointer-publication-cfgs.ps1), every
 `SharedPublication*.cfg` by
-[tools/gen-shared-publication-cfgs.ps1](../tools/gen-shared-publication-cfgs.ps1), from tables --
+[tools/gen-shared-publication-cfgs.ps1](../tools/gen-shared-publication-cfgs.ps1) and every
+`Doorbell*.cfg` by [tools/gen-doorbell-cfgs.ps1](../tools/gen-doorbell-cfgs.ps1), from tables --
 the parts under `tools/gen-coordination-cfgs/` for Coordination -- that carry each configuration's
 constants, its required outcome and its tier. Change a configuration by changing its table and
 regenerating, never the generated file; regenerating changes no file when the tables have not. A new

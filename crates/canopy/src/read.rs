@@ -73,6 +73,9 @@ pub enum Contention {
     ///
     /// Unlike being superseded, this one resolves *nothing*: there is no version to name,
     /// because the replicas do not agree there is one.
+    ///
+    /// A scatter that no modification was making across the vote is not this outcome but
+    /// [`StoreError::PointerUnavailable`], since waiting will not settle it.
     Undetermined {
         /// How many replicas held a well-formed pointer, no two of which commanded a
         /// majority.

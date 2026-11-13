@@ -147,6 +147,24 @@ pub enum StoreError {
         /// The version this build writes and understands ([`GENESIS_FORMAT_VERSION`]).
         expected: u32,
     },
+    /// `open` read a marker written by the genesis version [`Store::migrate`] advances, so the
+    /// root must be migrated before this build opens it.
+    MigrationRequired {
+        /// The store root.
+        root: PathBuf,
+        /// The version found in the marker ([`MIGRATABLE_FORMAT_VERSION`]).
+        found: u32,
+        /// The version this build writes and understands ([`GENESIS_FORMAT_VERSION`]).
+        expected: u32,
+    },
+    /// The publication record held a complete line that is not a record this store writes, so
+    /// the publication it may name cannot be finished.
+    MalformedPublicationRecord {
+        /// The store root.
+        root: PathBuf,
+        /// What was wrong with the line.
+        detail: String,
+    },
     /// `open` read a marker whose recorded layout is internally inconsistent or
     /// disagrees with what is on disk.
     MalformedMarker {
@@ -327,6 +345,21 @@ impl fmt::Display for StoreError {
             StoreError::UnsupportedFormatVersion { found, expected } => write!(
                 f,
                 "store genesis version {found} is unsupported (this build understands {expected})"
+            ),
+            StoreError::MigrationRequired {
+                root,
+                found,
+                expected,
+            } => write!(
+                f,
+                "store at {} is at genesis version {found} and must be migrated to {expected} \
+                 with Store::migrate before it is opened",
+                root.display()
+            ),
+            StoreError::MalformedPublicationRecord { root, detail } => write!(
+                f,
+                "store at {} has a publication record this build did not write: {detail}",
+                root.display()
             ),
             StoreError::MalformedMarker { root, reason } => {
                 write!(

@@ -39,7 +39,14 @@ use std::ffi::OsString;
 use std::path::{Component, Path};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::{DirEntry, FileType, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult};
+use crate::{
+    DirEntry, FileType, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock,
+    VfsResult,
+};
+
+mod locks;
+
+use locks::{Access, LockShared};
 
 /// A node in the filesystem tree: a file (by inode id) or a directory.
 #[derive(Debug, Clone)]
@@ -107,17 +114,23 @@ struct Inner {
 /// See the [module documentation](self) for the durability model. Cheap to
 /// share as `Arc<dyn Vfs>`; all state is behind a single lock, so operations are
 /// serialized and deterministic.
+///
+/// A `MemFs` value is one simulated process's view of its filesystem:
+/// [`another_process`](MemFs::another_process) gives a second process over the same tree, and
+/// [`abandon`](MemFs::abandon) is a process's death.
 #[derive(Debug, Default)]
 pub struct MemFs {
-    inner: Mutex<Inner>,
-    /// Paths currently locked (`D116`), keyed by normalized components so a lock
-    /// does not depend on how a caller spelled the path.
+    inner: Arc<Mutex<Inner>>,
+    /// The locks held in this filesystem, by every process over it.
     ///
     /// Held outside [`Inner`] deliberately: a lock is a property of its *holder*,
     /// not of the stored tree, so [`simulate_crash`](MemFs::simulate_crash) --
     /// which models losing unfsync'd storage, not losing the process -- must not
     /// disturb it. `Arc` so a guard can release without borrowing the filesystem.
-    locks: Arc<Mutex<HashSet<Vec<OsString>>>>,
+    locks: Arc<LockShared>,
+    /// The simulated process this view belongs to, whose locks [`abandon`](MemFs::abandon)
+    /// releases.
+    process: u64,
 }
 
 impl MemFs {
@@ -131,14 +144,14 @@ impl MemFs {
     #[cfg(test)]
     pub(crate) fn with_full_directory_sync() -> Self {
         let fs = Self::default();
-        fs.lock().full_directory_sync = true;
+        fs.tree().full_directory_sync = true;
         fs
     }
 
     /// How many entries directory syncs have examined so far.
     #[cfg(test)]
     pub(crate) fn examined_entries(&self) -> usize {
-        self.lock().examined_entries
+        self.tree().examined_entries
     }
 
     /// An independent filesystem starting from this one's whole state, what is durable and
@@ -148,8 +161,9 @@ impl MemFs {
     #[must_use]
     pub fn fork(&self) -> Self {
         Self {
-            inner: Mutex::new(self.lock().clone()),
+            inner: Arc::new(Mutex::new(self.tree().clone())),
             locks: Arc::default(),
+            process: 0,
         }
     }
 
@@ -162,7 +176,7 @@ impl MemFs {
     /// surviving file's last fsync'd bytes (or empty, if its data was never
     /// fsync'd).
     pub fn simulate_crash(&self) {
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let inner = &mut *guard;
         let mut unnamed: Vec<Vec<OsString>> = inner.unnamed.drain().collect();
         unnamed.sort();
@@ -191,7 +205,7 @@ impl MemFs {
     /// How many files' live and durable bytes are held, so a test can see data reclaimed.
     #[cfg(test)]
     pub(crate) fn held_file_data(&self) -> (usize, usize) {
-        let guard = self.lock();
+        let guard = self.tree();
         (guard.live_data.len(), guard.durable_data.len())
     }
 
@@ -199,7 +213,7 @@ impl MemFs {
     /// data maps they govern, disagree with it.
     #[cfg(test)]
     pub(crate) fn audit_refs(&self) {
-        let guard = self.lock();
+        let guard = self.tree();
         let mut expected: HashMap<u64, usize> = HashMap::new();
         let mut live = Vec::new();
         collect_ids(&guard.live, &mut live);
@@ -230,7 +244,7 @@ impl MemFs {
 
     /// Locks the inner state, recovering the guard if a prior holder panicked
     /// (poisoning is not treated as a fault to propagate; D56).
-    fn lock(&self) -> MutexGuard<'_, Inner> {
+    fn tree(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -869,9 +883,14 @@ fn recount(inner: &mut Inner) {
 impl Vfs for MemFs {
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
         let parts = split_path(path, "read")?;
-        let guard = self.lock();
+        let holds = self.holds_on(&parts);
+        let guard = self.tree();
         match node_at(&guard.live, &parts, "read", path)? {
-            Node::File(id) => Ok(guard.live_data.get(id).cloned().unwrap_or_default()),
+            Node::File(id) => {
+                let bytes = guard.live_data.get(id).cloned().unwrap_or_default();
+                holds.check(Access::Read, 0, bytes.len() as u64, "read", path)?;
+                Ok(bytes)
+            }
             Node::Dir(_) => Err(err(
                 VfsErrorKind::IsADirectory,
                 "read",
@@ -883,7 +902,8 @@ impl Vfs for MemFs {
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
         let parts = split_path(path, "read_at")?;
-        let guard = self.lock();
+        let holds = self.holds_on(&parts);
+        let guard = self.tree();
         match node_at(&guard.live, &parts, "read_at", path)? {
             Node::File(id) => {
                 let bytes = guard
@@ -896,6 +916,7 @@ impl Vfs for MemFs {
                     .unwrap_or(usize::MAX)
                     .min(bytes.len());
                 let end = start.saturating_add(len).min(bytes.len());
+                holds.check(Access::Read, start as u64, end as u64, "read_at", path)?;
                 Ok(bytes[start..end].to_vec())
             }
             Node::Dir(_) => Err(err(
@@ -912,7 +933,8 @@ impl Vfs for MemFs {
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, "write", path, "empty path"));
         };
-        let mut guard = self.lock();
+        let holds = self.holds_on(&parts);
+        let mut guard = self.tree();
         let Inner {
             live,
             live_data,
@@ -932,10 +954,14 @@ impl Vfs for MemFs {
             )),
             Some(Node::File(id)) => {
                 let id = *id;
+                let old_len = live_data.get(&id).map_or(0, Vec::len);
+                let touched = old_len.max(contents.len()) as u64;
+                holds.check(Access::Write, 0, touched, "write", path)?;
                 live_data.insert(id, contents.to_vec());
                 Ok(())
             }
             None => {
+                holds.check(Access::Write, 0, contents.len() as u64, "write", path)?;
                 let id = next_id(next_inode, "write", path)?;
                 live_data.insert(id, contents.to_vec());
                 dir.insert(name.clone(), Node::File(id));
@@ -957,7 +983,8 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let mut guard = self.lock();
+        let holds = self.holds_on(&parts);
+        let mut guard = self.tree();
         let Inner {
             live,
             live_data,
@@ -977,10 +1004,15 @@ impl Vfs for MemFs {
             )),
             Some(Node::File(id)) => {
                 let id = *id;
-                live_data.entry(id).or_default().extend_from_slice(contents);
+                let bytes = live_data.entry(id).or_default();
+                let old_len = bytes.len() as u64;
+                let new_len = old_len + contents.len() as u64;
+                holds.check(Access::Write, old_len, new_len, "append", path)?;
+                bytes.extend_from_slice(contents);
                 Ok(())
             }
             None => {
+                holds.check(Access::Write, 0, contents.len() as u64, "append", path)?;
                 let id = next_id(next_inode, "append", path)?;
                 live_data.insert(id, contents.to_vec());
                 dir.insert(name.clone(), Node::File(id));
@@ -1010,7 +1042,8 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let mut guard = self.lock();
+        let holds = self.holds_on(&parts);
+        let mut guard = self.tree();
         let Inner {
             live, live_data, ..
         } = &mut *guard;
@@ -1024,7 +1057,10 @@ impl Vfs for MemFs {
             )),
             Some(Node::File(id)) => {
                 let id = *id;
-                live_data.entry(id).or_default().resize(new_len, 0);
+                let bytes = live_data.entry(id).or_default();
+                let (low, high) = (bytes.len().min(new_len), bytes.len().max(new_len));
+                holds.check(Access::Write, low as u64, high as u64, "truncate", path)?;
+                bytes.resize(new_len, 0);
                 Ok(())
             }
             None => Err(err(
@@ -1041,7 +1077,7 @@ impl Vfs for MemFs {
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, "fsync", path, "empty path"));
         };
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         #[cfg(test)]
         let full_sync = guard.full_directory_sync;
         #[cfg(not(test))]
@@ -1212,7 +1248,7 @@ impl Vfs for MemFs {
         let Some((to_name, to_parents)) = to_parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, "rename", to, "empty path"));
         };
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let Inner {
             live,
             durable,
@@ -1372,7 +1408,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let Inner {
             live,
             live_data,
@@ -1421,7 +1457,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let Inner { live, dirty, .. } = &mut *guard;
         let dir = dir_of_mut(live, parents, "create_dir", path)?;
         if dir.contains_key(name) {
@@ -1439,7 +1475,7 @@ impl Vfs for MemFs {
 
     fn create_dir_all(&self, path: &Path) -> VfsResult<()> {
         let parts = split_path(path, "create_dir_all")?;
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let Inner { live, dirty, .. } = &mut *guard;
         // Every level this creates is a new entry in its parent.
         let mut cur = Some(&*live);
@@ -1467,7 +1503,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let Inner {
             live,
             durable_data,
@@ -1525,7 +1561,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let mut guard = self.lock();
+        let mut guard = self.tree();
         let Inner {
             live,
             live_data,
@@ -1581,7 +1617,7 @@ impl Vfs for MemFs {
 
     fn read_dir(&self, path: &Path) -> VfsResult<Vec<DirEntry>> {
         let parts = split_path(path, "read_dir")?;
-        let guard = self.lock();
+        let guard = self.tree();
         match node_at(&guard.live, &parts, "read_dir", path)? {
             Node::Dir(children) => Ok(children
                 .iter()
@@ -1604,7 +1640,7 @@ impl Vfs for MemFs {
 
     fn metadata(&self, path: &Path) -> VfsResult<Metadata> {
         let parts = split_path(path, "metadata")?;
-        let guard = self.lock();
+        let guard = self.tree();
         match node_at(&guard.live, &parts, "metadata", path)? {
             Node::File(id) => Ok(Metadata {
                 file_type: FileType::File,
@@ -1617,46 +1653,66 @@ impl Vfs for MemFs {
         }
     }
 
+    // An exclusive hold on the whole file: it excludes every other lock on the path, which on
+    // Windows its share mode does too, and nothing a reader of the contract may rely on.
     fn lock_exclusive(&self, path: &Path) -> VfsResult<Box<dyn VfsLock>> {
-        let parts = split_path(path, "lock_exclusive")?;
-        let mut held = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.contains(&parts) {
-            return Err(VfsError::new(
-                VfsErrorKind::Locked,
-                "lock_exclusive",
-                "already locked in this filesystem",
-            )
-            .with_path(path));
-        }
-        // Create the file as OsFs does, so both backends leave the same trace and
-        // the conformance suite can hold them to one contract.
-        self.write(path, b"")?;
-        held.insert(parts.clone());
-        Ok(Box::new(MemLock {
-            registry: Arc::clone(&self.locks),
-            parts,
-        }))
+        self.take_lock(
+            path,
+            "lock_exclusive",
+            LockMode::Exclusive,
+            LockSpan::File,
+            false,
+        )
     }
-}
 
-/// A held [`MemFs`] lock (`D116`), released on drop.
-///
-/// Holds the registry rather than the filesystem so releasing needs no borrow of
-/// the `MemFs` it came from.
-#[derive(Debug)]
-struct MemLock {
-    registry: Arc<Mutex<HashSet<Vec<OsString>>>>,
-    parts: Vec<OsString>,
-}
+    fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        self.take_lock(path, "try_lock", mode, span, false)
+    }
 
-impl VfsLock for MemLock {}
+    fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        self.take_lock(path, "lock", mode, span, true)
+    }
 
-impl Drop for MemLock {
-    fn drop(&mut self) {
-        self.registry
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.parts);
+    fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        let parts = split_path(path, "publish_new")?;
+        let Some((name, parents)) = parts.split_last() else {
+            return Err(err(
+                VfsErrorKind::InvalidInput,
+                "publish_new",
+                path,
+                "empty path",
+            ));
+        };
+        let mut guard = self.tree();
+        let Inner {
+            live,
+            live_data,
+            durable_data,
+            refs,
+            live_refs,
+            next_inode,
+            dirty,
+            ..
+        } = &mut *guard;
+        let dir = dir_of_mut(live, parents, "publish_new", path)?;
+        if dir.contains_key(name) {
+            return Err(err(
+                VfsErrorKind::AlreadyExists,
+                "publish_new",
+                path,
+                "already exists",
+            ));
+        }
+        // Staged, synced and linked into place in one step: the bytes are durable and the name
+        // is not, which is the state `OsFs` reaches before its staging sibling is removed.
+        let id = next_id(next_inode, "publish_new", path)?;
+        live_data.insert(id, contents.to_vec());
+        durable_data.insert(id, contents.to_vec());
+        dir.insert(name.clone(), Node::File(id));
+        *refs.entry(id).or_default() += 1;
+        *live_refs.entry(id).or_default() += 1;
+        mark(dirty, parents, name);
+        Ok(())
     }
 }
 

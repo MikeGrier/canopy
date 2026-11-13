@@ -19,7 +19,9 @@ Get-ChildItem $spec -Filter 'SharedPublication*.cfg' | Remove-Item
 # Configurations that take about a minute or more: the sweep keeps them out of the work-item loop.
 $milestoneTier = @('SharedPublication-ThreeDocs', 'SharedPublication-ThreeRequests', 'SharedPublication-ResolveThreeRequests',
     'SharedPublication-ThreeWriters', 'SharedPublication-ResolveThreeWriters', 'SharedPublication-Mixed',
-    'SharedPublication-MixedResolve')
+    'SharedPublication-MixedResolve', 'SharedPublication', 'SharedPublication-RecordTxn',
+    'SharedPublication-Resolve', 'SharedPublication-ResolveTxn',
+    'SharedPublication-Witness-RecoveryRollsForwardBothKindsOfWrite')
 
 function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn,
                       [string[]]$invariants, [string[]]$properties = @(), [string]$control = 'none',

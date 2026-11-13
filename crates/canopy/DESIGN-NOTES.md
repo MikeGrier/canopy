@@ -3767,3 +3767,157 @@ the probes can run only what the edit can affect, and a scheduled run keeps the 
   finishes within its time limit is decided from its first run[^spec-2-4].
 
 [^spec-2-4]: `SPEC-2.4` in [CHECKLIST.md](CHECKLIST.md)
+
+## `STRANDED-VOTE` is guarded by a durable publication record, 2026-11-12
+
+canopy guards against `STRANDED-VOTE` with a durable publication record. Both guards that hold were
+checked in every model -- one document's publication, the composition with the coordination
+contract, logged and unlogged writes mixed, several processes, deaths and crashes -- and the
+choice between them is the engineer's[^fm-2-2]:
+
+- **Recovery's work is bounded by the work left pending.** The record names the document and the
+  version a failed write was publishing, so recovery settles the records it finds. The resolve
+  guard's recovery cannot tell which document was being published and must sync every replica of
+  every document in the store (T27), a cost that grows with the store.
+- **The record is a format change, so it lands behind the format barrier.** An older binary would
+  ignore a pending record and could strand the vote the record was guarding, so the genesis format
+  version advances and existing roots are migrated before any record can be written.
+- **Every operation on a document settles first, repair and scrub included.** The model shows
+  repair and scrub need no settle for any property it checks; they settle anyway, at one fsync
+  per document a scrub touches, so that no operation acts on a document with a record pending and
+  the rule has no exceptions to remember.
+- **A lost pointer replica is restored by a repair, not by the next write.** That is the one way
+  the guards differ that no safety property shows (T26): a write under the record guard does not
+  restore a replica it finds missing, and a publication that then fails part-way leaves no
+  majority until the next settle.
+
+The rules the record follows -- an append and a truncation, each with an fsync, and a settle that
+fsyncs the record file before it acts -- are "The publication record's live and durable state,
+modelled in `PointerPublication.tla`".
+
+- **Where it lives.** The record is `.publication` at the store root
+  ([store/publication.rs](src/store/publication.rs)), one NDJSON line per publication. The settle
+  runs in the outermost entry to the writer gate, so every operation that takes the gate settles
+  without remembering to, and in `open` before recovery replays the commit log. Its name is made
+  durable in the root once per open.
+- **Genesis version 6 is the barrier, and version 5 is migrated rather than refused.** A version-5
+  root holds nothing a version-6 build reads differently -- it has no record, which reads as none
+  pending -- so `open` refuses it with `StoreError::MigrationRequired` and `Store::migrate`
+  advances it: under the root lock, with the marker read again under the lock, one atomic
+  replacement of the marker made durable last. The root must be offline, since the lock cannot
+  exclude an older binary that read the marker before the migration. The migration record,
+  implementation record and coordination state belong to the coordination layer's format
+  change[^mp-6].
+- **`PointerPublication-Settled.cfg` checks the protocol as built**, the record guard beside
+  logged writes, and every invariant and property holds of it. The unguarded protocol's
+  counterexample is kept as the negative control `PointerPublication-Control-Unguarded.cfg`.
+
+## A pointer vote nothing was modifying reports its disagreement, 2026-11-12
+
+`read_document` brackets its pointer vote with two samples of the modification count, and when the
+vote finds no majority -- for a pointer or for absence -- and `Store::undisturbed` holds of the
+two samples, it returns `StoreError::PointerUnavailable` instead of `Read::Contended`[^fm-2-3].
+This is the read classification the model checks ("The modification count, the generation and
+reads, modelled in `Coordination.tla`"): two samples equal and even say no operation was in
+progress across the observation, so the disagreement it saw is the store's state, not a writer's
+intermediate one.
+
+- **Contention is something waiting resolves; this is not.** A caller's loop over `Contended`
+  (`read_settled`, `read_within`) waits for the writer to finish. With no writer, the replicas
+  stay as they are until an operation settles them, so reporting it as contention would leave the
+  loop spinning until its budget ran out and then blame a busy writer.
+- **Under the publication record the case is narrow.** A failed publication leaves its document
+  holding at most its old version and the recorded one, which keeps a majority while every
+  replica is present. It loses it only when a replica is missing as well (T26), and the next
+  operation that settles -- a write, a repair, a scrub -- restores a majority. Any other stable
+  disagreement is damage.
+- **The count is the process's own.** It sees this process's writers only, which is all a root
+  has while one process holds it (`D116`). Readers in other processes depend on the count being
+  published in the coordination state, which is the coordination layer's work.
+
+[^fm-2-3]: `FM-2.3` in [CHECKLIST.md](CHECKLIST.md)
+
+## The doorbell's contract and its mechanism, modelled in `Doorbell.tla`, 2026-11-12
+
+The doorbell's spec barrier is two modules[^rg-1]. `spec/DoorbellContract.tla` states only what a
+user of a doorbell observes: producers publish work, a consumer takes everything published, waits
+and is woken; every item published is taken (`WorkIsTaken`), and a consumer waiting while work is
+there is woken (`AWaiterIsWoken`), a wake with nothing to take allowed. `spec/Doorbell.tla` is the
+mechanism, one step per atomic operation or fence point of the code, and TLC checks that it refines
+the contract (`ContractRefined`, with the contract's two guarantees under the mapping) for one,
+two and three producers.
+
+- **A ring publishes, then swaps the record of being rung to set, and raises only if it was
+  clear.** A ring while the doorbell is already rung therefore makes no system call; the witness
+  `Witness_ARingSkipsItsRaise` shows such a ring is reachable.
+- **The consumer takes, lowers the signal, clears the record, checks again, and waits only on
+  finding nothing.** Finding work, it takes it and checks again without lowering or clearing, so a
+  consumer kept busy pays no system call per batch, and the refinement holds with that path in.
+- **The reset comes before the clear because a producer's test can lag its publish.** A producer
+  whose work the consumer has already taken may still be about to test the record. Cleared first,
+  that test sets the record again and its raise is then lowered by the reset, leaving the record
+  set with the signal low, so every later ring skips its raise and the consumer waits for ever.
+  This holds whether or not the consumer retakes without lowering: a scratch run that lowered and
+  cleared on every pass still lost the wake.
+- **The controls each break one rule and lose a wake** (`AWaiterIsWoken` violated): clearing
+  before the reset, skipping the check after the clear, checking before the clear, and a producer
+  that tests before it publishes.
+- **The signal is a level and a spurious wake is never owed.** A raise holds until the consumer
+  lowers it, which is what acadia's `Signal` provides, and a wake with the signal lowered -- a
+  pumped wait's bound passing -- is a step the mechanism may take and the contract allows, with no
+  fairness on it.
+- **The barrier's floor is the code's atomicity.** TLA+ steps are sequentially consistent, so the
+  model is sound only where the code makes each step atomic and fences the publish from the test
+  and the clear from the check; that is checked below the spec, by a checker of the Rust memory
+  model over the code[^rg-2].
+
+## The doorbell in code, `canopy::ring::Doorbell`, 2026-11-12
+
+`canopy::ring::Doorbell<S: Signal = PlatformSignal>` is `Doorbell.tla` in code[^rg-2]. Each step of
+the spec is one atomic operation or fence of a method named for it, and the public surface is the
+steps composed in the only orders the protocol allows.
+
+- **A producer calls `ring`, which is `Test` then `Raise`.** `test` is a sequentially consistent
+  fence and then a swap of the record to set, so whatever the producer published into its own queue,
+  at whatever ordering, is ordered before the record is read; `raise` follows only if the record was
+  clear.
+- **The consumer's side is `rearm`, `wait` and `pump`.** `rearm` is `Reset` then `Clear`, in that
+  order for the reason "The doorbell's contract and its mechanism" gives; `clear` is a sequentially
+  consistent store followed by a sequentially consistent fence, so the clear is ordered before the
+  check that follows it. `pump(timeout, take)` is the whole consumer round over a `take` that empties
+  the caller's queue: take, rearm, take again until a take finds nothing, return if any found work,
+  and otherwise wait and go round. A pump with a zero bound never waits, which is the form a consumer
+  woken by a thread pool's wait or `epoll` runs.
+- **The steps stay `pub(crate)`.** A caller outside canopy cannot reorder them; the tests drive them
+  one at a time.
+- **Native waiting goes through acadia.** The doorbell over the platform's signal lends its event
+  through `AsHandle` on Windows and its descriptor through `AsFd` on Linux. acadia's `wait_native`
+  waits on a borrowed one with the platform's own wait without lowering it, so canopy's library makes
+  no system call and holds no `unsafe` for it.
+- **Registering with a thread pool is a client's concern, and canopy's tests do it as a client
+  would.** On Windows the tests register the doorbell with `windows-threadpool-sys`'s
+  `ThreadpoolWait` (one-shot, armed again by each callback through its activation), handing it a
+  clone of the `win-sync-sys` `Event` acadia's `EventSignal` holds, which it takes without
+  `unsafe`, as the repository's rule for thread-pool interactions requires
+  ([DESIGN-NOTES.md](../../DESIGN-NOTES.md) "Windows thread-pool interactions go through the
+  windows-threadpool-sys crates"). On Linux they register it with an `epoll` set a pool thread
+  waits on, through `libc`. Both are dev-dependencies; the library stays free of
+  operating-system calls and `unsafe`.
+- **The doorbell does not lend its `Event`.** A clone of the event can be reset as well as waited
+  on, and a reset outside the protocol can leave the doorbell rung with its signal low, so that no
+  ring wakes the consumer. Only canopy's tests reach the signal. A client registers the completion
+  doorbell with a thread pool through a handle that can only wait, such as `win-sync-sys`'s
+  `WaitOnlyEvent`, which the queue pairs provide[^api-3].
+- **The code is held to the contract by an exhaustive search over its own steps.** The tests run the
+  doorbell over a condition-variable signal, one step of one actor at a time, through every state
+  one, two and three producers and the consumer can reach, with the consumer's rounds bounded; a state
+  is the record and the signal read from the doorbell, the queue's counts and where each actor is,
+  and a run is brought to a state by the doorbell's own `test` and `raise`. At every final state a
+  consumer waiting while work is there must find the signal raised. The same search, with the
+  consumer's or a producer's order changed as each of `Doorbell.tla`'s controls changes it, must find
+  a lost wake, which shows the search can fail.
+- **The fences are assumed correct until a checker of the Rust memory model checks them.** The
+  search runs each step to completion, as TLA+ does, so it cannot see a step's stores reordered; that
+  floor is the fences', and the engineer owns establishing it[^rg-2-1].
+
+[^rg-2-1]: `RG-2.1` in [CHECKLIST.md](CHECKLIST.md)

@@ -319,3 +319,159 @@ neither ever observes the other's later changes. Locks are deliberately not copi
 belongs to its holder rather than to the stored tree, the same reason a crash does not
 release one. Its purpose is fixtures: a store populated once can be handed to every test as a
 private copy instead of being rebuilt per test.
+
+## Locks on a file or a range of one, taken without waiting, 2026-11-12
+
+`Vfs::try_lock` takes a shared or exclusive lock on a whole file or a byte range of one, fails at
+once with `Locked` on a conflict, and is released when its guard drops or its process dies. It
+is the primitive canopy's file-based coordination builds its admission gate, attachment tiers
+and registry on[^ac-1] ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Several processes
+may open one store").
+
+- **Every guard is its own holder.** `OsFs` opens a handle per lock and locks through it:
+  `LockFileEx` on Windows, open-file-description locks on Linux. Both conflict between two
+  handles of one process exactly as between two processes, which is what lets a test contend
+  for a lock on one thread, and what lets one process hold several roles. Process-associated
+  `fcntl` locks are never used: any close of the file by the process releases all of them.
+  Another Unix gets `flock` for a whole file and `Unsupported` for a range, since it has no
+  per-description range lock.
+- **A range is bounded by what Linux can name.** It is at least one byte and ends at or before
+  `LockSpan::MAX_END` (`i64::MAX`), so one range means the same on every platform. A whole-file
+  lock is `[0, u64::MAX)` and overlaps every range.
+- **A locked span holds no data.** Windows locks are mandatory: an exclusive lock refuses every
+  other handle's read and every lock refuses another handle's write, and every seam operation
+  opens its own handle, so the holder is refused too. Linux locks are advisory. The contract
+  therefore keeps data out of every locked span, and the primitive allows a range anywhere,
+  including past the end of the file, so a lock can sit beside the data it guards. `OsFs`
+  reports a refused read or write as `Locked`.
+- **`MemFs` refuses as Windows does**, so a caller that reads or writes a locked span fails on
+  every platform's test run, not only on Windows. A read is checked against exclusive holds over
+  the bytes it returns; a write, an append or a truncation against every hold over the bytes it
+  changes.
+- **A file is locked through `try_lock` or `lock_exclusive`, never both.** On Windows
+  `lock_exclusive`'s share mode refuses every other handle, on Linux its `flock` is independent
+  of open-file-description locks, so the two would exclude each other on one platform and not
+  the other. `MemFs` treats `lock_exclusive` as an exclusive whole-file hold, the stricter
+  reading, and creates its file without truncating it, as `OsFs` does.
+- **A Unix lock is released explicitly before its handle closes.** A child forked by another
+  thread holds a duplicate of the description until it execs, and `flock` and
+  open-file-description locks last as long as the description, so a lock released only by the
+  close outlives its guard for that window. A Linux run of the cross-process root-lock suite
+  once saw a holder refused a root whose only other holder had already dropped its guard, which
+  this window explains. On Windows, `UnlockFileEx` before the close makes the release prompt,
+  where a closed handle's locks go only when the system gets to them.
+- **A simulated process dies by abandonment.** A `MemFs` value is one process's view:
+  `MemFs::another_process` gives a second over the same tree and lock table, and
+  `MemFs::abandon` releases every lock that process holds at once, without its guards running,
+  as the OS does for a dead process. Guards still in hand stay inert, since every hold has an
+  id that is never reused. A crash (`simulate_crash`) loses storage and keeps locks; abandonment
+  loses locks and keeps storage. Real deaths are checked by `canopy-lock-holder`'s
+  `vfs-lock-holder` fixture, killed outright on both platforms.
+
+## Publishing a file only where nothing is, 2026-11-12
+
+`Vfs::publish_new` creates a file holding exactly the given bytes if nothing is at the path, and
+fails with `AlreadyExists` otherwise. The file is never visible incomplete, and a power loss
+leaves it complete or absent; its name is durable once the parent is synced. canopy's creation
+reservation needs exactly this ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Creating
+a store root, modelled in `Creation.tla`")[^ac-1].
+
+- **`OsFs` stages, syncs and hard-links.** The bytes are written to a fresh sibling named
+  `<name>.publishing.<pid>-<n>`, synced, and linked to the path; the sibling is removed whether
+  the link succeeds or not. A link fails where anything has the name, which is the exclusivity
+  a replacing rename lacks, and it names an inode whose bytes are already durable, which a file
+  created at the path and then written cannot promise. A crash can leave a staging sibling; it
+  means nothing and may be removed. The filesystem must support hard links, which NTFS, ReFS
+  and the Linux filesystems a store root lives on do.
+- **`MemFs` publishes in one step** to the state `OsFs` reaches before its sibling is removed:
+  the bytes durable, the name not, so a crash before the parent's sync loses the file and a
+  crash after keeps all of it.
+
+[^ac-1]: `AC-1` in [CHECKLIST.md](CHECKLIST.md#ac-1)
+
+## A signal is a level, one per platform behind a sealed trait, 2026-11-12
+
+`Signal` is the one platform primitive of canopy's ring ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The ring: a portable protocol over one platform
+primitive, behind a contract spec")[^ac-3]: raise, lower and a bounded wait, all on a level.
+
+- **A level, so redundant calls are free of meaning.** Raising a raised signal and lowering a
+  lowered one change nothing and report nothing, and a wait returns at once on a raised signal
+  without lowering it. The doorbell protocol above relies on exactly that and on nothing else,
+  so it is argued once for every implementation.
+- **One implementation per platform.** `EventSignal` is a Windows manual-reset event, held as
+  a `win-sync-sys` `Event`, the safe event of
+  [MikeGrier/windows-threadpool-sys](https://github.com/MikeGrier/windows-threadpool-sys), so
+  acadia makes no event call of its own. An
+  auto-reset event would be an edge: it lowers itself for the one waiter it releases, so a
+  second waiter, or a second look, misses the raise. `EventFdSignal` is a Linux `eventfd`,
+  non-blocking and not in semaphore mode: readable while its counter is not zero, raised by a
+  write of one, lowered by a read, which takes the whole counter, so two raises and one lower
+  leave it lowered. A counter too full to take another write is raised already, and an empty
+  one has nothing to read, so both report nothing. `CondvarSignal`, a mutex and condition
+  variable, is `PlatformSignal` everywhere else and exists on every target, for tests and for
+  a checker of the Rust memory model, which cannot run a kernel object.
+- **Sealed, and fallible.** The trait is sealed so the protocol is argued against these three
+  and no other. Creating, raising, lowering and waiting return `io::Result`, since the kernel
+  calls can fail, though a valid object's calls do not in practice.
+- **A wait never reports `false` early.** The platform waits take whole milliseconds, so the
+  remaining time is rounded up and the wait repeated until the deadline has passed, which also
+  covers a timeout too long for the platform to name and an interrupted `poll`.
+- **The native object is the standard library's trait.** `EventSignal` implements `AsHandle`
+  and `EventFdSignal` implements `AsFd`, so a caller waits on one with the platform's own wait
+  and portable code never names a platform type. `EventSignal::event` also lends the `Event`
+  itself, which a `windows-threadpool-sys` thread-pool wait takes without `unsafe`, because an
+  `Event` is known to be an event and never a mutex. Tests wait with `win-sync-sys`'s
+  `wait_for_single_object` and with `poll` and see the level `Signal::wait` sees. A
+  revert-probe that made the event auto-reset
+  failed the tests that a raise stays raised through waits, wakes every waiter, and is seen by
+  the platform's wait without being consumed.
+
+[^ac-3]: `AC-3` in [CHECKLIST.md](CHECKLIST.md#ac-3)
+
+## A lock may be waited for, without a bound, 2026-11-12
+
+`Vfs::lock` takes the same locks as `Vfs::try_lock` and waits while another holder's lock
+conflicts, for canopy's writer exclusion, which waits rather than refusing ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Writer exclusion and its ownership record, modelled in
+`Coordination.tla`")[^ac-2].
+
+- **Both modes and every span.** The writer exclusion needs an exclusive lock, but the waiting
+  form of `try_lock` costs nothing more in any mode, so it takes the same arguments and the two
+  never differ in what they lock. A waiter for bytes nobody holds is granted at once.
+- **Woken by any release that lets it in, in no order.** `OsFs` waits in the kernel --
+  `LockFileEx` without `LOCKFILE_FAIL_IMMEDIATELY` on Windows, `F_OFD_SETLKW` on Linux, `flock`
+  without `LOCK_NB` elsewhere -- so a dropped guard or a dead holder wakes it, and an interrupted
+  wait on Unix resumes. `MemFs` waits on a condition variable that every release and every
+  abandonment wakes. Neither promises an order among waiters, which the coordination contract
+  does not ask for ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The contract promises
+  no order among waiters at any point of conflict").
+- **No bound and no cancellation.** A kernel lock wait can be bounded or cancelled only with
+  machinery the platforms do not share (an overlapped handle and `CancelIoEx` on Windows, a
+  signal on Linux), and the writer exclusion's contract waits without a bound. A thread holding a
+  conflicting guard waits for ever, as two processes would. A bounded or cancellable wait is not
+  scheduled; it is added when a consumer's contract needs one.
+- **No backend has an inherent method named `lock`.** An inherent method shadows a trait method
+  of the same name at every call site, so one would stop a caller holding that backend from
+  calling `Vfs::lock` on it by method syntax; the backends' own state locks are `MemFs::tree` and
+  `FaultyFs::rule_state`.
+- **Tested across processes.** `vfs-lock-holder` takes the waiting form on request; the suite has
+  a waiter woken by a killed holder, for a whole file and for a range, and a waiting process let in
+  when this one lets go, on Windows and on Linux under WSL. Removing the wake from `MemFs`'s
+  abandonment fails the test of a waiter let in by a simulated death.
+
+[^ac-2]: `AC-2` in [CHECKLIST.md](CHECKLIST.md#ac-2)
+
+## The platform's own wait on a borrowed signal, 2026-11-12
+
+`wait_native` waits on a borrowed event (`BorrowedHandle`, Windows, through `win-sync-sys`'s
+`wait_for_single_object`) or descriptor (`BorrowedFd`, Linux, through `poll`) with the platform's
+own wait, for at most a bound, and reports whether it was raised; it lowers nothing. It is what
+`EventSignal::wait` and `EventFdSignal::wait` are, taken out so that a
+caller holding only the native object a type lends through `AsHandle` or `AsFd` -- canopy's
+doorbell, over the platform's signal -- can wait on it without a system call or `unsafe` of its own
+([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell in code,
+`canopy::ring::Doorbell`")[^rg-2]. It keeps the signal's rule that a wait never reports `false`
+before its bound has passed.
+
+[^rg-2]: `RG-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#rg-2)

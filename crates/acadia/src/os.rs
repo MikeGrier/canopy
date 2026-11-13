@@ -13,11 +13,16 @@
 //! [`VfsErrorKind`] categories the store reasons about (design autonomy -- the
 //! taxonomy is ours, `std` is merely the mechanism that satisfies it).
 
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{DirEntry, FileType, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult};
+use crate::{
+    DirEntry, FileType, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock,
+    VfsResult,
+};
 
 #[cfg(not(any(unix, windows)))]
 compile_error!("acadia's OsFs supports Unix and Windows targets only");
@@ -85,7 +90,13 @@ fn map_kind(kind: io::ErrorKind) -> VfsErrorKind {
 
 /// Builds a [`VfsError`] for operation `op` on `path` from an `io::Error`.
 fn err(op: &'static str, path: &Path, e: &io::Error) -> VfsError {
-    VfsError::new(map_kind(e.kind()), op, e.to_string()).with_path(path)
+    // A Windows read or write refused by another handle's lock or share mode is contention.
+    let kind = if is_contention(e) {
+        VfsErrorKind::Locked
+    } else {
+        map_kind(e.kind())
+    };
+    VfsError::new(kind, op, e.to_string()).with_path(path)
 }
 
 /// Converts a `std::fs::FileType` into the seam's [`FileType`].
@@ -122,10 +133,44 @@ fn read_positioned(file: &fs::File, buf: &mut [u8], offset: u64) -> io::Result<u
 /// destructor, where a marker file would linger and wedge the store.
 #[derive(Debug)]
 struct OsLock {
-    _handle: fs::File,
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "held for its share mode, never read")
+    )]
+    handle: fs::File,
 }
 
 impl VfsLock for OsLock {}
+
+#[cfg(unix)]
+impl Drop for OsLock {
+    fn drop(&mut self) {
+        release_unix_lock(&self.handle);
+    }
+}
+
+/// Releases the `flock` or open-file-description lock on `file`'s description before the
+/// handle closes.
+///
+/// Closing alone is not enough: a child forked by another thread holds a duplicate of the
+/// description until it execs, and the lock lasts as long as the description does, so the
+/// lock would outlive the guard for that window.
+#[cfg(unix)]
+fn release_unix_lock(file: &fs::File) {
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: the descriptor is open for both calls; each only releases locks.
+    unsafe {
+        libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+        #[cfg(target_os = "linux")]
+        {
+            let mut whole: libc::flock = std::mem::zeroed();
+            whole.l_type = libc::F_UNLCK as libc::c_short;
+            whole.l_whence = libc::SEEK_SET as libc::c_short;
+            libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &whole);
+        }
+    }
+}
 
 /// Opens `path` such that the returned handle holds an exclusive lock on it.
 ///
@@ -168,6 +213,262 @@ fn open_exclusive(path: &Path) -> io::Result<fs::File> {
         return Err(io::Error::last_os_error());
     }
     Ok(handle)
+}
+
+/// A held [`OsFs::try_lock`] lock: a handle of its own, so the lock's holder is this guard.
+#[derive(Debug)]
+struct OsRangeLock {
+    file: fs::File,
+    #[cfg(windows)]
+    start: u64,
+    #[cfg(windows)]
+    len: u64,
+}
+
+impl VfsLock for OsRangeLock {}
+
+impl Drop for OsRangeLock {
+    fn drop(&mut self) {
+        // Windows releases a closed handle's locks only when the system gets to it, so a
+        // successor taking the lock straight after the drop could still be refused.
+        #[cfg(windows)]
+        let _ = unlock_range(&self.file, self.start, self.len);
+        #[cfg(unix)]
+        release_unix_lock(&self.file);
+    }
+}
+
+/// The `OVERLAPPED` that names file position `offset` to `LockFileEx` and `UnlockFileEx`.
+#[cfg(windows)]
+fn overlapped_at(offset: u64) -> windows_sys::Win32::System::IO::OVERLAPPED {
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+    OVERLAPPED {
+        Internal: 0,
+        InternalHigh: 0,
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 {
+                Offset: offset as u32,
+                OffsetHigh: (offset >> 32) as u32,
+            },
+        },
+        hEvent: std::ptr::null_mut(),
+    }
+}
+
+/// Locks `len` bytes of `file` from `start`, waiting for a conflicting holder if `wait`.
+#[cfg(windows)]
+fn lock_range(file: &fs::File, mode: LockMode, start: u64, len: u64, wait: bool) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
+
+    let mut flags = if wait { 0 } else { LOCKFILE_FAIL_IMMEDIATELY };
+    if mode == LockMode::Exclusive {
+        flags |= LOCKFILE_EXCLUSIVE_LOCK;
+    }
+    let mut overlapped = overlapped_at(start);
+    // SAFETY: the handle is open for the whole call, and the handle is synchronous, so the
+    // call is complete before it returns and `overlapped` is not used after that.
+    let locked = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            flags,
+            0,
+            len as u32,
+            (len >> 32) as u32,
+            &mut overlapped,
+        )
+    };
+    if locked == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Releases the lock [`lock_range`] took on `file`.
+#[cfg(windows)]
+fn unlock_range(file: &fs::File, start: u64, len: u64) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+
+    let mut overlapped = overlapped_at(start);
+    // SAFETY: as for `LockFileEx` in `lock_range`.
+    let unlocked = unsafe {
+        UnlockFileEx(
+            file.as_raw_handle(),
+            0,
+            len as u32,
+            (len >> 32) as u32,
+            &mut overlapped,
+        )
+    };
+    if unlocked == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Takes an open-file-description lock on `len` bytes of `file` from `start`, waiting for a
+/// conflicting holder if `wait`; a `len` of zero runs to the end of every position the file
+/// could have.
+///
+/// Never a process-associated `fcntl` lock: any close of the file by its process releases
+/// those, which would let one guard's drop release another's lock.
+#[cfg(target_os = "linux")]
+fn lock_range(file: &fs::File, mode: LockMode, start: u64, len: u64, wait: bool) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: `flock` is a plain C struct for which all-zero bytes are a valid value.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = match mode {
+        LockMode::Shared => libc::F_RDLCK,
+        LockMode::Exclusive => libc::F_WRLCK,
+    } as libc::c_short;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
+    lock.l_start = start as libc::off_t;
+    lock.l_len = len as libc::off_t;
+    let command = if wait {
+        libc::F_OFD_SETLKW
+    } else {
+        libc::F_OFD_SETLK
+    };
+    loop {
+        // SAFETY: the descriptor is open for the call and `lock` outlives it.
+        if unsafe { libc::fcntl(file.as_raw_fd(), command, &lock) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// Takes a whole-file `flock` on `file`, waiting for a conflicting holder if `wait`, for a Unix
+/// without open-file-description locks.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn lock_whole_file(file: &fs::File, mode: LockMode, wait: bool) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let mut operation = match mode {
+        LockMode::Shared => libc::LOCK_SH,
+        LockMode::Exclusive => libc::LOCK_EX,
+    };
+    if !wait {
+        operation |= libc::LOCK_NB;
+    }
+    loop {
+        // SAFETY: the descriptor is open for the call.
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// Locks `span` of `file`, which is open for reading and writing, waiting for a conflicting
+/// holder if `wait`.
+fn lock_span(file: &fs::File, mode: LockMode, span: LockSpan, wait: bool) -> io::Result<()> {
+    let (start, end) = span
+        .bounds()
+        .expect("the span was validated before the file was opened");
+    #[cfg(windows)]
+    {
+        lock_range(file, mode, start, end - start, wait)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let len = match span {
+            LockSpan::File => 0,
+            LockSpan::Range { .. } => end - start,
+        };
+        lock_range(file, mode, start, len, wait)
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let _ = (start, end);
+        match span {
+            LockSpan::File => lock_whole_file(file, mode, wait),
+            LockSpan::Range { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "byte-range locks need open-file-description locks, which this Unix lacks",
+            )),
+        }
+    }
+}
+
+/// Whether `e`, from taking a lock, means another holder has the span.
+fn is_lock_contention(e: &io::Error) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // An open-file-description lock reports a conflict as either.
+        matches!(e.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EACCES))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        is_contention(e)
+    }
+}
+
+/// Opens the file at `path` on a handle of its own and locks `span` of it, waiting for a
+/// conflicting holder if `wait`.
+fn take_span_lock(
+    path: &Path,
+    op: &'static str,
+    mode: LockMode,
+    span: LockSpan,
+    wait: bool,
+) -> VfsResult<Box<dyn VfsLock>> {
+    let Some((start, end)) = span.bounds() else {
+        return Err(VfsError::new(
+            VfsErrorKind::InvalidInput,
+            op,
+            "a range must be non-empty and end at or before LockSpan::MAX_END",
+        )
+        .with_path(path));
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| err(op, path, &e))?;
+    match lock_span(&file, mode, span, wait) {
+        Ok(()) => {
+            #[cfg(not(windows))]
+            let _ = (start, end);
+            Ok(Box::new(OsRangeLock {
+                file,
+                #[cfg(windows)]
+                start,
+                #[cfg(windows)]
+                len: end - start,
+            }))
+        }
+        Err(e) if is_lock_contention(&e) => {
+            Err(VfsError::new(VfsErrorKind::Locked, op, e.to_string()).with_path(path))
+        }
+        Err(e) => Err(err(op, path, &e)),
+    }
+}
+
+/// A sibling of `path` to stage a publication in, unique to this process and call.
+fn publishing_path(path: &Path) -> Option<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut name: OsString = path.file_name()?.to_os_string();
+    name.push(format!(
+        ".publishing.{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    Some(path.with_file_name(name))
 }
 
 /// Opens a directory handle that `sync_all` can flush.
@@ -353,7 +654,7 @@ impl Vfs for OsFs {
 
     fn lock_exclusive(&self, path: &Path) -> VfsResult<Box<dyn VfsLock>> {
         match open_exclusive(path) {
-            Ok(handle) => Ok(Box::new(OsLock { _handle: handle })),
+            Ok(handle) => Ok(Box::new(OsLock { handle })),
             Err(e) if is_contention(&e) => {
                 Err(
                     VfsError::new(VfsErrorKind::Locked, "lock_exclusive", e.to_string())
@@ -362,6 +663,36 @@ impl Vfs for OsFs {
             }
             Err(e) => Err(err("lock_exclusive", path, &e)),
         }
+    }
+
+    fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        take_span_lock(path, "try_lock", mode, span, false)
+    }
+
+    fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        take_span_lock(path, "lock", mode, span, true)
+    }
+
+    fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        let Some(staging) = publishing_path(path) else {
+            return Err(VfsError::new(
+                VfsErrorKind::InvalidInput,
+                "publish_new",
+                "the path names no file",
+            )
+            .with_path(path));
+        };
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)
+            .map_err(|e| err("publish_new", path, &e))?;
+        let staged = file.write_all(contents).and_then(|()| file.sync_all());
+        drop(file);
+        // A hard link fails where anything has the name, which a replacing rename would not.
+        let published = staged.and_then(|()| fs::hard_link(&staging, path));
+        let _ = fs::remove_file(&staging);
+        published.map_err(|e| err("publish_new", path, &e))
     }
 
     fn is_os_filesystem(&self) -> bool {

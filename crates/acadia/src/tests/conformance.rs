@@ -749,6 +749,26 @@ fn the_default_implementation_reports_unsupported() {
         .lock_exclusive(Path::new("/d/.lock"))
         .expect_err("the default offers no exclusion");
     assert_eq!(refused.kind(), VfsErrorKind::Unsupported);
+    let refused = Bare
+        .try_lock(
+            Path::new("/d/x.lock"),
+            crate::LockMode::Shared,
+            crate::LockSpan::File,
+        )
+        .expect_err("the default offers no locks");
+    assert_eq!(refused.kind(), VfsErrorKind::Unsupported);
+    let refused = Bare
+        .lock(
+            Path::new("/d/x.lock"),
+            crate::LockMode::Exclusive,
+            crate::LockSpan::File,
+        )
+        .expect_err("the default offers no waiting locks");
+    assert_eq!(refused.kind(), VfsErrorKind::Unsupported);
+    let refused = Bare
+        .publish_new(Path::new("/d/x"), b"x")
+        .expect_err("the default cannot publish");
+    assert_eq!(refused.kind(), VfsErrorKind::Unsupported);
 }
 
 // ---------------------------------------------------------------------------

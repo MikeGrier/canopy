@@ -9,6 +9,9 @@ dependencies = [
  "cap-fs-ext",
  "cap-std",
  "libc",
+ "test-timers",
+ "win-sync-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -48,11 +51,13 @@ dependencies = [
  "acadia",
  "getrandom",
  "komorebi",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
  "test-timers",
  "tracing",
+ "windows-threadpool-sys",
 ]
 
 [[package]]
@@ -192,6 +197,12 @@ checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "typenum",
 ]
+
+[[package]]
+name = "io-buffers"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea876d0acdb5e4846b69a92433dc39eec0eb6fd1f041189effc51c98facd5fd8"
 
 [[package]]
 name = "io-extras"
@@ -583,10 +594,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "win-handles-sys"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cc5af90e594f9bcafad8fbe66c5c254885b6e70aeff3d84d58479274cb2b4b"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "win-shared-os-owned-handle"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e2b59af67831285aa278b195c524e8a9d1532c90be9cc9c91e7bebf43561218"
+
+[[package]]
+name = "win-sync-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d715a19899c94ee0a3a830a10f6e632848908a24d23a7ebee8b7dfe8a3b76272"
+dependencies = [
+ "win-handles-sys",
+ "win-shared-os-owned-handle",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "win-time-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccbdeedb7cdb28990babc08deda7976e18830d05e83caa5f41a4319804b94133"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-overlapped-io-sys"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d21d60e265dd389c2c374db5a7bbfa399d257c6a7caf93ad849c9ddabc5954"
+dependencies = [
+ "io-buffers",
+ "win-shared-os-owned-handle",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "windows-sys"
@@ -646,6 +703,19 @@ dependencies = [
  "windows_x86_64_gnu 0.53.1",
  "windows_x86_64_gnullvm 0.53.1",
  "windows_x86_64_msvc 0.53.1",
+]
+
+[[package]]
+name = "windows-threadpool-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0708ff7288755a3f65d8319b1a142bf1971aae8f29ff6febcf571c879fdfe7"
+dependencies = [
+ "win-shared-os-owned-handle",
+ "win-sync-sys",
+ "win-time-sys",
+ "windows-overlapped-io-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

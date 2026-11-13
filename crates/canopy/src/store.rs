@@ -44,11 +44,15 @@ mod document;
 mod errors;
 mod genesis;
 mod namespace;
+mod publication;
 mod repair;
 mod scrub;
 mod surface;
 mod writer;
 
+pub use genesis::Migration;
+pub use publication::PUBLICATION_RECORD_NAME;
+use publication::PublicationDurability;
 use repair::RepairBacklog;
 pub use repair::{BlobVerification, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RepairOutcome};
 pub use scrub::BacklogRepairReport;
@@ -113,7 +117,18 @@ pub const LOCK_NAME: &str = ".lock";
 /// build does not create, read, or repair, so a v4 store would open and then behave as if
 /// its `p{i}` copies were still part of the store's truth. Refusing it is the honest answer,
 /// and is decided from the version alone (`D325`).
-pub const GENESIS_FORMAT_VERSION: u32 = 5;
+///
+/// v6 added the publication record ([`PUBLICATION_RECORD_NAME`]) that guards an unlogged write
+/// against `STRANDED-VOTE`. A v5 binary would ignore a pending record and could strand the very
+/// vote it guards, so the version is the barrier that keeps one out of a v6 root. A v5 root holds
+/// nothing a v6 build reads differently, so it is not refused but migrated: `open` reports
+/// [`StoreError::MigrationRequired`] and [`Store::migrate`] advances it.
+pub const GENESIS_FORMAT_VERSION: u32 = 6;
+
+/// The genesis version [`Store::migrate`] advances to [`GENESIS_FORMAT_VERSION`]. Changing this
+/// value changes which roots are migrated rather than refused, so it is a
+/// compatibility-affecting constant.
+pub const MIGRATABLE_FORMAT_VERSION: u32 = 5;
 
 /// The largest replica count canopy accepts -- a safety ceiling (`D79`).
 ///
@@ -641,6 +656,8 @@ pub struct Store {
     log_durability: Arc<crate::commit_log::LogDurability>,
     /// Directories created whose names could not be made durable, nor the directory removed.
     unsynced_dirs: Arc<Mutex<DirSyncDebt>>,
+    /// What is known durable about the publication record's name, shared by every clone.
+    publication: Arc<PublicationDurability>,
     /// The root's exclusive-writer lock (`D116`), held for as long as any handle
     /// to this store lives.
     ///
@@ -870,9 +887,16 @@ impl Store {
     /// Holds this store's writer gate until the guard drops, for a write: refused while a
     /// transaction is unresolved, because writing past it would bury what recovery must
     /// finish. Re-entrant on one thread.
+    ///
+    /// The outermost entry settles the publication record first, so every operation on the
+    /// store -- a write of either kind, a check, a collection, a repair, a scrub -- starts from
+    /// a store with no publication pending, and none needs to remember to settle.
     pub(crate) fn writable(&self) -> Result<WriterGuard, StoreError> {
         let guard = self.writer.enter();
         self.refuse_if_unresolved()?;
+        if self.writer.held_depth() == 1 {
+            self.settle_publication()?;
+        }
         Ok(guard)
     }
 

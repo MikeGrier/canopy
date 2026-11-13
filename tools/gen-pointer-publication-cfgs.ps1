@@ -48,10 +48,6 @@ $all = @('TypeOK', 'DurablePointerHasBlob', 'LivePointerHasBlob', 'IdleImpliesSe
 $noStranding = @('TypeOK', 'DurablePointerHasBlob', 'LivePointerHasBlob')
 $recordProperties = @('PointersMoveOnlyUnderADurableRecord', 'TheRecordGoesOnlyOnceItsVersionIsDurable')
 
-# The protocol as built: with no STRANDED-VOTE guard selected, every invariant but the one the
-# guard is for holds.
-Write-Config 'PointerPublication' @('The current protocol: every invariant and property holds.') 'none' $true $noStranding
-
 # Candidate guards for STRANDED-VOTE: name, guard, outcome header, properties of the guard.
 $guards = @(
     @('PointerPublication-FixRecord', 'record', @('STRANDED-VOTE candidate guard "record" holds: every invariant and property holds,', 'including IdleImpliesSettled.'), $recordProperties),
@@ -73,6 +69,10 @@ Write-Config 'PointerPublication-MixedResolveSkippedByLoggedWrites' @('The "reso
 # Every guard with the operations that read or repair a document without publishing to it.
 $maintInvariants = $noStranding + @('IdleImpliesSettledUnlessAReplicaIsLost', 'ACheckReadsASettledRecord')
 $maintProperties = $recordProperties + @('RepairOnlyFillsAMissingReplicaWithTheVote')
+# The protocol as built: the "record" guard with its record's live and durable state separate, beside
+# writes a transaction makes, and with every operation that settles first.
+Write-Config 'PointerPublication' @('The protocol as built: the "record" guard, beside writes that a transaction makes,', 'with checks, collection, repair and scrub: every invariant and property holds.') 'record' $true $maintInvariants $maintProperties $true 'none' $true $true
+
 Write-Config 'PointerPublication-MaintenanceRecord' @('The "record" guard with checks, collection, repair and scrub: every invariant and property holds.') 'record' $true $maintInvariants $maintProperties $true 'none' $true $true
 Write-Config 'PointerPublication-MaintenanceResolve' @('The "resolve" guard with checks, collection, repair and scrub: every invariant and property holds.') 'resolve' $true $maintInvariants @('RepairOnlyFillsAMissingReplicaWithTheVote') $false 'none' $true $true
 Write-Config 'PointerPublication-MaintenanceRecordLostReplica' @('The "record" guard with a lost pointer replica: a write that fails part-way publishing to a', 'document that has lost one replica leaves three values, because only a repair', 'restores a replica under this guard. TLC must report IdleImpliesSettled violated.') 'record' $true @('TypeOK', 'IdleImpliesSettled') @() $true 'none' $true $true
@@ -80,7 +80,9 @@ Write-Config 'PointerPublication-MaintenanceResolveLostReplica' @('The "resolve"
 
 # Negative controls.
 Write-Config 'PointerPublication-NoCollectSync' @('Negative control: without the namespace sync before collection,', 'TLC must report DurablePointerHasBlob violated (the DANGLING-DURABLE', 'counterexample).') 'none' $false @('TypeOK', 'DurablePointerHasBlob')
-Write-Config 'PointerPublication-Settled' @('STRANDED-VOTE: no operation in progress implies a pointer majority (a version', 'or absence). With no guard selected the protocol strands the vote, so TLC must', 'report IdleImpliesSettled violated.') 'none' $true @('IdleImpliesSettled')
+Write-Config 'PointerPublication-Settled' @('STRANDED-VOTE: no operation in progress implies a pointer majority (a version', 'or absence). The protocol as built, the "record" guard beside writes that a', 'transaction makes: every invariant and property holds.') 'record' $true $all $recordProperties $true 'none' $true
+Write-Config 'PointerPublication-Control-Unguarded' @('Negative control: STRANDED-VOTE with no guard selected. The protocol strands the', 'vote, so TLC must report IdleImpliesSettled violated.') 'none' $true @('IdleImpliesSettled')
+Write-Config 'PointerPublication-Unguarded' @('The protocol with no STRANDED-VOTE guard, checked for everything but the vote the', 'guard is for: every invariant and property holds.') 'none' $true $noStranding
 
 # Controls of the record: name, control, target, kind, description.
 $controls = @(

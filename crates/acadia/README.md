@@ -23,13 +23,28 @@ under [`canopy`](https://crates.io/crates/canopy).
   `fsync`'d.
 - **Exclusive locks are owned.** `lock_exclusive` returns a guard whose lifetime is
   the lock, so the OS releases it if the owning process dies.
+- **Range locks never wait.** `try_lock` takes a shared or exclusive lock on a whole
+  file or a byte range, refuses a conflict at once with `Locked`, and is released when
+  its guard drops or its process dies. Every guard is its own holder. Keep data out of
+  locked ranges: Windows refuses reads and writes inside them, and `MemFs` does too.
+  `lock` takes the same locks and waits instead, until a release or a holder's death
+  lets it in.
+- **Publication is all or nothing.** `publish_new` creates a file only where nothing
+  is, never visibly incomplete, and complete or absent after a power loss.
+
+`signal` additionally provides `Signal`, a level that is raised, lowered and waited on:
+a manual-reset `win-sync-sys` `Event` on Windows (`AsHandle`, and `event` for a
+thread-pool wait), an `eventfd` on Linux (`AsFd`), and a
+mutex and condition variable elsewhere and in tests. `PlatformSignal` names the
+platform's own, and `wait_native` waits on a borrowed event or descriptor with the
+platform's own wait, without lowering it.
 
 ## Backends
 
 | Type | Purpose |
 |---|---|
 | `OsFs` | Passthrough to the operating system; it maps `std::io::Error` onto `VfsErrorKind`. |
-| `MemFs` | A complete in-memory filesystem with separate *live* and *durable* states. `fsync` of a file makes its bytes durable; `fsync` of a directory makes its entries durable. `simulate_crash` discards everything not yet durable. |
+| `MemFs` | A complete in-memory filesystem with separate *live* and *durable* states. `fsync` of a file makes its bytes durable; `fsync` of a directory makes its entries durable. `simulate_crash` discards everything not yet durable. `another_process` gives a second simulated process over the same tree, and `abandon` releases a process's locks as its death would. |
 | `FaultyFs<V>` | Wraps any backend and applies a `FaultPolicy`: fail an operation, tear a write, corrupt a read, or observe a call, on chosen paths at chosen moments. No randomness -- every fault fires on a declared schedule. |
 
 `read_root` additionally provides `ReadRoot`/`OsReadRoot`, read access anchored to a

@@ -947,11 +947,8 @@ fn a_majority_losing_its_entry_reads_as_absent_rather_than_as_damage() {
     );
 }
 
-#[test]
-fn replicas_that_all_disagree_are_contended_rather_than_an_error() {
-    // Three adjacent versions caught in one sample set: every replica parses, none commands a
-    // majority, and not enough are absent to carry it either. Nothing here is decidable, so
-    // the read says so in the one shape a caller's loop can wait out (`D336`).
+/// Three replicas of `document`, each naming a different version.
+fn scattered() -> (Arc<dyn Vfs>, Store, NodePath, DocumentName) {
     let (vfs, root, store, node, document, _) = seeded(b"v1");
     for (index, body) in [(1usize, b"v2".as_slice()), (2, b"v3".as_slice())] {
         let pointer = pointer_for(&node, &document, body);
@@ -961,6 +958,17 @@ fn replicas_that_all_disagree_are_contended_rather_than_an_error() {
         )
         .expect("write a divergent replica");
     }
+    (vfs, store, node, document)
+}
+
+#[test]
+fn replicas_that_all_disagree_under_a_modification_are_contended_rather_than_an_error() {
+    // Three adjacent versions caught in one sample set while a writer is part-way: every
+    // replica parses, none commands a majority, and not enough are absent to carry it either.
+    // Nothing here is decidable yet, so the read says so in the one shape a caller's loop can
+    // wait out (`D336`).
+    let (_vfs, store, node, document) = scattered();
+    let _modifying = store.begin_modification();
 
     match store.read_document(&node, &document).expect("read") {
         Read::Contended(contended) => assert_eq!(
@@ -972,6 +980,28 @@ fn replicas_that_all_disagree_are_contended_rather_than_an_error() {
         ),
         other => panic!("three disagreeing replicas are contention, not {other:?}"),
     }
+}
+
+#[test]
+fn replicas_that_all_disagree_with_nothing_modifying_them_are_an_error() {
+    // The same scatter with the modification count even and unmoved across the vote: no
+    // writer can have produced it during the read, so waiting will not settle it, and a
+    // caller's loop must be told rather than left spinning on contention.
+    let (_vfs, store, node, document) = scattered();
+
+    match store.read_document(&node, &document) {
+        Err(StoreError::PointerUnavailable {
+            missing: 0,
+            rejected: 0,
+            disagreeing: 3,
+            ..
+        }) => {}
+        other => panic!("a stable disagreement is an error, not {other:?}"),
+    }
+    assert!(matches!(
+        crate::read_within(&store, &node, &document, 5),
+        Err(StoreError::PointerUnavailable { .. })
+    ));
 }
 
 #[test]

@@ -17,13 +17,17 @@ impl Store {
     /// # It writes both trees, and journals neither (`D332`)
     ///
     /// The blob is ingested and the pointer moved in the order `D327` requires: the content
-    /// is durable before anything names it. Nothing here is journalled, so that ordering is
-    /// not a belt-and-braces measure -- it is the only thing preventing a dangling pointer,
-    /// because there is no `prepare` for recovery to roll forward from.
+    /// is durable before anything names it. Nothing here goes through the commit log, so that
+    /// ordering is not a belt-and-braces measure -- it is the only thing preventing a dangling
+    /// pointer, because there is no `prepare` for recovery to roll forward from.
     ///
-    /// **What resolves a crash mid-write is the pointer quorum** (`D320`). A crash between
-    /// the pointer renames leaves a minority holding the new entry, the majority holding the
-    /// old one, and both naming blobs that are already durable.
+    /// **A crash between the pointer renames is finished by the publication record.** Before
+    /// the first replica moves, the write durably records the pointer it is publishing, and
+    /// the next operation on the store, or the next `open`, rolls every replica forward to it
+    /// before acting. A failed write therefore leaves its document holding at most its old
+    /// version and the recorded one, never a minority on each that no quorum can resolve
+    /// (`STRANDED-VOTE`). The record names that one pointer and is cleared when the write
+    /// completes; it journals nothing else.
     ///
     /// **A crash before the pointer moves leaves an unreferenced blob this path cannot
     /// collect.** The transactional path names its targets in `begin` so recovery can find
@@ -68,7 +72,11 @@ impl Store {
 
         // The content store first, and durable before anything names it (`D327`).
         let name = self.ingest_blob(&node, document, Artifact::Body, body.as_bytes(), nonce)?;
+        // No replica moves until the record is durable, and the record is cleared only once
+        // every replica names the version durably (`STRANDED-VOTE`).
+        self.record_publication(&node, document, name.digest(), nonce)?;
         self.write_body_pointer(&node, document, name.digest(), nonce)?;
+        self.clear_publication()?;
 
         // Without this every overwrite would strand the version it replaced, on the success
         // path rather than only after a crash (`D328`). The keep-set is read from the
@@ -128,6 +136,16 @@ impl Store {
     /// present, none commanding a majority, and not enough absent to carry the vote either.
     /// Re-resolving here would not help -- there is no second question to ask, only the same
     /// one later -- so it returns at once and the caller's loop is the whole of the retry.
+    ///
+    /// # A disagreement nothing was changing is not contention
+    ///
+    /// The vote is bracketed by two samples of the modification count. When they show nothing
+    /// was modified during it ([`Store::undisturbed`]), no writer in this process can have
+    /// scattered the replicas the read saw, and waiting will not gather them: the read returns
+    /// [`StoreError::PointerUnavailable`] rather than [`Read::Contended`], so a caller's loop
+    /// stops instead of spinning. Under the publication record that is a pointer replica lost
+    /// beneath a write that then failed part-way, and the next operation that settles -- a
+    /// write, a repair, a scrub -- restores a majority.
     pub fn read_document(
         &self,
         node: impl Into<NodePath>,
@@ -141,28 +159,35 @@ impl Store {
         // and asking it twice more would only be answering a different question -- whether
         // to keep waiting -- which is the caller's.
         for _ in 0..2 {
+            let before = self.modifications();
             let read = match self.read_pointer(&node, document) {
                 Ok(read) => read,
                 // No pointer commanded a majority. Absence might still have: count the
                 // replicas holding nothing against the same threshold the pointer vote used.
-                Err(StoreError::PointerUnavailable {
-                    rejected: 0,
-                    missing,
-                    disagreeing,
-                    ..
-                }) => {
+                Err(
+                    error @ StoreError::PointerUnavailable {
+                        rejected: 0,
+                        missing,
+                        disagreeing,
+                        ..
+                    },
+                ) => {
                     // Nothing was rejected, so every replica is accounted for by one tally
                     // or the other and their sum is the replica count.
                     let replicas = missing + disagreeing;
                     if missing >= namespace::pointer_majority(replicas) {
                         return Ok(Read::Absent);
                     }
+                    let after = self.modifications();
+                    if Store::undisturbed(before, after) {
+                        return Err(error);
+                    }
                     return Ok(Read::Contended(Contended {
                         cause: Contention::Undetermined {
                             present: disagreeing,
                             missing,
                         },
-                        modifications: self.modifications(),
+                        modifications: after,
                     }));
                 }
                 Err(other) => return Err(other),

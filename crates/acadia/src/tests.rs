@@ -29,9 +29,13 @@ use crate::{FileType, MemFs, OsFs, Vfs, VfsErrorKind, VfsResult};
 
 mod conformance;
 mod fault;
+mod locks;
 mod mem_delta_sync;
 mod mem_fork;
 mod mem_reclaim;
+mod publish;
+mod signal;
+mod waiting_locks;
 
 /// A unique, self-cleaning scratch directory on the real filesystem for driving
 /// [`OsFs`]. Created and removed through [`OsFs`] itself so the tests exercise

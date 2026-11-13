@@ -56,6 +56,7 @@ pub mod fault;
 pub mod mem;
 pub mod os;
 pub mod read_root;
+pub mod signal;
 
 #[cfg(test)]
 mod tests;
@@ -65,6 +66,11 @@ pub use fault::{
 };
 pub use mem::MemFs;
 pub use os::OsFs;
+pub use signal::{CondvarSignal, PlatformSignal, Signal};
+#[cfg(target_os = "linux")]
+pub use signal::{EventFdSignal, wait_native};
+#[cfg(windows)]
+pub use signal::{EventSignal, wait_native};
 
 /// The result of a [`Vfs`] operation: success, or a [`VfsError`] value.
 pub type VfsResult<T> = Result<T, VfsError>;
@@ -267,6 +273,51 @@ pub struct DirEntry {
 /// cleanup at all because its process died.
 pub trait VfsLock: Send + Sync + fmt::Debug {}
 
+/// Whether a lock taken by [`Vfs::try_lock`] admits other holders of the bytes it covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LockMode {
+    /// Any number of shared holders at once; no exclusive holder alongside them.
+    Shared,
+    /// One holder, alongside no other of either mode.
+    Exclusive,
+}
+
+/// The bytes of a file a lock taken by [`Vfs::try_lock`] covers.
+///
+/// Two locks on one file conflict only where their spans overlap, and a span may lie wholly
+/// past the end of the file: a lock covers byte positions, not data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LockSpan {
+    /// Every position the file has or could have, overlapping every range.
+    File,
+    /// `len` positions from `offset`. `len` is at least one and the range ends at or before
+    /// [`LockSpan::MAX_END`]; anything else is refused with [`VfsErrorKind::InvalidInput`].
+    Range {
+        /// The first position covered.
+        offset: u64,
+        /// How many positions are covered.
+        len: u64,
+    },
+}
+
+impl LockSpan {
+    /// The position no range may extend past: the largest file offset Linux locks can name.
+    pub const MAX_END: u64 = i64::MAX as u64;
+
+    /// The half-open positions `[start, end)` this span covers, or `None` if it is invalid.
+    /// [`LockSpan::File`] covers `[0, u64::MAX)`.
+    #[must_use]
+    pub fn bounds(self) -> Option<(u64, u64)> {
+        match self {
+            LockSpan::File => Some((0, u64::MAX)),
+            LockSpan::Range { offset, len } => {
+                let end = offset.checked_add(len)?;
+                (len > 0 && end <= LockSpan::MAX_END).then_some((offset, end))
+            }
+        }
+    }
+}
+
 /// The filesystem seam: the complete set of operations Canopy storage performs.
 ///
 /// See the [crate documentation](crate) for the contract's load-bearing
@@ -429,6 +480,103 @@ pub trait Vfs: Send + Sync {
         Err(VfsError::new(VfsErrorKind::Unsupported, "lock_exclusive", {
             "this backend offers no exclusion"
         })
+        .with_path(path))
+    }
+
+    /// Takes a lock of `mode` on the `span` of the file at `path`, creating the file if absent
+    /// and never truncating it, and returns the guard that holds it.
+    ///
+    /// The call **never waits**: a span that overlaps one another holder has in a conflicting
+    /// mode -- either of the two exclusive -- fails at once with [`VfsErrorKind::Locked`].
+    /// **Every guard is its own holder**, so two guards taken in one process, or on one thread,
+    /// conflict exactly as guards in two processes do.
+    ///
+    /// The lock is released when the guard is dropped and when its process dies by any means.
+    /// After a death the release is the operating system's, which on Windows may lag the
+    /// process's exit by a moment; a successor that must not fail on that lag retries.
+    ///
+    /// # A locked span holds no data
+    ///
+    /// What a read or write through the seam does to bytes inside a span another holder has
+    /// locked is the platform's: Windows refuses a read of an exclusively locked byte and a
+    /// write of any locked byte -- the holder's own included, since every seam operation opens
+    /// its own handle -- while Linux does neither. [`MemFs`] refuses as Windows does, with
+    /// [`VfsErrorKind::Locked`]. So data a caller reads or writes lives outside every span
+    /// anyone locks, and a lock that needs a place of its own takes a range past the data, or a
+    /// file of its own with [`LockSpan::File`].
+    ///
+    /// # Not to be mixed with `lock_exclusive`
+    ///
+    /// A file is locked through this or through [`lock_exclusive`](Vfs::lock_exclusive), never
+    /// both: whether the two exclude each other differs between platforms.
+    ///
+    /// [`OsFs`] takes `LockFileEx` locks on Windows and open-file-description locks on Linux,
+    /// each on a handle of its own; on another Unix it takes `flock` for [`LockSpan::File`] and
+    /// reports a range as [`VfsErrorKind::Unsupported`]. An invalid span is
+    /// [`VfsErrorKind::InvalidInput`]. The default implementation reports
+    /// [`VfsErrorKind::Unsupported`], and **a decorator must forward this explicitly**, for the
+    /// reason given at [`lock_exclusive`](Vfs::lock_exclusive).
+    fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        let _ = (mode, span);
+        Err(VfsError::new(
+            VfsErrorKind::Unsupported,
+            "try_lock",
+            "this backend offers no locks",
+        )
+        .with_path(path))
+    }
+
+    /// Takes a lock of `mode` on the `span` of the file at `path` as
+    /// [`try_lock`](Vfs::try_lock) does, but **waits** while another holder's lock conflicts,
+    /// and returns once it is granted.
+    ///
+    /// Everything [`try_lock`](Vfs::try_lock) states holds here too, and two more things:
+    ///
+    /// - **A waiter is woken by any release that lets it in**: a guard dropped, or its holder's
+    ///   process dying. No order among waiters is promised, and a waiter may be passed over by
+    ///   one that arrives later.
+    /// - **The wait cannot be bounded or cancelled.** A caller that holds a conflicting guard on
+    ///   the same thread waits for ever, as two conflicting guards would across processes.
+    ///
+    /// [`OsFs`] waits in `LockFileEx` on Windows and in an open-file-description lock's wait on
+    /// Linux; on another Unix it waits in `flock` for [`LockSpan::File`] and reports a range as
+    /// [`VfsErrorKind::Unsupported`]. The default implementation reports
+    /// [`VfsErrorKind::Unsupported`], and **a decorator must forward this explicitly**, for the
+    /// reason given at [`lock_exclusive`](Vfs::lock_exclusive).
+    fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        let _ = (mode, span);
+        Err(VfsError::new(
+            VfsErrorKind::Unsupported,
+            "lock",
+            "this backend offers no locks",
+        )
+        .with_path(path))
+    }
+
+    /// Creates the file at `path` holding exactly `contents`, if nothing is there.
+    ///
+    /// Anything already at `path` -- a file or a directory -- fails it with
+    /// [`VfsErrorKind::AlreadyExists`] and changes nothing, so of any number of publishers
+    /// racing for one path exactly one succeeds.
+    ///
+    /// **The file is never visible incomplete, and a power loss leaves it complete or absent.**
+    /// Its bytes are durable before its name appears. The name itself is durable once the
+    /// parent directory is [`fsync`](Vfs::fsync)'d, as for a [`rename`](Vfs::rename); until
+    /// then a crash may lose it, but never leaves it holding less than `contents`.
+    ///
+    /// The bytes are staged in a sibling whose name is the file's name followed by
+    /// `.publishing.` and a suffix, removed whether the publication succeeds or fails. A crash
+    /// can leave one behind; it carries no meaning and may be removed.
+    ///
+    /// The default implementation reports [`VfsErrorKind::Unsupported`], and **a decorator must
+    /// forward this explicitly**, for the reason given at [`lock_exclusive`](Vfs::lock_exclusive).
+    fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        let _ = contents;
+        Err(VfsError::new(
+            VfsErrorKind::Unsupported,
+            "publish_new",
+            "this backend cannot publish",
+        )
         .with_path(path))
     }
 

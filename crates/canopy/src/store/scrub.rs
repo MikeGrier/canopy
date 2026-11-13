@@ -174,6 +174,9 @@ impl Store {
     ) -> Result<ContentScrubReport, StoreError> {
         let mut report = ContentScrubReport::default();
 
+        // Settles a pending publication before the walk, so the documents listed and the
+        // pointers judged stale are the ones the settled store holds.
+        drop(self.writable()?);
         for (node, document) in self.list_documents()? {
             // Per document, not per scrub: a pass over a large store must not hold every
             // other writer off for its whole duration. Each document is checked and repaired

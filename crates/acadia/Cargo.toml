@@ -18,7 +18,17 @@ exclude = ["DESIGN-NOTES.md"]
 cap-std = "4.0"
 cap-fs-ext = "4.0"
 
-# Only for the `flock` behind `OsFs::lock_exclusive` (D116); std exposes no
-# advisory-lock call. Windows needs no crate -- the exclusion is the share mode.
+[dev-dependencies]
+test-timers = { path = "../test-timers" }
+
+# For the `flock` and open-file-description locks behind `OsFs::lock_exclusive` and
+# `OsFs::try_lock`; std exposes no advisory-lock call.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.176"
+
+# For `LockFileEx`/`UnlockFileEx` behind `OsFs::try_lock`; `lock_exclusive` needs none, since
+# its exclusion is the share mode.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+# The event behind `EventSignal`, and the platform's wait on it.
+win-sync-sys = "0.1.0"

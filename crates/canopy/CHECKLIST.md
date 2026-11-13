@@ -21,29 +21,9 @@ Decisions: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Naming the stranded pointer vote
 
 - [x] **FM-2.1** -- Four candidate guards modelled and checked; resolving before each write and a durable publication record both hold. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#fm-21)
 
-- [ ] **FM-2.2** -- Choose between the guards that hold with several processes (MP-4.1 to MP-4.5) --
-  resolving before each write, or a durable publication record
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Guards against `STRANDED-VOTE`, compared in the model")
-  -- and implement it in `canopy`. If the publication record is chosen, every operation on a
-  document settles a pending record first: precondition checks, logged and unlogged
-  publication, collection, repair and scrub. A settle makes the record durable with an fsync
-  before it rolls the replicas forward, and one whose fsync fails fails its operation with the
-  record still pending, as the model checks ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The publication
-  record's live and durable state, modelled in `PointerPublication.tla`"). That section also
-  records two findings to decide on: repair and scrub do not need the settle for any property the
-  model checks, and a lost pointer replica is restored by the resolve guard's next write and by
-  nothing under the record guard but a repair. Because an older
-  binary would ignore a pending
-  record, the format barrier and the migration of existing roots (the first part of MP-6) move
-  into this milestone and land before the record can be written. Add regression tests for the `STRANDED-VOTE`
-  sequence followed by warm reopen and by power loss. Make the chosen guard's configuration the
-  spec's default, so [PointerPublication-Settled.cfg](spec/PointerPublication-Settled.cfg)
-  checks the protocol as built, and change that configuration's header to say every invariant
-  and property holds, which `tools/run-tlc-all.ps1` reads.
+- [x] **FM-2.2** -- `STRANDED-VOTE` is guarded by a durable publication record, behind genesis version 6 and a migration from version 5. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#fm-2-2)
 
-- [ ] **FM-2.3** -- Distinguish a stable no-majority state from contention in
-  `read_document`: sample the modification count before and after the vote, and report a
-  distinct outcome when `Store::undisturbed` holds, matching the model's read classification.
+- [x] **FM-2.3** -- A pointer vote with no majority that nothing was modifying is reported as `StoreError::PointerUnavailable`, not as contention. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#fm-2-3)
   > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> M1 -> `AC-1`
   > (primitives for canopy's coordination layer). See
   > [CHECKLIST.md](../acadia/CHECKLIST.md#ac-1).
@@ -52,27 +32,9 @@ Decisions: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Naming the stranded pointer vote
 
 Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store".
 
-- [ ] **RG-1** -- The doorbell's spec barrier ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The ring: a
-  portable protocol over one platform primitive, behind a contract spec"): `DoorbellContract.tla`,
-  stating only what a user observes -- work raised is taken, a waiter with something to take is
-  woken, spurious wakes allowed -- and `Doorbell.tla`, the mechanism, each step one atomic
-  operation or fence point of the code: the producer's publish, its test of the record of being
-  rung and its raise; the consumer's take, reset, clearing of the record, check again and wait;
-  and the signal's state. TLC checks that the implementation refines the contract, with controls
-  that must fail it: clearing the record before the reset, skipping the check, checking before
-  clearing, and a producer that tests before it publishes. Several producers, as a completion
-  queue's engine and a coordination notification both ring the engine's doorbell.
-  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M1 -> `AC-3` (the platform signal)
-  > lands before this; see [CHECKLIST.md](../acadia/CHECKLIST.md#ac-3).
+- [x] **RG-1** -- The doorbell's spec barrier: `DoorbellContract.tla` states what a user observes, and `Doorbell.tla`, the mechanism, is checked by TLC to refine it. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#rg-1)
 
-- [ ] **RG-2** -- `canopy::ring`'s `Doorbell<S: Signal = PlatformSignal>` over acadia's
-  signal, as `Doorbell.tla` specifies it, with the step each line realizes named beside it, the
-  completion doorbell's `AsHandle` and `AsFd` by `cfg`, and its pumped `wait`. Decide with the
-  engineer, as a toolchain decision, which checker of the Rust memory model runs the protocol over
-  a signal it can model (such as `loom`), and run it with each fence removed, which must fail.
-  Tests drive scripted interleavings over a scripted signal and check every outcome against
-  `DoorbellContract.tla`'s rules, and run the doorbell over each platform's signal from a
-  thread pool's wait and the platform's own wait.
+- [x] **RG-2** -- `canopy::ring::Doorbell` realizes `Doorbell.tla` step by step over acadia's signal, checked against the contract over every interleaving and run from each platform's thread-pool wait. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#rg-2)
 
 - [ ] **NT-1** -- Model the notification in `Coordination.tla` before it is built: a waiting
   operation registers, a change to what it waits on notifies it as a step of its own under weak
@@ -189,9 +151,11 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   conformance suite's notification cases run against both, and a test shows a registration woken
   by the break with no thread polling or blocked.
 
-- [ ] **MP-6** -- Unless FM-2.2 has already landed them, advance the genesis format version as
-  the barrier that makes an older binary refuse the root, and add the one-way migration of an
-  existing root: stated as requiring the root offline -- no older binary running against it or
+- [ ] **MP-6** -- FM-2.2 made genesis version 6 the barrier for the publication record and added
+  `Store::migrate`, which advances a version-5 root by replacing its marker alone, refused by
+  `open` with `StoreError::MigrationRequired`. Advance the version again as
+  the barrier that makes an older binary refuse the root, and extend the migration of an
+  existing root to the coordination state's format: stated as requiring the root offline -- no older binary running against it or
   starting to open it; taking the old root lock and reading the marker again under it; durably
   recording a migration record of its identity and inputs; writing the implementation record
   and the root's other new metadata durably; publishing the new marker atomically and syncing
@@ -284,8 +248,17 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   beside handles that speak another, writers of versions A, B and A again each leaving their version
   recorded, a failed write leaving it unchanged, and a stamp whose sync fails after its rename.
   Upgrades contended between processes are tested in M6, once independent writers can coexist.
-  > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> M2 -> `AC-2` (a
-  > blocking exclusive lock). See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-2).
+
+## M5+ -- After M5
+
+- [ ] **RG-2.1** -- Check the fences of `canopy::ring::Doorbell` below the spec barrier: choose
+  with the engineer, as a toolchain decision, a checker of the Rust memory model that runs the
+  protocol over a signal it can model (such as `loom`), run the doorbell's producers and consumer
+  under it, and run it again with each fence removed and with each `SeqCst` weakened, each of which
+  must fail. Owned by the engineer, who will establish the correctness argument for the fences;
+  until then the doorbell is assumed correct at that floor ([DESIGN-NOTES.md](DESIGN-NOTES.md)
+  "The doorbell in code, `canopy::ring::Doorbell`"). The ring's queues (API-3) are checked by the
+  same checker.
 
 ## M6 -- Writers in several processes take turns
 
@@ -294,9 +267,8 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   holder dies, with the ownership record telling the next acquirer so and a clean release
   clearing it before it drops the lock ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion and
   its ownership record, modelled in `Coordination.tla`"); extend the conformance suite to cover
-  it, including a release that overlaps another acquirer, on Windows and Linux.
-  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M2 -> `AC-2` (a blocking exclusive
-  > lock) must land first. See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-2).
+  it, including a release that overlaps another acquirer, on Windows and Linux. It builds on
+  acadia's waiting lock, `Vfs::lock` ([CHECKLIST.md](../acadia/CHECKLIST.md#ac-2)).
 
 - [ ] **MP-9** -- Replace the in-process writer gate and the root lock with the contract's
   exclusion, acquired once by the outermost write and by `init`, with callbacks receiving the
@@ -445,8 +417,15 @@ MP-3 and MP-4, was done in M3.
   convenience that submits one entry and waits on the completion doorbell. The queues are
   `canopy::ring`'s, generic over the signal as RG-2's doorbell is, following
   [durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring)'s
-  ring, with the step of `Ring.tla` each line realizes named beside it, and checked by RG-2's
-  memory-model checker. Tests: exactly one
+  ring, with the step of `Ring.tla` each line realizes named beside it, and checked by the
+  memory-model checker RG-2.1 chooses. On Windows the completion doorbell lends a handle that can
+  only wait (`win-sync-sys`'s `WaitOnlyEvent`), never its `Event`, whose reset would break the
+  doorbell ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The doorbell in code,
+  `canopy::ring::Doorbell`"); `windows-threadpool-sys` 0.4.0 takes a waitable handle without
+  `unsafe` only from an `Event`, so a client's safe thread-pool wait on it depends on that crate
+  accepting a `WaitOnlyEvent`, specified in
+  [WINDOWS-THREADPOOL-SYS-WAIT-ONLY-EVENT.md](../../WINDOWS-THREADPOOL-SYS-WAIT-ONLY-EVENT.md)
+  with the acadia and canopy work that follows it. Tests: exactly one
   completion per entry under many pairs, per-pair order, a full completion queue refusing a
   submission, a pair dropped with entries unstarted and started, a client waiting on the
   completion doorbell from a thread pool's wait, many waiting entries holding no engine thread,

@@ -39,6 +39,18 @@ that:
 - holders of different roots do not exclude each other;
 - after the holder dies, the root reopens with a clean commit log.
 
+## The `vfs-lock-holder` binary
+
+```text
+vfs-lock-holder <path> <shared|exclusive> <file|OFFSET+LEN>
+```
+
+Takes one `Vfs::try_lock` lock over `OsFs` and holds it, with the same handshake and
+exit behavior as `canopy-lock-holder`. `tests/vfs_lock.rs` uses it to check that a
+lock held in another process excludes this one, that shared holders in two processes
+coexist, that a range lock covers only its range, and that killing the holder
+releases its lock.
+
 Run them with:
 
 ```sh

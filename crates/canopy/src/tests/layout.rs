@@ -7,7 +7,7 @@ use super::*;
 use crate::store::{BLOB_TREE_DIR, NAMESPACE_TREE_DIR};
 use crate::{
     DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT, DEFAULT_SHARD_WIDTH,
-    MAX_REPLICA_COUNT, MAX_SHARD_WIDTH,
+    GENESIS_FORMAT_VERSION, MAX_REPLICA_COUNT, MAX_SHARD_WIDTH,
 };
 use acadia::{
     Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, VfsError, VfsErrorKind, When,
@@ -382,9 +382,12 @@ fn open_refuses_a_v4_store_on_its_version_rather_than_its_retired_field() {
 fn open_refuses_a_marker_with_an_even_pointer_replica_count() {
     // The namespace votes (`D320`), so an even count has no majority to take.
     let (vfs, root) = fresh_root();
-    let marker = br#"{"format_version":5,"blob_replica_count":3,
-         "pointer_replica_count":2,"shard_width":2,"shire_id":"x","created_at_unix_ms":0}"#;
-    vfs.write(&root.join(MARKER_NAME), marker).unwrap();
+    let marker = format!(
+        "{{\"format_version\":{GENESIS_FORMAT_VERSION},\"blob_replica_count\":3,\
+         \"pointer_replica_count\":2,\"shard_width\":2,\"shire_id\":\"x\",\"created_at_unix_ms\":0}}"
+    );
+    vfs.write(&root.join(MARKER_NAME), marker.as_bytes())
+        .unwrap();
     let err = Store::open_unsourced(vfs, root).expect_err("even pointer replica count");
     assert!(matches!(err, StoreError::MalformedMarker { .. }));
 }
@@ -394,9 +397,12 @@ fn open_accepts_a_marker_with_an_even_blob_replica_count() {
     // The counterpart to the test above, and the point of keeping the two counts apart:
     // blobs are verified rather than voted on, so parity means nothing to them (`D316`).
     let (vfs, root) = fresh_root();
-    let marker = br#"{"format_version":5,"blob_replica_count":2,
-         "pointer_replica_count":3,"shard_width":2,"shire_id":"x","created_at_unix_ms":0}"#;
-    vfs.write(&root.join(MARKER_NAME), marker).unwrap();
+    let marker = format!(
+        "{{\"format_version\":{GENESIS_FORMAT_VERSION},\"blob_replica_count\":2,\
+         \"pointer_replica_count\":3,\"shard_width\":2,\"shire_id\":\"x\",\"created_at_unix_ms\":0}}"
+    );
+    vfs.write(&root.join(MARKER_NAME), marker.as_bytes())
+        .unwrap();
     for index in 0..3 {
         vfs.create_dir_all(&root.join(NAMESPACE_TREE_DIR).join(format!("p{index}")))
             .unwrap();
@@ -409,7 +415,7 @@ fn open_accepts_a_marker_with_an_even_blob_replica_count() {
 fn open_refuses_a_marker_with_a_shard_width_outside_the_supported_range() {
     let (vfs, root) = fresh_root();
     let marker = format!(
-        "{{\"format_version\":5,\"blob_replica_count\":3,\
+        "{{\"format_version\":{GENESIS_FORMAT_VERSION},\"blob_replica_count\":3,\
          \"pointer_replica_count\":3,\"shard_width\":{},\
          \"shire_id\":\"x\",\"created_at_unix_ms\":0}}",
         crate::MAX_SHARD_WIDTH + 1
@@ -474,7 +480,7 @@ fn open_accepts_the_maximum_supported_replica_count() {
     // opens rather than being read as the malformed one past it.
     let (vfs, root) = fresh_root();
     let marker = format!(
-        "{{\"format_version\":5,\
+        "{{\"format_version\":{GENESIS_FORMAT_VERSION},\
          \"blob_replica_count\":{MAX_REPLICA_COUNT},\"pointer_replica_count\":3,\"shard_width\":2,\
          \"shire_id\":\"max-shire\",\"created_at_unix_ms\":1}}"
     );

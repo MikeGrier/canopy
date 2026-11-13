@@ -63,7 +63,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::{DirEntry, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult};
+use crate::{
+    DirEntry, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult,
+};
 
 /// Which [`Vfs`] operation a [`FaultPolicy`] rule intercepts.
 ///
@@ -85,6 +87,9 @@ pub enum FaultOp {
     ReadDir,
     Metadata,
     LockExclusive,
+    TryLock,
+    Lock,
+    PublishNew,
     OpenOutput,
 }
 
@@ -598,7 +603,7 @@ impl<V> FaultyFs<V> {
 
     /// Locks the rule state, recovering the guard on poison (D56: poisoning is
     /// not a fault to propagate).
-    fn lock(&self) -> MutexGuard<'_, Vec<Rule>> {
+    fn rule_state(&self) -> MutexGuard<'_, Vec<Rule>> {
         self.rules.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -622,7 +627,7 @@ impl<V> FaultyFs<V> {
     /// Picks the fault the policy scripts for this call, holding the rule state
     /// only for as long as the decision takes.
     fn select(&self, op: FaultOp, path: &Path) -> Option<Fault> {
-        let mut rules = self.lock();
+        let mut rules = self.rule_state();
         for rule in rules.iter_mut() {
             if rule.applies(op, path) {
                 let fire = should_fire(rule.when, rule.matched);
@@ -803,6 +808,32 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
         match self.check(FaultOp::LockExclusive, path) {
             Some(Fault::Fail(kind)) => Err(fault_err(kind, "lock_exclusive", path)),
             _ => self.inner.lock_exclusive(path),
+        }
+    }
+
+    // Forwarded explicitly for the same reason as `lock_exclusive`.
+    fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        match self.check(FaultOp::TryLock, path) {
+            Some(Fault::Fail(kind)) => Err(fault_err(kind, "try_lock", path)),
+            _ => self.inner.try_lock(path, mode, span),
+        }
+    }
+
+    // Forwarded explicitly for the same reason as `lock_exclusive`. A failure is reported
+    // before any wait.
+    fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        match self.check(FaultOp::Lock, path) {
+            Some(Fault::Fail(kind)) => Err(fault_err(kind, "lock", path)),
+            _ => self.inner.lock(path, mode, span),
+        }
+    }
+
+    // Forwarded explicitly for the same reason as `lock_exclusive`. A failure publishes
+    // nothing, as a failed publication does.
+    fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        match self.check(FaultOp::PublishNew, path) {
+            Some(Fault::Fail(kind)) => Err(fault_err(kind, "publish_new", path)),
+            _ => self.inner.publish_new(path, contents),
         }
     }
 
