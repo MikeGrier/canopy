@@ -1189,7 +1189,7 @@ pass. Cost is not part of the contract.
   [CHECKLIST.md](CHECKLIST.md). Discussion:
   [DESIGN-SESSION-2026-11-10-multi-process.md](design-sessions/DESIGN-SESSION-2026-11-10-multi-process.md).
 
-[^odi-2]: `ODI-2` in [CHECKLIST.md](CHECKLIST.md)
+[^odi-2]: `ODI-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#odi-2) [completed 2026-11-12]
 
 ## The content-store scale tests are unit tests with a 2 s budget, 2026-11-10
 
@@ -1506,8 +1506,8 @@ exclusion. U is an upgrader whose upgrade is safe for readers and W a handle tha
 | 18 `REQ2` | W | requests writer exclusion, which U holds | -- |
 | 19 `DLK` | U, W | U waits for the writer tier exclusively, held shared by W's attachment; W waits for exclusion, held by U | -- |
 
-[^mp-2]: `MP-2` in [CHECKLIST.md](CHECKLIST.md)
-[^mp-1-4]: `MP-1.4` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-2]: `MP-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-2) [completed 2026-11-11]
+[^mp-1-4]: `MP-1.4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-1-4) [completed 2026-11-11]
 
 ## Clones, leases and the upgrade drain, modelled in `Coordination.tla`, 2026-11-11
 
@@ -1966,7 +1966,7 @@ on.
   resets the log, a rollback that writes the namespace, and a failure that does not set the
   fence -- were each caught by the intended property.
 
-[^odi-3]: `ODI-3` in [CHECKLIST.md](CHECKLIST.md)
+[^odi-3]: `ODI-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#odi-3) [completed 2026-11-11]
 
 ## Recovery and its discovery, modelled in `Coordination.tla`, 2026-11-11
 
@@ -2161,7 +2161,7 @@ have attached.
 Under the contract step 4 finds the lock held by A and reports that recovery is not required: A's
 record beside a held lock is a transaction in progress.
 
-[^mp-4]: `MP-4` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-4]: `MP-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4) [completed 2026-11-12]
 [^mp-6]: `MP-6` in [CHECKLIST.md](CHECKLIST.md)
 
 ## The schema upgrade's body, modelled in `Coordination.tla`, 2026-11-11
@@ -2374,7 +2374,7 @@ Under the contract step 16 tells A recovery is required, and A releases: it star
 upgrade is refused and its handle is left detached, so no migration step is made over a store with
 an unresolved transaction.
 
-[^mp-2-4]: `MP-2.4` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-2-4]: `MP-2.4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-2-4) [completed 2026-11-11]
 
 ## Cumulative reader compatibility, modelled in `Coordination.tla`, 2026-11-11
 
@@ -2598,8 +2598,8 @@ The discussion is recorded in
 [^cm-3]: `CM-3` in [CHECKLIST.md](CHECKLIST.md)
 [^cm-4]: `CM-4` in [CHECKLIST.md](CHECKLIST.md)
 [^fm-3-4]: `FM-3.4` in [CHECKLIST.md](CHECKLIST.md)
-[^mp-3]: `MP-3` in [CHECKLIST.md](CHECKLIST.md)
-[^spec-2]: `SPEC-2` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-3]: `MP-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-3) [completed 2026-11-11]
+[^spec-2]: `SPEC-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#spec-2) [completed 2026-11-12]
 
 ## Probe mutants are data in the repository, matched so that they survive edits to the spec, 2026-11-11
 
@@ -3201,7 +3201,7 @@ its own, `spec/Acquisition.tla`, and the layers are split by assume-guarantee:
 [^mp-4-7]: `MP-4.7` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-7) [completed 2026-11-12]
 [^mp-4-8]: `MP-4.8` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-8) [completed 2026-11-12]
 [^mp-4-9]: `MP-4.9` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-9) [completed 2026-11-12]
-[^mp-4-10]: `MP-4.10` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-4-10]: `MP-4.10` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-10) [completed 2026-11-12]
 
 ## The coordination model refines the acquisition model, 2026-11-12
 
@@ -3300,7 +3300,7 @@ checks on a cyclic workload are retired[^mp-4-11].
   them, since they only showed those checks could fail and the workload went on. The counters
   no longer wrap, so every configuration explores the states it did.
 
-[^mp-4-11]: `MP-4.11` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-4-11]: `MP-4.11` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#mp-4-11) [completed 2026-11-12]
 
 ## No caller code runs under exclusion but the commit observer, 2026-11-12
 
@@ -3402,7 +3402,7 @@ work that brings them into line.
 
 [^odi-6]: `ODI-6` in [CHECKLIST.md](CHECKLIST.md)
 [^api-1]: `API-1` in [CHECKLIST.md](CHECKLIST.md)
-[^odi-7]: `ODI-7` in [CHECKLIST.md](CHECKLIST.md)
+[^odi-7]: `ODI-7` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#odi-7) [completed 2026-11-12]
 
 ## How long the contract makes a caller wait, 2026-11-12
 
@@ -3461,7 +3461,7 @@ expected to survive a re-run on other hardware because they are stated against t
   against a hold of tens raises the utilization and the tail with it, and a callback as long as
   half a hold pushes a service at moderate load past saturation.
 
-[^cq-1]: `CQ-1` in [CHECKLIST.md](CHECKLIST.md)
+[^cq-1]: `CQ-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#cq-1) [completed 2026-11-12]
 [^rd-1]: `RD-1` in [CHECKLIST.md](CHECKLIST.md)
 
 ## A change to the coordination state is delivered as a notification
@@ -3637,3 +3637,133 @@ against it[^rg-1][^rg-2][^qs-1].
 
 [^rg-1]: `RG-1` in [CHECKLIST.md](CHECKLIST.md)
 [^rg-2]: `RG-2` in [CHECKLIST.md](CHECKLIST.md)
+
+## The contract promises no order among waiters at any point of conflict, 2026-11-12
+
+The coordination contract promises no fairness: at no point of conflict is a writer, an upgrader or
+an attaching handle promised to be served, and no order among waiters or bound on how often one is
+passed over is promised. The evidence is "What the contract's lack of a fairness requirement does",
+"The acquisition layer is a model of its own", "The coordination model refines the acquisition
+model" and "How long the contract makes a caller wait"; the decision is the engineer's[^odi-2].
+
+- **Writer exclusion stays unordered.** A writer can be passed over forever (T28), and a burst of
+  about as many writers as processors breaches the wait budget under unordered service where
+  first-come-first-served and bounded bypass meet it. That breach is accepted. The remedies are a
+  caller's: fewer or shorter writes, and throttling below the utilization at which the budget
+  breaks, since a service is bounded by utilization in every order and a burst several times the
+  number of processors breaches in every order. The avoidance the contract has is that a hold is
+  the store's own work and nothing else ("No caller code runs under exclusion but the commit
+  observer").
+- **The admission gate stays unordered.** An upgrader can be passed over by a handle that goes on
+  attaching (T29), and by two whose shared holds overlap whatever fairness its own take has (T30).
+  An upgrade on a busy store waits for a lull in admissions, as the contract states. Gate holds
+  are a couple of milliseconds, so that wait is long only at thousands of attaches a second.
+- **The drain of the tiers is a wait, and attached handles are not asked to let go.** An
+  upgrade's body waits until every handle already attached detaches, so it waits as long as the
+  longest-lived attachment: minutes where attachments last minutes, hours where they last hours.
+  A metadata store whose clients stay attached meets the monthly upgrade's budget only when its
+  clients detach of their own accord; an embedder that needs upgrades to proceed arranges that.
+- **An attaching handle's service rests on upgrades being finitely many.** A handle waiting to
+  attach waits out an upgrade's exclusive holds of the gate and the tiers. With finitely many
+  upgrades -- at most about one a month in every workload canopy is built for -- that is a wait
+  and not a starvation; it becomes a starvation only when upgrades recur without end
+  (`Acquisition-Uncounted-AttachPassedOver`). The contract states that dependency instead of
+  adding fairness for attaching handles.
+- **Optimistic transactions and snapshots are outside this decision.** A transaction's rejected
+  commits are bounded by its attempts, and which primitives the store evaluates to avoid them is
+  ODI-6's question[^odi-6]. A snapshot failing under an overlapping write is a defect against the
+  budget, fixed by waiting on the notification[^rd-1].
+- **The alternatives weighed and not taken**, so that they return only with new evidence:
+  - *bounded bypass on writer exclusion*, the weakest form that meets the burst budget, which
+    would constrain every implementation and whose bookkeeping would first have to be modelled
+    and its bound checked;
+  - *eventual service on writer exclusion*, strong fairness on each writer's take, which does not
+    address the burst tail, since uniform random service already serves every waiter eventually;
+  - *group commit*, an engine committing several queued transactions in one hold that shares
+    their syncs, which would make cross-process contention one waiter per process;
+  - *exclusive-first admission*, no handle passing the gate shared while an upgrader waits for it
+    exclusively, which serves the upgrader under the contract's fairness alone;
+  - *asking attached handles to let go* when an upgrade drains;
+  - *fairness for attaching handles* against upgrades that recur.
+- **No work follows from this decision.** The coordination interface and its implementations take
+  exclusion, the gate and the tiers with no order among waiters, as MP-5, MP-8 and MP-11 are
+  written. The implementation is benchmarked against CQ-1's predictions and the same budget, and a
+  prediction its measurements contradict reopens this decision[^cq-2]. What is not promised is
+  advertised as such[^odi-5], and dependents are told what waiting to expect, the drain
+  included[^cm-4].
+
+[^cq-2]: `CQ-2` in [CHECKLIST.md](CHECKLIST.md)
+
+## A timeline is replayed by TLC from a scenario table, 2026-11-12
+
+A timeline in this file is checked against the model when it is written, and after that only if its
+scenario is replayed. So every timeline whose model still has the configuration it was read from
+carries a scenario: a table, beside the spec, that lists for each of the timeline's step ids the
+actions of the model that make up that step, with their arguments. A generator writes from those
+tables a replay module for each spec and one configuration per timeline. The replay module extends
+the spec with a step counter and, for each timeline, a specification whose next-state relation
+allows only the scenario's next action; the configuration takes the constants of the configuration
+the timeline was read from, so TLC replays exactly the behaviour the table describes against the
+current spec[^odi-4].
+
+- **A replay is a witness.** Its configuration states that TLC must report the scenario's end
+  reached as a violation, the form `tools/run-tlc-all.ps1` already reads, so a timeline whose
+  behaviour the model no longer has fails the sweep like any witness whose state became
+  unreachable. The scenario names actions, not states, so the replay passes whenever the model
+  still allows the sequence. One that stops early finds no error, and TLC's search depth says
+  which action it stopped at, which the replay module's comments map to the step.
+- **What a timeline leaves out is in the table, marked.** A timeline omits what does not bear on
+  its point -- attachments its status line only mentions, a bystander's steps. The table holds
+  the actions the model needs for them, before the first step or as a step marked omitted where
+  the model needs them later, with a note saying why; the timeline's own steps are replayed as
+  written.
+- **A stale timeline is attributed to the change that made it stale.** Each timeline has a
+  specification of its own, so its configuration reaches the definitions its actions name and no
+  other timeline's; the impact analysis selects it whenever one of them changes, and a failing
+  replay is reported together with the changed definitions it exercises.
+  The replay costs seconds; scoping it by dependency is about attribution, not time.
+- **A timeline is superseded, never edited, when its replay fails.** A failed replay is a design
+  point gone stale; it gets a banner and a replacement timeline with a new number, under the rules
+  for a design point, and the stale timeline's scenario is retired with it.
+- **The scenario tables are in the form the trace corpus adopts.** The corpus of TLC behaviours
+  that M7 exports and replays against the code includes every timeline's replay, so one artifact is
+  the document's evidence, the model's replay and the replay against the code.
+- **A timeline read from a configuration that has been retired is not replayed.** Its section
+  carries a banner saying that the configuration is retired, and its status stays as it was when it
+  was written. The cyclic workload's timelines, T28 to T30, are such timelines: their behaviours go
+  on forever, and their configurations were retired with the workload.
+
+[^odi-4]: `ODI-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#odi-4) [completed 2026-11-12]
+
+## Runs that follow a spec edit are selected by what the edit reaches, 2026-11-12
+
+Once a model's rules are authored, a spec edit is usually local -- to a property, a witness, a
+scenario -- and running every configuration for it spends hours to learn nothing. So the sweep and
+the probes can run only what the edit can affect, and a scheduled run keeps the whole set honest[^spec-2].
+
+- **What a configuration reaches is computed from the spec's text, by name.** Every definition's
+  references are the names in its body that the spec defines; a module the spec extends shares its
+  namespace, and an instanced module has its own, reached through `I!D`. A subscript such as
+  `[][Next]_vars` or `WF_vars(A)` names `vars`. A configuration reaches what its `.cfg` names and
+  everything that refers on from there. A bound or `LET` name that shadows a definition is still
+  taken as a reference, so a selection is never smaller than what TLC evaluates. SANY's semantic
+  export would resolve those exactly, at the cost of a Java pass per run; over-approximation by
+  name costs only selecting a little more, so the analysis does not use it.
+- **A configuration is selected when what its outcome depends on has changed** since it last came
+  out as its header requires: its own text, the TLC jar, the declarations of a namespace it
+  reaches (everything outside a definition), or a definition it reaches. A comment is not part of
+  a definition. A probe is selected by the same rule over its base configuration, plus the mutant
+  as written and the definitions its edits fall in.
+- **The record of green runs is derived state and is never checked in.** It lives under
+  `.scratch/tlc/record`, one file per spec and per tool, keyed by the spec's directory so that a
+  scratch copy never shares one with the real spec, and in the scheduled workflow's cache. Beside
+  each configuration's digest it keeps the distinct-state count of a pass, so an edit meant to
+  leave a configuration exploring the same states is checked by the count it reports.
+- **A run without selection ignores the record.** The milestone boundary's sweep and probe run are
+  full runs; selection is for the work-item loop.
+- **The full sweep and the probe run are scheduled weekly** on a hosted Windows runner, and run
+  only when the specs, their configurations and scenario tables, the tools or the pinned TLC
+  differ from the last green run, which the workflow's cache key digests. Whether a hosted runner
+  finishes within its time limit is decided from its first run[^spec-2-4].
+
+[^spec-2-4]: `SPEC-2.4` in [CHECKLIST.md](CHECKLIST.md)

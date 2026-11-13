@@ -1221,3 +1221,97 @@ Its decisions, its simulator and the work it spawned are recorded under its sub-
 above; the findings are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract makes a
 caller wait". The simulation answered every question the item asked, so no probabilistic model
 checker was raised.
+
+## Moved 2026-11-12 -- Deciding the contract's fairness (M3 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="odi-2"></a>ODI-2 -- The contract promises no order among waiters at any point of conflict; the alternatives were weighed and none was taken. *(completed 2026-11-12 18:54:39 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "The contract promises no order among waiters
+at any point of conflict". The engineer was offered, for each point of conflict, an avoidance or the
+weakest fairness the evidence supported -- bounded bypass on writer exclusion gated on modelling it,
+group commit, exclusive-first admission, asking attached handles to let go when an upgrade drains --
+and chose none: the burst breach on writer exclusion is accepted, the gate stays unordered, the
+drain is a documented wait, and an attaching handle's service is stated to rest on upgrades being
+finitely many. No work was spawned; CQ-2's benchmark is what reopens the decision.
+
+### <a id="odi-4"></a>ODI-4 -- A timeline is replayed by TLC from a scenario table, in a form the trace corpus adopts. *(completed 2026-11-12 19:02:10 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "A timeline is replayed by TLC from a
+scenario table". The engineer chose the TLC replay now and the trace corpus in M7: the work became
+`SPEC-2.2`, and `FM-3.1` was extended to carry the replays into the corpus. SPEC-2 was split into
+`SPEC-2.1` to `SPEC-2.3` in the same change, since the replay and the scheduled workflow are each
+work of their own beside the impact analysis.
+
+### <a id="spec-2-1"></a>SPEC-2.1 -- `run-tlc-all.ps1` and `run-probes.ps1` select by what changed, from a definition graph of each spec and a git-ignored record of the last run that came out as required. *(completed 2026-11-12 19:22:40 -05:00)*
+
+The analysis is [Impact.ps1](../../tools/lib/Impact.ps1); how the tools use it is in their headers
+and in the "TLA+ / TLC" section of the repository's Copilot instructions. Every reference is
+resolved by name, the instance of `Acquisition.tla` included -- a reference `Acq(...)!D` reaches
+the instanced module's `D` and the instance's own definition -- so SANY's semantic export was not
+needed. A subscript (`[][Next]_vars`, `WF_vars(A)`) is read as naming what follows its underscore;
+the first form of the analysis missed it, and the check that an edit to `vars` selects every
+configuration is what found it. [check-run-tlc-all.ps1](../../tools/check-run-tlc-all.ps1) checks
+the selection on a toy spec with a record of its own: nothing selected when nothing changed or only
+a comment did, one witness for an edit to that witness, every configuration for an edit to `vars`,
+one configuration for an edit to its `.cfg`, a changed distinct-state count reported, and a probe
+selected by an edit to a definition its base reaches.
+
+### <a id="spec-2-2"></a>SPEC-2.2 -- Timelines T1 to T27 are replayed by TLC from scenario tables under `spec/timelines/`, each against its own specification so that an edit selects only the replays it touches. *(completed 2026-11-12 19:40:30 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "A timeline is replayed by TLC from a
+scenario table"; the generator is [gen-timeline-replays.ps1](../../tools/gen-timeline-replays.ps1)
+and [trace-to-scenario.ps1](../../tools/trace-to-scenario.ps1) drafts a table from a
+counterexample, since TLC names each action of a trace with its arguments. Every timeline replays
+against the current spec, the projected steps of T18 and the steps T13 and T16 say their
+configurations do not reach included; T13 needs a crash and T15 a second request, which their
+tables add as overrides. T3 needs its reader to attach after the crash, since a crash ends every
+attachment in the model and the timeline predates attachment; its table marks that as an omitted
+step. SharedPublication's steps are all named `SpNext` in a trace, so T27's actions were read off
+its state changes. The first form had one specification for every timeline, so an edit to any
+action selected every replay; giving each timeline its own made a scratch edit that disabled
+`SetFence` select exactly T1, T2 and T18, each of which then failed at that step.
+
+### <a id="spec-2-3"></a>SPEC-2.3 -- `.github/workflows/tla-sweep.yml` runs the probes and the full sweep weekly, only when what it covers changed since the last green run. *(completed 2026-11-12 19:47:05 -05:00)*
+
+The workflow installs the pinned JDK and `tla2tools.jar`, checks the jar's digest, digests every
+file under the spec directory and `tools/` into its cache key, and skips when that key has a green
+run on record; a manual dispatch can force a run. It runs on a hosted Windows runner, since the
+tools and TLC are run on Windows. Running it is gated on the workflow reaching the default branch,
+where GitHub dispatches workflows from, so its verification and the hosted-or-self-hosted decision
+were spawned as `SPEC-2.4` in `M3+`, with the engineer's agreement.
+
+### <a id="spec-2"></a>SPEC-2 -- The runs that follow a spec edit are selected by what the edit can affect, timelines are replayed among them, and a scheduled workflow runs the full sweep. *(completed 2026-11-12 19:47:05 -05:00)*
+
+Its parts are `SPEC-2.1` to `SPEC-2.3` above; the decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md)
+"Runs that follow a spec edit are selected by what the edit reaches". The item as written:
+
+> Scope the runs that follow a change to what the change can affect, so that once a model's rules
+> are authored the standard cost of a spec edit is small. Build in `tools/` an impact analysis over
+> a spec's module chain: the definitions each definition refers to (resolved by name where the
+> chain has no `INSTANCE`, from SANY's semantic export where it does), the definitions each
+> configuration reaches from the names its `.cfg` lists, and the definitions that differ from the
+> last green run. A configuration is selected when it reaches a changed definition, when its own
+> `.cfg` changed, or when a declaration (`VARIABLES`, `CONSTANTS`, `ASSUME`) changed; a probe is
+> selected by the same rule, applied to the configuration it runs on and the definition it
+> mutates. A reference by name over-approximates, so a selection is never too small, but it
+> cannot see that a new disjunct is dead behind a switch: an edit to a definition every
+> configuration reaches -- `Init`, `vars`, `Next` -- selects every configuration. That is accepted
+> while a model's rules are being authored and is not the standard; selection narrows as edits
+> become local to a property, a scenario or a witness, and it can stand in for a hand-written
+> `Verify:` line.
+>
+> The last green run is recorded per configuration as a digest of what it reaches, its `.cfg`, the
+> TLC version and its options, in git-ignored state or a workflow's cache and never in a
+> checked-in document. The record also holds each configuration's distinct-state count, so that an
+> edit meant to leave earlier configurations exploring exactly the same states -- a switch added
+> behind a default that changes nothing -- is checked by comparing counts, which replaces a list
+> of counts kept by hand. `run-tlc-all.ps1` takes the selection as an option, and a full run
+> ignores the record. A scheduled workflow runs the full sweep and the full probe run -- weekly is
+> the proposal -- only when the spec, its configurations, the tools or the pinned TLC changed
+> since the last green run; the repository's weekly code-scanning schedule is the pattern, and
+> whether a hosted runner finishes the sweep within its time limit decides whether the runner is
+> hosted or self-hosted. A timeline's replay is a configuration like any other, so the selection
+> covers it.
+
+The instance of `Acquisition.tla` was resolved by name too, so SANY's export was not needed; TLC's
+options other than the jar change no outcome, so the digest does not include them.

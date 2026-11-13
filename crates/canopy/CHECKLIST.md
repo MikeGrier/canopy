@@ -4,147 +4,14 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Formal state model in TLA+". Discu
 [DESIGN-SESSION-2026-11-10-formal-model.md](design-sessions/DESIGN-SESSION-2026-11-10-formal-model.md).
 Completed items: [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md).
 
-## M3 -- Model several processes
+## M3+ -- After this branch merges
 
-Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store".
-
-- [x] **ODI-1** -- Writers of different versions: schema versions with one-way exclusive upgrades, attachment in the contract, and a diagnostic registry of attached handles. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#odi-1)
-
-- [x] **MP-1.1** -- Processes, death and writer exclusion modelled in `Coordination.tla`, with the waiting model later steps reuse. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#mp-1-1)
-
-- [x] **MP-1.2** -- The modification count, the fence, the generation and reads modelled in `Coordination.tla`. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#mp-1-2)
-
-- [x] **MP-1.3** -- The admission gate and the attachment tiers modelled in `Coordination.tla`. -> [completed 2026-11-10](COMPLETED-CHECKLIST.md#mp-1-3)
-
-- [x] **MP-1.4** -- Clones, leases and the upgrade drain modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-1-4)
-
-- [x] **MP-1.5** -- The registry modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-1-5)
-
-- [x] **MP-1.6** -- The creation reservation modelled in `Creation.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-1-6)
-
-- [x] **MP-2** -- The part of transactions that processes interact through, recovery, and the schema upgrade's body modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2)
-
-- [x] **MP-2.1** -- Transactions and the commit log modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-1)
-
-- [x] **MP-2.2** -- Recovery and its discovery modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-2)
-
-- [x] **MP-2.3** -- The schema upgrade's body modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-3)
-
-- [x] **MP-2.4** -- Cumulative reader compatibility modelled in `Coordination.tla`. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-2-4)
-
-- [x] **ODI-3** -- Both forms of a write and of an upgrade stay in the model for now. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#odi-3)
-
-- [x] **SPEC-1** -- The tools that keep the TLA+ configurations honest are in the repository, and the probe mutants are data beside the spec. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#spec-1)
-
-- [x] **CM-1** -- Each property of the models in `spec/` is tagged client or internal, and a client-visible one states its guarantee and the outcome it shows through. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#cm-1)
-
-- [x] **MP-3** -- The model of one document's publication is refined until the choice between the two guards that hold rests on equal evidence. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3)
-
-- [x] **MP-3.1** -- The `PointerPublication*.cfg` configurations are written from tables. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-1)
-
-- [x] **MP-3.2** -- The publication record has live and durable state, and a settle makes it durable before it rolls forward. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-2)
-
-- [x] **MP-3.3** -- Logged writes on one document, mixed with unlogged writes, and a settle that looks at the durable record. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-3)
-
-- [x] **MP-3.4** -- The operations that settle before they act: checks, collection, repair, scrub and a lost pointer replica are modelled, and a control omits each settle. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-3-4)
-
-- [x] **MP-4** -- The model is checked with several processes: publication composed with the coordination contract, and the contract's fairness moved into an acquisition model the coordination model refines. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4)
-
-- [x] **MP-4.1** -- The composition is a model of its own that extends `Coordination.tla` with documents, so it refines the contract by construction. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-1)
-
-- [x] **MP-4.2** -- `Coordination.tla` recovers an unlogged write behind the `UnloggedRecovery` switch. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-2)
-
-- [x] **MP-4.3** -- `SharedPublication.tla` composes both guards with the contract over several documents, with two writers, a death and a host crash. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-3)
-
-- [x] **MP-4.4** -- Every condition that sets the fence is checked in `SharedPublication.tla`, with three writers, three documents and three requests in the milestone tier. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-4)
-
-- [x] **MP-4.5** -- Each write chooses its form behind `Coordination`'s `MixedWrites` switch, and the composition mixes logged and unlogged writes across processes. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-5)
-
-- [x] **MP-4.6** -- A cyclic workload for `Coordination.tla` behind the `Cyclic` switch, and the tools to check liveness. -> [completed 2026-11-11](COMPLETED-CHECKLIST.md#mp-4-6)
-
-- [x] **MP-4.7** -- The contract's fairness is checked on the cyclic workload: the store makes progress, a writer and an upgrader can each be passed over forever, and the points of conflict are listed. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-7)
-
-- [x] **MP-4.8** -- Strong fairness on each acquisition serves a writer and an upgrader beside one handle, not an upgrader beside two whose holds of the gate overlap, and withholding shared admission serves it. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-8)
-
-- [x] **MP-4.9** -- The acquisition layer is a model of its own, `spec/Acquisition.tla`, which establishes the service results in seconds under the assumption that every hold ends. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-9)
-
-- [x] **MP-4.10** -- `Coordination.tla` refines `Acquisition.tla` under a mapping, checked as `AcquisitionRefined` in every main configuration. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-10)
-
-- [x] **MP-4.11** -- `Coordination.tla` shows every hold ends on bounded configurations under the fairness of a process's own steps, and its cyclic workload and liveness configurations are retired. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-11)
-
-- [x] **MP-4.12** -- Nothing nests under a hold in `Coordination.tla`, since nothing outside the store holds exclusion across a call. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#mp-4-12)
-
-- [x] **ODI-7** -- The rule for caller code under exclusion is a step and three controls in `Coordination.tla`, and the commit observer's documentation states it. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#odi-7)
-
-- [x] **CQ-1** -- A quantitative model of contention for the three workloads, run against an agreed budget, with its findings recorded. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1)
-
-- [x] **CQ-1.1** -- The wait budget, the simulator as a crate of its own, unordered service as a uniform random choice with swept barging, and hold times measured on this machine, agreed with the engineer. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1-1)
-
-- [x] **CQ-1.2** -- `crates/contention-sim` simulates one exclusion under each discipline, a snapshot under writes, and an upgrader behind attachments, checked against the M/G/1 baseline. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1-2)
-
-- [x] **CQ-1.3** -- The three workloads ran against the budget; the predictions, workload and method are in DESIGN-NOTES, and the work they imply is queued. -> [completed 2026-11-12](COMPLETED-CHECKLIST.md#cq-1-3)
-
-- [ ] **ODI-2** -- From MP-4.7's starvation schedules and conflict points, MP-4.8's results, the
-  acquisition model's finding that a handle waiting to attach is passed over when upgrades recur
-  without end ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The coordination model refines the acquisition
-  model") and CQ-1's predictions ([DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract
-  makes a caller wait": the order among waiters matters for bursts about as large as the number
-  of processors and little for a service's utilization, and a monthly upgrade waits on the drain
-  of long-lived attachments rather than at the gate, so asking attached handles to let go is an
-  avoidance to weigh),
-  decide, for each point of conflict, first whether the conflict can be avoided -- shorter
-  holds, finer-grained exclusion, keeping readers out of the wait -- and only where it cannot,
-  whether any fairness returns to the contract, choosing the weakest form that addresses the
-  predicted problem (for example a bound on how many times one waiter may be passed over)
-  rather than first-come-first-served handoff, with `FairSpec`'s result for that property as
-  the evidence. A numeric bound such as bounded bypass is adopted only after its bookkeeping has
-  been modelled and the bound itself checked, since `FairSpec` proves only eventual service. The
-  contract lacks a fairness requirement today on the engineer's direction; reinstating one is to be driven by the evidence, not by intuition. Record the decision in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md); avoidance or a fairness requirement adopted becomes work
-  in MP-5, MP-8 and MP-11, and the prediction it rests on is tested by CQ-2.
-
-- [ ] **ODI-4** -- Decide whether a timeline has an executable form. A timeline in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md) is prose, confirmed against the model once, when it is
-  written; nothing checks it again, so a later edit to the model can leave it describing a
-  behaviour the model no longer has. Either it stays prose; or each timeline carries a
-  machine-readable scenario that TLC replays as a script against the current spec, so a stale
-  timeline is reported together with the changed definitions it exercises; or that scenario is a
-  member of the trace corpus FM-3.1 exports, so one artifact is the document's evidence, the
-  model's replay and FM-3.2's replay against the code. A replay takes seconds, so scoping it by
-  dependency attributes a stale timeline to a change rather than saving time. Record the
-  decision in [DESIGN-NOTES.md](DESIGN-NOTES.md); a form adopted becomes work in SPEC-2, or in
-  M7 when the replay against the code is part of it.
-
-- [ ] **SPEC-2** -- Scope the runs that follow a change to what the change can affect, so that
-  once a model's rules are authored the standard cost of a spec edit is small. Build in
-  `tools/` an impact analysis over a spec's module chain: the definitions each definition refers
-  to (resolved by name where the chain has no `INSTANCE`, from SANY's semantic export where it
-  does), the definitions each configuration reaches from the names its `.cfg` lists, and the
-  definitions that differ from the last green run. A configuration is selected when it reaches
-  a changed definition, when its own `.cfg` changed, or when a declaration (`VARIABLES`,
-  `CONSTANTS`, `ASSUME`) changed; a probe is selected by the same rule, applied to the
-  configuration it runs on and the definition it mutates. A reference by name over-approximates,
-  so a selection is never too small, but it cannot see that a new disjunct is dead behind a
-  switch: an edit to a definition every configuration reaches -- `Init`, `vars`, `Next` --
-  selects every configuration. That is accepted while a model's rules are being authored and is
-  not the standard; selection narrows as edits become local to a property, a scenario or a
-  witness, and it can stand in for a hand-written `Verify:` line.
-
-  The last green run is recorded per configuration as a digest of what it reaches, its `.cfg`,
-  the TLC version and its options, in git-ignored state or a workflow's cache and never in a
-  checked-in document. The record also holds each configuration's distinct-state count, so that
-  an edit meant to leave earlier configurations exploring exactly the same states -- a switch
-  added behind a default that changes nothing -- is checked by comparing counts, which replaces
-  a list of counts kept by hand. `run-tlc-all.ps1` takes the selection as an option, and a full run
-  ignores the record. A scheduled workflow runs the full sweep and the full probe run -- weekly
-  is the proposal -- only when the spec, its configurations, the tools or the pinned TLC changed
-  since the last green run; the repository's weekly code-scanning schedule is the pattern, and
-  whether a hosted runner finishes the sweep within its time limit decides whether the runner
-  is hosted or self-hosted. A timeline's replay joins the selection as ODI-4 decides.
-
-  Verify: an edit to one witness selects that witness only, an edit to `vars` selects every
-  configuration, a run with no change selects none, a full run ignores the record, and a run
-  reports each configuration whose distinct-state count differs from the record.
+- [ ] **SPEC-2.4** -- Verify the scheduled TLA+ workflow once it is on the default branch, which is
+  where GitHub dispatches a workflow from: a manual dispatch runs the probes and the sweep, and a
+  second dispatch with nothing changed skips them. Time the first run on the hosted runner, and
+  decide with the engineer whether the runner stays hosted or becomes self-hosted, recorded in
+  [DESIGN-NOTES.md](DESIGN-NOTES.md) "Runs that follow a spec edit are selected by what the edit
+  reaches".
 
 ## M4 -- Decide and implement the `STRANDED-VOTE` fix from the model
 
@@ -482,7 +349,10 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
 ## M7 -- Conformance harness
 
 - [ ] **FM-3.1** -- Export TLC behaviours as JSON traces (simulation mode for breadth, the
-  error trace for counterexamples) and check a corpus into the crate's test data.
+  error trace for counterexamples) and check a corpus into the crate's test data. The corpus
+  includes every timeline's replay from SPEC-2.2's scenario tables, so that FM-3.2 replays the
+  timelines against the code ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A timeline is replayed by TLC
+  from a scenario table").
 
 - [ ] **FM-3.2** -- A Rust test that replays each trace step against `Store` on
   `MemFs` + `FaultyFs` (failures as injected faults, crash as `simulate_crash`, reopen as

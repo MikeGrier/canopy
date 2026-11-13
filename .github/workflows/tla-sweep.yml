@@ -1,0 +1,101 @@
+# Copyright (c) Michael Grier.
+#
+# The full TLA+ sweep and probe run, on a schedule. It runs only when something it covers -- the
+# specs, their configurations and scenario tables, the tools, or the pinned TLC -- differs from the
+# last run that came out green, which the cache records under a key that digests all of them.
+name: TLA+ sweep
+
+on:
+  schedule:
+    - cron: '41 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run even when nothing the sweep covers changed since the last green run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install the pinned JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '21'
+
+      - name: Install the pinned tla2tools.jar
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE '.tla\1.8.0'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $jar = Join-Path $dir 'tla2tools.jar'
+          Invoke-WebRequest -Uri 'https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar' -OutFile $jar -UseBasicParsing
+          $hash = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash
+          if ($hash -ne 'E1F11B75C4B5BC4478BA0AC5CB6AE28E40A01B0016BC33E0AA97DA22DFDBCD7F') {
+            throw "tla2tools.jar has digest $hash, not the pinned one"
+          }
+
+      - name: Digest what the sweep covers
+        id: covers
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          $lines = Get-ChildItem crates/canopy/spec, tools -Recurse -File | Sort-Object FullName | ForEach-Object {
+            '{0} {1}' -f $_.FullName.Substring($root.Length).Replace('\', '/'), (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+          }
+          $lines += 'tla2tools 1.8.0'
+          $bytes = [Text.Encoding]::UTF8.GetBytes($lines -join "`n")
+          $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "digest=$digest" >> $env:GITHUB_OUTPUT
+
+      - name: Find the last green run
+        id: green
+        uses: actions/cache/restore@v4
+        with:
+          path: .scratch/tlc/record
+          key: tla-green-${{ steps.covers.outputs.digest }}
+
+      - name: Probes, then the sweep
+        if: steps.green.outputs.cache-hit != 'true' || inputs.force
+        shell: pwsh
+        run: |
+          $failed = @()
+          $specDir = 'crates/canopy/spec'
+          foreach ($corpus in Get-ChildItem (Join-Path $specDir 'probes') -Directory | Sort-Object Name) {
+            pwsh -NoProfile -File tools/run-probes.ps1 -Spec (Join-Path $specDir "$($corpus.Name).tla") -Parallel 2
+            if ($LASTEXITCODE -ne 0) { $failed += "probes of $($corpus.Name)" }
+          }
+          $specs = Get-ChildItem $specDir -Filter '*.tla' | Where-Object {
+            (Test-Path (Join-Path $specDir "$($_.BaseName).cfg")) -or @(Get-ChildItem $specDir -Filter "$($_.BaseName)-*.cfg").Count -gt 0
+          } | Sort-Object Name
+          foreach ($spec in $specs) {
+            pwsh -NoProfile -File tools/run-tlc-all.ps1 -Spec $spec.FullName -Parallel 2
+            if ($LASTEXITCODE -ne 0) { $failed += "sweep of $($spec.BaseName)" }
+          }
+          if ($failed.Count -gt 0) {
+            $failed | ForEach-Object { "::error::$_ did not come out as required" }
+            exit 1
+          }
+
+      - name: Keep TLC's output of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-output
+          path: .scratch/tlc/*.out
+
+      - name: Record the green run
+        if: steps.green.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: .scratch/tlc/record
+          key: tla-green-${{ steps.covers.outputs.digest }}

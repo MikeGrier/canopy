@@ -11,6 +11,8 @@
 #   pwsh tools/run-tlc-all.ps1 -Spec <spec.tla> -Tier evidence -Filter '*Live*'
 #   pwsh tools/run-tlc-all.ps1 -Spec <spec.tla> -Tier evidence -Parallel 6
 #   pwsh tools/run-tlc-all.ps1 -Spec <spec.tla> -Filter '*Cumulative*' -List
+#   pwsh tools/run-tlc-all.ps1 -Spec <spec.tla> -Changed -List
+#   pwsh tools/run-tlc-all.ps1 -Spec <spec.tla> -Changed -FailFast
 #
 # -Filter takes wildcard patterns on a configuration's name, repeated or comma-separated; a
 # configuration runs when any of them matches. -FailFast stops after the first mismatch. -List
@@ -50,6 +52,17 @@
 #
 # This is what keeps a negative control honest: a control that stops failing, or a witness
 # whose state becomes unreachable, shows up here as a mismatch rather than as a pass.
+#
+# Every configuration that comes out as its header requires is recorded, with a digest of what
+# its outcome depends on: its own text, the TLC jar, and every definition and declaration it
+# reaches (tools/lib/Impact.ps1 says how). -Changed runs, of the configurations the filter and the
+# tier select, only those whose digest differs from their record, and says why each was selected:
+# its .cfg, TLC or a namespace's declarations changed, or the definitions it reaches that did. A
+# run without -Changed ignores the record and runs everything it selects. A configuration whose
+# outcome is a pass explores its whole state graph, so its distinct-state count is recorded too,
+# and a count that differs from the record is reported: an edit meant to leave a configuration
+# exploring the same states is checked that way. The record is git-ignored state under
+# .scratch/tlc/record; -Record names another file.
 
 [CmdletBinding()]
 param(
@@ -60,6 +73,8 @@ param(
     [string]$Tier = 'sweep',
     [switch]$FailFast,
     [switch]$List,
+    [switch]$Changed,
+    [string]$Record,
     [int]$Parallel = 1,
     [string]$Workers = 'auto',
     [int]$HeapGB = 0,
@@ -144,8 +159,30 @@ if ($Tier -eq 'sweep') {
     }
 }
 
+. (Join-Path $PSScriptRoot 'lib/Impact.ps1')
+$model = Get-ImpactModel $specDir $specName
+$recordPath = if ($Record) { $Record } else { Get-RecordPath $repoRoot $specPath 'configs' }
+$history = Read-ImpactRecord $recordPath
+$footprints = @{}
+foreach ($config in $configs) { $footprints[$config.Name] = Get-ConfigFootprint $model $config.FullName $Jar }
+$reasons = @{}
+if ($Changed) {
+    $configs = @(foreach ($config in $configs) {
+        $reason = Get-SelectionReason $footprints[$config.Name] $history.Entries[$config.Name] $history.Snapshots
+        if ($reason) { $reasons[$config.Name] = $reason; $config }
+    })
+    if ($configs.Count -eq 0) {
+        'selected: 0; every configuration is as it was when it last came out as its header requires'
+        foreach ($config in $skippedEvidence) { "not run, evidence tier (-Tier evidence): $($config.Name)" }
+        exit 0
+    }
+}
+
 if ($List) {
-    foreach ($config in $configs) { '{0,-9} {1}' -f (Get-Tier $config.FullName), $config.Name }
+    foreach ($config in $configs) {
+        if ($Changed) { '{0,-9} {1} -- {2}' -f (Get-Tier $config.FullName), $config.Name, $reasons[$config.Name] }
+        else { '{0,-9} {1}' -f (Get-Tier $config.FullName), $config.Name }
+    }
     "listed: $($configs.Count)"
     foreach ($config in $skippedEvidence) { "not listed, evidence tier: $($config.Name)" }
     exit 0
@@ -167,6 +204,7 @@ if ($Parallel -gt 1) {
 
 $mismatched = 0
 $ran = 0
+$green = @()
 $notRun = 0
 $slow = @()
 $unchecked = @()
@@ -202,13 +240,31 @@ foreach ($item in $checked) {
     $ran++
     $matched = $actual -eq $expected
     if (-not $matched) { $mismatched++ }
+    if ($matched) { $green += [pscustomobject]@{ Name = $config.Name; Expected = $expected; Out = $outFile } }
     if ($seconds -ge $slowSeconds -and (Get-Tier $config.FullName) -eq 'item') { $slow += "$($config.Name) ($seconds s)" }
     '{0} {1,-60} expected {2}, got {3} ({4} s)' -f $(if ($matched) { 'ok      ' } else { 'MISMATCH' }),
         $config.Name, $expected, $actual, $seconds
+    if ($Changed) { "         selected: $($reasons[$config.Name])" }
     if (-not $matched -and $FailFast) { $notRun = $configs.Count - 1 - [array]::IndexOf($configs, $config); break }
 }
 
+$statesChanged = @()
+if ($green.Count -gt 0) {
+    $snapshot = Add-ImpactSnapshot $history (Get-ModelSnapshot $model $Jar)
+    foreach ($item in $green) {
+        $footprint = $footprints[$item.Name]
+        $states = if ($item.Expected -eq 'PASS') { Get-DistinctStates $item.Out } else { $null }
+        $previous = $history.Entries[$item.Name]
+        if ($null -ne $states -and $previous -and $null -ne $previous.States -and [long]$previous.States -ne $states) {
+            $statesChanged += "$($item.Name) (was $($previous.States), now $states)"
+        }
+        $history.Entries[$item.Name] = @{ Digest = $footprint.Digest; Cfg = $footprint.Cfg; Snapshot = $snapshot; States = $states }
+    }
+    Save-ImpactRecord $recordPath $history
+}
+
 "checked: $ran, mismatched: $mismatched, unchecked: $($unchecked.Count)"
+foreach ($entry in $statesChanged) { "distinct states differ from the record: $entry" }
 if ($notRun -gt 0) { "stopped at the first mismatch: $notRun configuration(s) not run" }
 foreach ($name in $unchecked) { "unchecked (header states no outcome): $name" }
 foreach ($entry in $slow) { "slow for the item tier, consider Tier: milestone: $entry" }

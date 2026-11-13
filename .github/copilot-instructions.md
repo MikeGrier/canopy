@@ -535,6 +535,14 @@ constants, its required outcome and its tier. Change a configuration by changing
 regenerating, never the generated file; regenerating changes no file when the tables have not. A new
 configuration is a new table entry.
 
+**Timelines are replayed.** Each timeline in a design note has a scenario table under
+`crates/canopy/spec/timelines/<Spec>/`, and
+[tools/gen-timeline-replays.ps1](../tools/gen-timeline-replays.ps1) writes from them
+`Replay<Spec>.tla` and one `Replay<Spec>-<Timeline>.cfg` each, witnesses that the sweep runs as
+`-Spec crates/canopy/spec/Replay<Spec>.tla`. A new timeline gets a table in the same change;
+[tools/trace-to-scenario.ps1](../tools/trace-to-scenario.ps1) drafts one from the counterexample
+it was read from.
+
 [tools/check-run-tlc-all.ps1](../tools/check-run-tlc-all.ps1) checks that the sweep can fail, and
 is run when the sweep tool changes. [tools/trace-summary.ps1](../tools/trace-summary.ps1) prints a
 counterexample as each state's action and the variables that changed in it, and
@@ -563,6 +571,16 @@ the PR has merged; a mismatch it finds is ordinary realignment, not a failure of
 change to a definition every configuration shares may justify a broader run sooner (`-Tier
 item`); say why it was run. While a model's rules are being authored such changes are frequent
 and the cost is accepted, but a broad run is never the standard cadence.
+
+**Selection by what changed.** `run-tlc-all.ps1 -Changed` and `run-probes.ps1 -Changed` run only
+the configurations and probes whose outcome can have changed since each last came out as it
+should: a configuration is selected when its `.cfg`, the TLC jar, a declaration it reaches or a
+definition it reaches changed, and `-List` says which. Every run that comes out as required is
+recorded, with a pass's distinct-state count, in git-ignored state under `.scratch/tlc/record`; a
+run without `-Changed` ignores the record, and a count that differs from it is reported. An edit
+to `Init`, `vars` or an action reaches nearly every configuration, so `-Changed` narrows the run
+only once edits are local to a property, a witness or a scenario; `-Changed -FailFast` can then
+stand in for a hand-written `Verify:` filter.
 
 **Probes.** A probe is a mutation test of a model: in a scratch copy of the spec one rule is
 broken, and the property written for that rule must fail. A mutant that survives shows a check

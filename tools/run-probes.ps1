@@ -8,6 +8,7 @@
 #   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Filter 'die-*,*upgrade*' -Parallel 6
 #   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Check
 #   pwsh tools/run-probes.ps1 -Spec <spec.tla> -List
+#   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Changed -Parallel 6
 #
 # A probe is a mutation test of a model: a scratch copy of the spec with one rule broken by one
 # text edit, run in one configuration against the one property written for the rule. The mutants
@@ -52,6 +53,12 @@
 # probe came out as it should, 1 when any was stale, survived, was unexpected or could not be
 # judged, and 2 when the spec, its mutants, java or tla2tools.jar cannot be found. See the
 # "TLA+ / TLC" section of .github/copilot-instructions.md for when probes run.
+#
+# A probe that comes out as it should is recorded with a digest of what its verdict depends on:
+# the mutant as written, everything its base configuration reaches (tools/lib/Impact.ps1), and
+# the definitions its edits fall in. -Changed runs only the probes whose digest differs from their
+# record; a stale mutant is reported whatever the record says. A run without -Changed ignores the
+# record. The record is git-ignored state under .scratch/tlc/record; -Record names another file.
 
 [CmdletBinding()]
 param(
@@ -60,6 +67,8 @@ param(
     [string[]]$Filter = '*',
     [switch]$Check,
     [switch]$List,
+    [switch]$Changed,
+    [string]$Record,
     [int]$Parallel = 1,
     [string]$Workers = '',
     [string]$Jar = (Join-Path $env:USERPROFILE '.tla\1.8.0\tla2tools.jar')
@@ -68,6 +77,18 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib/Tlc.ps1')
 . (Join-Path $PSScriptRoot 'lib/Probes.ps1')
+. (Join-Path $PSScriptRoot 'lib/Impact.ps1')
+
+# A mutant as text that does not depend on the order PowerShell happens to keep its keys in.
+function ConvertTo-StableText($value) {
+    if ($value -is [System.Collections.IDictionary]) {
+        return '{' + ((@($value.Keys) | Where-Object { $_ -ne 'File' } | Sort-Object | ForEach-Object { "$_=$(ConvertTo-StableText $value[$_])" }) -join ';') + '}'
+    }
+    if ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
+        return '[' + ((@($value) | ForEach-Object { ConvertTo-StableText $_ }) -join ';') + ']'
+    }
+    return ([string]$value).Replace("`r`n", "`n")
+}
 
 # The one place this tool writes its report; only the script's own flow calls it, so that a
 # function's return value is never mixed with report lines.
@@ -185,7 +206,7 @@ if ($runs.Count -eq 0) {
     exit 2
 }
 
-if ($List) {
+if ($List -and -not $Changed) {
     foreach ($run in $runs) {
         Report ('{0,-50} {1,-9} {2}' -f $run.Name, $(if ($run.Mutant.Expect) { $run.Mutant.Expect } else { 'violated' }),
             $(if ($run.Mutant.Property) { $run.Mutant.Property } else { '(any property)' }))
@@ -225,6 +246,36 @@ foreach ($run in $runs) {
         continue
     }
     $prepared += [pscustomobject]@{ Run = $run; Edits = $found }
+}
+
+$model = Get-ImpactModel $specDir $specName
+$recordPath = if ($Record) { $Record } else { Get-RecordPath $repoRoot $specPath 'probes' }
+$history = Read-ImpactRecord $recordPath
+foreach ($item in $prepared) {
+    $run = $item.Run
+    $basePath = Join-Path $specDir "$($run.Base).cfg"
+    $base = if (Test-Path -LiteralPath $basePath) { (Get-ConfigFootprint $model $basePath $Jar).Digest } else { 'missing' }
+    $edited = @($item.Edits | ForEach-Object {
+        $name = Get-EnclosingDefinition $definitions[$_.Module] $_.Index
+        $def = if ($name) { $model.Spaces[$specName].Defs[$name] } else { $null }
+        "$name=$(if ($def) { $def.Digest } else { 'none' })"
+    })
+    $digest = Get-ShortDigest (@("base=$base", "mutant=$(ConvertTo-StableText $run.Mutant)", "run=$($run.Name)") + $edited -join "`n")
+    $item | Add-Member -NotePropertyName Digest -NotePropertyValue $digest
+}
+if ($Changed -and -not $Check) {
+    $selected = @(foreach ($item in $prepared) {
+        $entry = $history.Entries[$item.Run.Name]
+        if (-not $entry) { $item | Add-Member -NotePropertyName Reason -NotePropertyValue 'no run on record'; $item }
+        elseif ($entry.Digest -ne $item.Digest) { $item | Add-Member -NotePropertyName Reason -NotePropertyValue 'the mutant, its base or a definition either reaches changed'; $item }
+    })
+    Report "selected: $($selected.Count) of $($prepared.Count)"
+    $prepared = $selected
+    if ($List) {
+        foreach ($item in $prepared) { Report ('{0,-50} {1}' -f $item.Run.Name, $item.Reason) }
+        if ($tally.stale -gt 0) { exit 1 }
+        exit 0
+    }
 }
 
 if ($Check) {
@@ -279,7 +330,10 @@ foreach ($item in $ready) {
     $verdict = Get-Verdict $item.Run (Get-Outcome $item.Out)
     Report ('{0,-10} {1,-50} {2}' -f $verdict.Word, $item.Run.Name, $verdict.Detail)
     $tally[$verdict.Word.ToLowerInvariant()]++
+    $digest = @($prepared | Where-Object { $_.Run.Name -eq $item.Run.Name } | Select-Object -First 1).Digest
+    if ($verdict.Word -in 'CAUGHT', 'EQUIVALENT') { $history.Entries[$item.Run.Name] = @{ Digest = $digest } }
 }
+if ($ready.Count -gt 0) { Save-ImpactRecord $recordPath $history }
 
 Report ('probes: {0}; {1}' -f $runs.Count, (($tally.Keys | ForEach-Object { "$_ $($tally[$_])" }) -join ', '))
 if ($tally.survived + $tally.unexpected + $tally.stale + $tally.error -gt 0) { exit 1 }

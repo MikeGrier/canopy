@@ -12,8 +12,15 @@
 # property, and one whose header states no outcome -- runs the sweep over them, and checks the exit
 # codes and the lines it reports: mismatches and the unchecked configuration are found, a filter
 # narrows the run, -FailFast stops at the first mismatch, -Tier and -List select without running,
-# and a missing spec, jar or matching configuration is exit 2. Exit code is 0 when every check
-# holds, 1 when any does not, and 2 when the real control, java or tla2tools.jar cannot be found.
+# and a missing spec, jar or matching configuration is exit 2.
+#
+# It then checks -Changed, in run-tlc-all.ps1 and run-probes.ps1, on a toy spec under
+# .scratch/sweep-select with a record of its own: a run with nothing changed selects nothing, an
+# edit to a comment selects nothing, an edit to one witness selects that witness only and names
+# it, an edit to vars selects every configuration, an edit to a .cfg selects that one, a run
+# without -Changed runs everything, a changed distinct-state count is reported, and a probe is
+# selected when a definition its base reaches changes. Exit code is 0 when every check holds, 1
+# when any does not, and 2 when the real control, java or tla2tools.jar cannot be found.
 
 [CmdletBinding()]
 param(
@@ -122,6 +129,72 @@ $missingSpec = Run-Sweep @('-Spec', (Join-Path $dir 'Missing.tla'))
 Check 'a missing spec: exit 2' ($missingSpec.Exit -eq 2) "exit $($missingSpec.Exit)"
 $missingJar = Run-Sweep @('-Spec', $spec, '-Jar', (Join-Path $dir 'no-such-tla2tools.jar'))
 Check 'a missing jar: exit 2' ($missingJar.Exit -eq 2) "exit $($missingJar.Exit)"
+
+# -Changed, on a toy spec small enough that every run takes seconds.
+$toyDir = Join-Path $repoRoot '.scratch/sweep-select'
+Remove-Item -Recurse -Force $toyDir -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Join-Path $toyDir 'probes/Toy') | Out-Null
+$toy = Join-Path $toyDir 'Toy.tla'
+$toyRecord = Join-Path $toyDir 'record.configs.json'
+$probeRecord = Join-Path $toyDir 'record.probes.json'
+$probeTool = Join-Path $PSScriptRoot 'run-probes.ps1'
+[IO.File]::WriteAllText($toy, ((@(
+    '---- MODULE Toy ----', 'EXTENDS Naturals', 'VARIABLES x, y', 'vars == <<x, y>>',
+    'Init == x = 0 /\ y = 0', 'Step == x < 3 /\ x'' = x + 1 /\ UNCHANGED y', 'Flip == y'' = 1 - y /\ UNCHANGED x',
+    'Next == Step \/ Flip', 'Spec == Init /\ [][Next]_vars', 'TypeOK == x \in 0..3 /\ y \in 0..1',
+    '\* x reaches 3.', 'Witness_XReaches3 == x # 3', 'Witness_YFlips == y # 1', '====') -join "`n") + "`n"), $utf8)
+function New-ToyCfg([string]$name, [string]$header, [string]$check) {
+    [IO.File]::WriteAllText((Join-Path $toyDir "$name.cfg"), "\* $header`nSPECIFICATION Spec`nINVARIANT $check`n", $utf8)
+}
+New-ToyCfg 'Toy' 'every invariant and property holds.' 'TypeOK'
+New-ToyCfg 'Toy-Witness-XReaches3' 'TLC must report Witness_XReaches3 violated.' 'Witness_XReaches3'
+New-ToyCfg 'Toy-Witness-YFlips' 'TLC must report Witness_YFlips violated.' 'Witness_YFlips'
+function Edit-Toy([string]$path, [string]$old, [string]$new) {
+    [IO.File]::WriteAllText($path, [IO.File]::ReadAllText($path).Replace($old, $new), $utf8)
+}
+function Run-Probes([string[]]$Arguments) {
+    $lines = @(& pwsh -NoProfile -File $probeTool @Arguments 2>&1 | ForEach-Object { "$_" })
+    return [pscustomobject]@{ Exit = $LASTEXITCODE; Text = ($lines -join "`n") }
+}
+$sel = @('-Spec', $toy, '-Record', $toyRecord)
+
+$first = Run-Sweep $sel
+Check 'the toy sweep: exit 0, three checked' ($first.Exit -eq 0 -and $first.Text -match '(?m)^checked: 3, mismatched: 0, unchecked: 0$') "exit $($first.Exit)"
+$quiet = Run-Sweep ($sel + @('-Changed', '-List'))
+Check 'nothing changed: -Changed selects nothing' ($quiet.Exit -eq 0 -and $quiet.Text -match '(?m)^selected: 0;') "exit $($quiet.Exit)"
+Edit-Toy $toy '\* x reaches 3.' '\* x reaches three.'
+$comment = Run-Sweep ($sel + @('-Changed', '-List'))
+Check 'an edit to a comment selects nothing' ($comment.Text -match '(?m)^selected: 0;')
+Edit-Toy $toy 'Witness_XReaches3 == x # 3' 'Witness_XReaches3 == x # 2'
+$witness = Run-Sweep ($sel + @('-Changed', '-List'))
+Check 'an edit to one witness selects that witness only, naming it' ($witness.Text -match '(?m)^listed: 1$' -and $witness.Text -match '(?m)^item\s+Toy-Witness-XReaches3\.cfg -- changed: Toy!Witness_XReaches3$')
+$rerun = Run-Sweep ($sel + @('-Changed'))
+Check '-Changed runs the one selected' ($rerun.Exit -eq 0 -and $rerun.Text -match '(?m)^checked: 1, mismatched: 0, unchecked: 0$') "exit $($rerun.Exit)"
+$settled = Run-Sweep ($sel + @('-Changed', '-List'))
+Check 'once it has run, nothing is selected' ($settled.Text -match '(?m)^selected: 0;')
+Edit-Toy $toy 'vars == <<x, y>>' 'vars == <<y, x>>'
+$vars = Run-Sweep ($sel + @('-Changed', '-List'))
+Check 'an edit to vars selects every configuration' ($vars.Text -match '(?m)^listed: 3$')
+$full = Run-Sweep $sel
+Check 'a run without -Changed runs everything' ($full.Exit -eq 0 -and $full.Text -match '(?m)^checked: 3, mismatched: 0, unchecked: 0$') "exit $($full.Exit)"
+Edit-Toy $toy 'x < 3' 'x < 4'
+Edit-Toy $toy 'x \in 0..3' 'x \in 0..4'
+$states = Run-Sweep ($sel + @('-Changed'))
+Check 'a changed distinct-state count is reported' ($states.Text -match '(?m)^distinct states differ from the record: Toy\.cfg \(was 8, now 10\)$') $states.Text
+Edit-Toy (Join-Path $toyDir 'Toy-Witness-YFlips.cfg') 'violated.' "violated.`n\* A second header line."
+$cfg = Run-Sweep ($sel + @('-Changed', '-List'))
+Check 'an edit to a .cfg selects that configuration only' ($cfg.Text -match '(?m)^listed: 1$' -and $cfg.Text -match '(?m)^item\s+Toy-Witness-YFlips\.cfg -- its \.cfg changed$')
+
+[IO.File]::WriteAllText((Join-Path $toyDir 'probes/Toy/Toy.psd1'),
+    "@{ Mutants = @( @{ Name = 'step-past-the-bound'; Base = 'Toy'; Kind = 'INVARIANTS'; Property = 'TypeOK'; Def = 'Step'; Old = 'x < 4'; New = 'x < 5' } ) }`r`n", $utf8)
+$probe = @('-Spec', $toy, '-Record', $probeRecord)
+$caught = Run-Probes $probe
+Check 'the toy probe is caught' ($caught.Exit -eq 0 -and $caught.Text -match '(?m)^CAUGHT\s+step-past-the-bound') "exit $($caught.Exit)"
+$noProbe = Run-Probes ($probe + @('-Changed', '-List'))
+Check 'nothing changed: no probe is selected' ($noProbe.Text -match '(?m)^selected: 0 of 1$')
+Edit-Toy $toy 'Flip == y'' = 1 - y' 'Flip == y'' = (1 - y) % 2'
+$flip = Run-Probes ($probe + @('-Changed', '-List'))
+Check 'an edit to a definition the base reaches selects the probe' ($flip.Text -match '(?m)^selected: 1 of 1$')
 
 Report ('check-run-tlc-all: {0} failed' -f $failures)
 $report
