@@ -21,6 +21,13 @@ cap-fs-ext = "4.0"
 [dev-dependencies]
 test-timers = { path = "../test-timers" }
 
+# `LoomSignal`, a signal loom can run inside its model, exists only under `--cfg canopy_loom`.
+[target.'cfg(canopy_loom)'.dependencies]
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(canopy_loom)"] }
+
 # For the `flock` and open-file-description locks behind `OsFs::lock_exclusive` and
 # `OsFs::try_lock`; std exposes no advisory-lock call.
 [target.'cfg(unix)'.dependencies]

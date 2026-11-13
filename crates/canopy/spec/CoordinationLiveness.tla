@@ -8,9 +8,10 @@
 (* an upgrade holding its tiers finishes or gives up; a recovery under way *)
 (* ends. A process's death ends all of them. Each is a property of one     *)
 (* operation, attachment or upgrade body, so it is checked on the bounded  *)
-(* configurations, under HoldSpec: the fairness of a process's own steps,  *)
-(* and none among waiters. Each HoldSpecWithout* drops one condition, so   *)
-(* that a hold can last forever, as a control.                             *)
+(* configurations, under HoldSpec: the fairness of a process's own steps   *)
+(* and of a notification, and none among waiters. Each HoldSpecWithout*    *)
+(* drops one of a process's own conditions, so that a hold can last        *)
+(* forever, as a control.                                                  *)
 (***************************************************************************)
 EXTENDS CoordinationWitnesses
 
@@ -27,8 +28,9 @@ Completes(p) ==
     \/ RecSweep(p) \/ RecCount(p) \/ RecClear(p)
     \/ ReadBefore2(p) \/ ObserveA(p) \/ ObserveB(p) \/ ReadAfter(p) \/ ReadAfter1(p)
     \/ ReadAfter2(p)
-    \/ DropGate(p) \/ Admit(p) \/ DrainDone(p) \/ BeginUpgrade(p) \/ EndUpgrade(p)
-    \/ UpgradeMoved(p) \/ SetFence(p) \/ Record(p)
+    \/ DropGate(p) \/ Admit(p) \/ (Sampling(p) /\ DrainDone(p)) \/ BeginUpgrade(p)
+    \/ EndUpgrade(p) \/ UpgradeMoved(p) \/ SetFence(p) \/ Record(p)
+    \/ Register(p)
 
 \* What a holder does with its operation once it has it: a transaction begins, or the
 \* operation ends with nothing to change, and an upgrade body records its intent and
@@ -61,13 +63,15 @@ FairRelease == \A p \in WriterProcs : SF_vars(Release(p))
 FairOwnSteps == \A p \in Procs : SF_vars(OwnSteps(p))
 \* A clone's operation ends; while its handle drains no new one starts.
 FairLeases == \A p \in Procs : WF_vars(EndOp(p))
+\* A sleeping waiter whose wait is over is notified.
+FairNotify == \A p \in Procs : WF_vars(Notify(p))
 
-HoldSpec == Spec /\ FairRelease /\ FairOwnSteps /\ FairLeases
+HoldSpec == Spec /\ FairRelease /\ FairOwnSteps /\ FairLeases /\ FairNotify
 
 \* Each condition dropped, as a control.
-HoldSpecWithoutRelease == Spec /\ FairOwnSteps /\ FairLeases
-HoldSpecWithoutOwnSteps == Spec /\ FairRelease /\ FairLeases
-HoldSpecWithoutLeases == Spec /\ FairRelease /\ FairOwnSteps
+HoldSpecWithoutRelease == Spec /\ FairOwnSteps /\ FairLeases /\ FairNotify
+HoldSpecWithoutOwnSteps == Spec /\ FairRelease /\ FairLeases /\ FairNotify
+HoldSpecWithoutLeases == Spec /\ FairRelease /\ FairOwnSteps /\ FairNotify
 
 -----------------------------------------------------------------------------
 (* Every hold ends.                                                        *)

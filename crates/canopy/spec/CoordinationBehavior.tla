@@ -36,7 +36,7 @@ Die(p) ==
     /\ lres' = Set(lres, p, "none")
     /\ UNCHANGED <<rdata, ovf, lists>>
     /\ UNCHANGED <<recorded, eligible, owner, fence, trusted, count, gen, store,
-                   requests, crashes, reads, discoveries, upgrades>>
+                   requests, crashes, reads, discoveries, upgrades, woken>>
 
 \* EXTERNAL: power loss. Every process dies and every lock is released. The
 \* coordination state cannot be vouched for afterwards, and the record, the
@@ -82,7 +82,72 @@ Crash ==
     /\ lfree' = [p \in Procs |-> FALSE]
     /\ lres' = [p \in Procs |-> "none"]
     /\ UNCHANGED <<recorded, eligible, gen, store, requests, deaths, reads, lists,
-                   discoveries, upgrades>>
+                   discoveries, upgrades, woken>>
+
+-----------------------------------------------------------------------------
+(* Notifications (DESIGN-NOTES "A change to the coordination state is      *)
+(* delivered as a notification"). Under Notifications a waiter acts on     *)
+(* what it waits for only while it samples; one that finds it absent       *)
+(* registers and sleeps, and a notification, a step of its own, wakes it   *)
+(* to sample again.                                                        *)
+
+\* Where a process waits for the coordination state to change: for writer
+\* exclusion, the gate, a tier, or the end of its clones' operations.
+Waiting(p) ==
+    \/ pc[p] = "waiting"
+    \/ att[p] \in {"wGate", "hasGate", "rd", "gateWr", "rdChecked", "uWGate",
+                  "uWGateT", "uGate", "uRd", "uWr", "draining"}
+
+\* The steps that wait, each taken only once what it waits for is there.
+WaitSteps(p) ==
+    \/ Lock(p) \/ TakeGateS(p) \/ TakeReaderS(p) \/ TakeWriterS(p) \/ TakeGateX(p)
+    \/ TakeFirstTier(p) \/ TakeSecondTier(p) \/ DrainDone(p)
+
+\* What a waiter waits for is there: one of WaitSteps(p) is enabled, which
+\* ReadyMatchesTheWaits checks.
+Ready(p) ==
+    \/ pc[p] = "waiting" /\ eligible[p] /\ lockHolder = None
+    \/ att[p] = "wGate" /\ ~GateXHeld
+    \/ att[p] = "hasGate" /\ ~ReaderXHeld
+    \/ /\ \/ att[p] = "rd" /\ Control # "check-before-writer-tier"
+          \/ att[p] \in {"gateWr", "rdChecked"}
+       /\ ~WriterXHeld
+    \/ att[p] \in {"uWGate", "uWGateT"} /\ ~GateSHeld /\ ~GateXHeld
+    \/ /\ att[p] = "uGate"
+       /\ IF DecideReaderTier(p) /\ Control # "unsafe-writer-tier-first"
+             THEN ~ReaderSHeld /\ ~ReaderXHeld
+             ELSE ~WriterSHeld /\ ~WriterXHeld
+    \/ att[p] = "uRd" /\ ~WriterSHeld /\ ~WriterXHeld
+    \/ att[p] = "uWr" /\ ~ReaderSHeld /\ ~ReaderXHeld
+    \/ /\ att[p] = "draining" /\ rst[p] \in {"out", "in", "unreg"}
+       /\ (Leases(p) = 0 \/ Control = "drain-ignores-leases")
+
+\* A waiter acts on what it waits for only while it samples.
+Sampling(p) == ~Notifications \/ woken[p] = "sample"
+
+\* Everything but the notices.
+Unnoticed == <<pc, att, areq, lease, schema, reg, req, eligible, coord, store, handle,
+               reader, diedIn, requests, deaths, crashes, reads, discoveries, upgrades>>
+
+\* A waiter that samples and finds what it waits for absent registers and sleeps.
+Register(p) ==
+    /\ Notifications /\ woken[p] = "sample" /\ Waiting(p) /\ ~Ready(p)
+    /\ woken' = Set(woken, p, "asleep")
+    /\ UNCHANGED Unnoticed
+
+\* A change to what a sleeping waiter waits for wakes it, to sample again; under
+\* Control = "notification-spurious" it may be woken with nothing changed.
+Notify(p) ==
+    /\ Notifications /\ woken[p] = "asleep" /\ Waiting(p)
+    /\ (Ready(p) \/ Control = "notification-spurious")
+    /\ woken' = Set(woken, p, "sample")
+    /\ UNCHANGED Unnoticed
+
+\* Under Control = "notification-lost" a sleeping waiter's notification is lost.
+LoseNotification(p) ==
+    /\ Notifications /\ Control = "notification-lost" /\ woken[p] = "asleep"
+    /\ woken' = Set(woken, p, "lost")
+    /\ UNCHANGED Unnoticed
 
 \* Every process has ended. It is the only step then, so a state in which a
 \* process is stuck waiting is the only kind of deadlock.
@@ -93,21 +158,21 @@ Terminal ==
 Next ==
     \/ \E p \in Procs :
           \/ Exit(p) \/ Disqualify(p)
-          \/ BeginAttach(p) \/ TakeGateS(p) \/ TakeReaderS(p) \/ DropGate(p)
-          \/ KeepGate(p) \/ CheckEarly(p) \/ TakeWriterS(p) \/ Admit(p)
+          \/ BeginAttach(p) \/ DropGate(p) \/ KeepGate(p) \/ CheckEarly(p) \/ Admit(p)
           \/ GiveUp(p) \/ BeginOp(p) \/ EndOp(p)
-          \/ StartUpgrade(p) \/ RefuseUpgrade(p) \/ DrainDone(p)
-          \/ CancelDrain(p) \/ StartUpgradeHolding(p) \/ TakeGateX(p)
+          \/ StartUpgrade(p) \/ RefuseUpgrade(p)
+          \/ CancelDrain(p) \/ StartUpgradeHolding(p)
+          \/ Sampling(p) /\ WaitSteps(p)
+          \/ Register(p) \/ Notify(p) \/ LoseNotification(p)
           \/ RegStart(p) \/ (\E s \in Slots : RegClaim(p, s)) \/ RegLive(p)
           \/ RegWrite(p) \/ RegRelease(p) \/ RegOverflow(p)
           \/ UpdTake(p) \/ UpdDone(p) \/ UnregNone(p) \/ UnregClaim(p)
           \/ UnregSkip(p) \/ UnregClear(p) \/ UnregRelease(p) \/ Detach(p)
           \/ ListStart(p) \/ ListClaim(p) \/ ListRead(p) \/ ListProbe(p)
           \/ ListDone(p)
-          \/ TakeFirstTier(p) \/ TakeSecondTier(p) \/ BeginUpgrade(p)
-          \/ UpgradeMoved(p) \/ EndUpgrade(p)
+          \/ BeginUpgrade(p) \/ UpgradeMoved(p) \/ EndUpgrade(p)
           \/ Request(p) \/ Withdraw(p) \/ Refuse(p)
-          \/ Lock(p) \/ SetFence(p) \/ Record(p)
+          \/ SetFence(p) \/ Record(p)
           \/ BeginOpen(p) \/ EndOpen(p) \/ OpenFails(p)
           \/ Begin(p) \/ Ingest(p) \/ Prepare(p) \/ PrepareFails(p) \/ Abort(p)
           \/ End(p) \/ Sweep(p) \/ Quiesce(p)

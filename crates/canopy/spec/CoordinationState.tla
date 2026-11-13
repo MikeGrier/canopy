@@ -192,6 +192,14 @@
 (* commit observer"). How long it takes is not the model's concern: no     *)
 (* step has a duration.                                                    *)
 (*                                                                         *)
+(* Notifications (Notifications). Under it a wait does not see the change  *)
+(* it waits for: the waiter samples, and if what it waits for is not there *)
+(* it registers and sleeps until a notification wakes it, as a step of its *)
+(* own, and then samples again and decides from what it reads              *)
+(* (DESIGN-NOTES "A change to the coordination state is delivered as a     *)
+(* notification"). A notification is a hint: a spurious one costs a        *)
+(* sample, and a lost one leaves its waiter asleep.                        *)
+(*                                                                         *)
 (* Steps are sequentially consistent. The contract's ordering rules -- a   *)
 (* raise is ordered with the holder's filesystem operations, and a sample  *)
 (* with the sampler's, so a sample taken after observing a modification's  *)
@@ -219,6 +227,10 @@
 (*                              a callback waits until nobody holds        *)
 (*                              exclusion, which its own holder does.      *)
 (*   "callback-never-returns"   a callback does not return.                *)
+(*   "notification-lost"        a registered waiter's notification may be  *)
+(*                              lost, so that nothing wakes it.            *)
+(*   "notification-spurious"    a registered waiter may be woken with      *)
+(*                              nothing changed.                           *)
 (*   "upgrader-keeps-tiers"     an upgrader keeps its shared tiers while   *)
 (*                              it waits for the gate exclusively.         *)
 (*   "upgrader-holds-exclusion" an upgrader begins while it holds writer   *)
@@ -354,6 +366,7 @@ CONSTANTS
     UpSteps,      \* how many migration steps an upgrade's body makes; 0 leaves the
                   \* body out, and an upgrade completes in one step
     Callbacks,    \* whether the store calls back into a caller under exclusion
+    Notifications, \* whether a waiter sleeps until a notification wakes it
     Scenario,     \* which of the Scenarios the processes are
     Control       \* the fault under test
 
@@ -468,14 +481,15 @@ ASSUME MixedWrites \in BOOLEAN /\ (MixedWrites => UnloggedRecovery)
 ASSUME UpSteps \in Nat /\ (UpSteps > 0 => Txn)
 ASSUME UpSteps > 0 => Control # "upgrader-holds-exclusion"
 ASSUME NSlots \in Nat /\ MaxListings \in Nat /\ MaxDiscoveries \in Nat
-ASSUME MaxUpgrades \in Nat /\ Callbacks \in BOOLEAN
+ASSUME MaxUpgrades \in Nat /\ Callbacks \in BOOLEAN /\ Notifications \in BOOLEAN
 ASSUME \A p \in Procs : RoleOf[p] \in {"reader", "writer", "upgrader"}
 ASSUME \A l \in 1..Len(Oldest) : Oldest[l] <= Current[l]
 ASSUME Control \in {"none", "replace-without-fence", "unlock-before-clear",
                     "ignore-restart", "assembled-sample", "late-invalidation",
                     "read-untrusted-as-stored", "cache-always-kept",
                     "callback-changes-the-store", "callback-waits-for-exclusion",
-                    "callback-never-returns", "upgrader-keeps-tiers",
+                    "callback-never-returns", "notification-lost",
+                    "notification-spurious", "upgrader-keeps-tiers",
                     "upgrader-holds-exclusion", "unsafe-writer-tier-first",
                     "gate-held-through-writer-tier",
                     "unsafe-upgrade-leaves-readers", "check-before-writer-tier",
@@ -584,7 +598,9 @@ VARIABLES
     crashes,
     reads,
     discoveries,
-    upgrades
+    upgrades,
+    woken        \* [Procs -> Notices]: whether each process samples what it waits
+                 \* for, sleeps registered for a notification, or has lost it
 
 vars == <<pc, req, eligible, lockHolder, owner, fence, trusted, count, gen,
           a, b, shared, log, stage, ptgt, mygen, cache, rphase, rbefore, rseenA,
@@ -592,13 +608,15 @@ vars == <<pc, req, eligible, lockHolder, owner, fence, trusted, count, gen,
           rst, rscan, rcur, lph, lcur, ltok, lrep, lunk, lfree, lres, lists,
           oldest, current, upState, ustep, ulayer, utgt, ufloor, dfloor, rtier,
           diedIn, requests, deaths, crashes, reads,
-          discoveries, upgrades>>
+          discoveries, upgrades, woken>>
 
 coord  == <<lockHolder, owner, fence, trusted, count, gen>>
 store  == <<a, b, shared, log, stage, ptgt>>
 handle == <<mygen, cache>>
 reader == <<rphase, rbefore, rseenA, rseenB, rpart, scache, disc>>
-counts == <<requests, deaths, crashes, reads, discoveries, upgrades>>
+\* The bounded steps' counters, and each process's notice of a change, which only the
+\* notification's own steps change, so that every step that names counts leaves it alone.
+counts == <<requests, deaths, crashes, reads, discoveries, upgrades, woken>>
 \* What the store records about schemas and the upgrade in progress.
 recorded == <<oldest, current, dfloor, upState, ulayer, utgt, ufloor, ustep>>
 schema == <<recorded, rtier>>
@@ -678,6 +696,9 @@ HoldsLock == OwnsRecord \cup {"locked", "releasing"}
 Outcomes == {"served", "withdrawn", "dead", "refused"}
 DiedKinds == {"none", "crash", "unlocked"} \cup OwnsRecord
 ReaderPhases == {"none", "before2", "obsA", "obsB", "after1", "after2"}
+\* A process "sample"s what it waits for before it waits, and again once woken; "asleep" is
+\* registered for a notification; "lost" was, and its notification will never come.
+Notices == {"sample", "asleep", "lost"}
 
 \* Attachment states. An ordinary attach goes wGate (asks for the gate shared),
 \* hasGate (holds it, asks for the reader tier), gateRd (holds both, about to
@@ -896,6 +917,7 @@ TypeOK ==
     /\ reads \in 0..MaxReads
     /\ discoveries \in 0..MaxDiscoveries
     /\ upgrades \in 0..MaxUpgrades
+    /\ woken \in [Procs -> Notices]
 
 Init ==
     /\ pc = [p \in Procs |-> "new"]
@@ -957,6 +979,7 @@ Init ==
     /\ reads = 0
     /\ discoveries = 0
     /\ upgrades = 0
+    /\ woken = [p \in Procs |-> "sample"]
 
 \* What a process forgets when it ends: its handle's memory and any read.
 Forget(p) ==

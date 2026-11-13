@@ -66,6 +66,8 @@ pub use fault::{
 };
 pub use mem::MemFs;
 pub use os::OsFs;
+#[cfg(canopy_loom)]
+pub use signal::LoomSignal;
 pub use signal::{CondvarSignal, PlatformSignal, Signal, Watch};
 #[cfg(target_os = "linux")]
 pub use signal::{EventFdSignal, wait_native};

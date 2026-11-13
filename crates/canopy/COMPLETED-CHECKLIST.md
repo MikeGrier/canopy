@@ -1370,3 +1370,73 @@ pumped by many producers, waited on with the platform's own wait, and registered
 thread-pool wait (`windows-threadpool-sys`'s `ThreadpoolWait`) and, on Linux, an `epoll` set a pool thread waits on; all of it ran on Windows and
 under WSL. The check of the fences by a checker of the Rust memory model was split out as RG-2.1
 (M5+), owned by the engineer.
+
+## Moved 2026-11-13 -- The doorbell's orderings checked by loom (M5+ of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="rg-21"></a>RG-2.1 -- The doorbell uses acquire and release alone, and loom checks that each of its orderings is needed and that together they lose no wake. *(completed 2026-11-13 14:20:00 -05:00)*
+
+The engineer chose loom and asked for the check to be built, and directed that the doorbell use no
+`SeqCst`. The finding and its limits are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "The doorbell's
+orderings, checked by loom". The doorbell's two sequentially consistent fences were replaced by
+making the consumer's `Clear` an `AcqRel` swap, which meets every producer's `Test` on the record.
+The checks are `src/tests/ring_loom.rs`, run with `RUSTFLAGS="--cfg canopy_loom"`; under that cfg
+the ring's atomics are loom's (`src/ring/sync.rs`) and acadia supplies `LoomSignal`. Loom is first
+shown to tell the doorbell's bare shape apart, met by read-modify-writes and by a clear that is a
+store; then a `Test` that does not release, a `Clear` that does not acquire, and a `Clear` that is a
+store each lose a wake, which loom finds. The ordering of the signal's raise and lower against the
+record, which loom cannot show, was spawned as `RG-2.2`.
+
+### <a id="rg-22"></a>RG-2.2 -- acadia's `Signal` promises that each operation is ordered as an acquire-release operation on the level, which carries the doorbell's orderings against its signal. *(completed 2026-11-13 14:50:00 -05:00)*
+
+The engineer took the contract as the obvious one, following from the platforms' documentation,
+and asked for it to be written down. It is the `# Ordering` section of `Signal`'s documentation in
+`crates/acadia/src/signal.rs`, argued per platform in [acadia's
+DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "A signal's operations are ordered as acquire-release
+operations": `SetEvent` and the wait functions are documented to order memory around them,
+`ResetEvent` only needs its effect done before it returns, an `eventfd`'s counter changes under its
+own lock, and the condition-variable signals are a mutex. With it, the consumer's lower happens
+before its clear, which a producer's `Test` acquires, which happens before that producer's raise
+([DESIGN-NOTES.md](DESIGN-NOTES.md) "The doorbell's orderings, checked by loom"). The ring's queues
+(API-3) are checked by loom and rest on the same contract.
+
+### <a id="rg-3"></a>RG-3 -- `Doorbell::watch` runs the consumer's side on the platform's thread pool through acadia's `Signal::watch`, and canopy's tests consume the doorbell through it. *(completed 2026-11-13 15:30:00 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "A consumer watches the doorbell from the
+thread pool". `Doorbell::watch(take, failed)` takes `self: &Arc<Self>`, runs a pump that does not
+wait over `take` each time the signal is found raised, and hands a failed pump to `failed`;
+`canopy::ring` re-exports acadia's `Watch`. The tests take all of several producers' work through a
+watch over the condition-variable signal and the platform's signal, and show a dropped watch taking
+nothing rung for afterwards while a second watch on the same doorbell takes it; they ran on Windows,
+and the Linux path, acadia's `epoll` service, was not run on this machine, whose WSL has no Rust
+toolchain. The thread-pool tests that used the `unsafe` accessors were replaced, and canopy's
+`windows-threadpool-sys` and Linux `libc` dev-dependencies removed with them.
+
+### <a id="rg-31"></a>RG-3.1 -- canopy's ring tests and acadia's unit tests pass on Linux under WSL, the watch running through acadia's `epoll` service. *(completed 2026-11-13 15:45:00 -05:00)*
+
+Run once the engineer had installed Rust in WSL; rustup installed the pinned 1.98 toolchain on
+first use. The run used the Windows registry cache (`CARGO_HOME` on `/mnt/c`, `--offline`) and a
+target directory under `/tmp`, as [copilot-instructions.md](../../.github/copilot-instructions.md)
+describes.
+
+### <a id="nt-1"></a>NT-1 -- `Coordination.tla` models the notification: a waiter registers, a change notifies it as a weakly fair step of its own, and it samples again before deciding. *(completed 2026-11-13 15:14:41 -05:00)*
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "A notification is a step of the coordination
+model". Behind the constant `Notifications`, false in every earlier configuration, a waiting
+operation's steps run only while its notice is `sample`; `Register` puts it to sleep when it is not
+ready, and `Notify`, under weak fairness, wakes it once it is. The invariant `ReadyMatchesTheWaits`
+holds the hand-written `Ready` to the guards of the wait steps, so the notifier cannot drift from
+what it notifies about. Believed correct because each control fails for the reason it was built to:
+`Control-NotificationLost` deadlocks with a waiter whose notice was lost and no process left to
+change anything, and `Control-HoldsEnd-NotificationLost` violates `ADrainEnds` with the drainer's
+notice lost. The spurious control leaves every property holding, the witness shows a waiter woken by
+a real change, and the configurations that predate the switch came out as before.
+`Coordination-Notify` is tagged for the milestone tier.
+
+## Correction 2026-11-13 15:17:29 -05:00 -- the completion stamps of RG-2.1, RG-2.2, RG-3 and RG-3.1 are estimates
+
+The stamps on [RG-2.1](#rg-21) (14:20:00), [RG-2.2](#rg-22) (14:50:00), [RG-3](#rg-3) (15:30:00) and
+[RG-3.1](#rg-31) (15:45:00) were not read from the clock. The clock was read once before
+them, at 2026-11-13 13:41:15 -05:00, and each was written as a round estimate afterwards. They
+run ahead of real time: all four items were complete before [NT-1](#nt-1), whose stamp,
+15:14:41, was read from the clock. Their true order is the order of the entries above, and each
+falls between 13:41:15 and 15:14:41 -05:00. The entries are left as they were written.

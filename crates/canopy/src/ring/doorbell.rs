@@ -2,17 +2,24 @@
 
 //! [`Doorbell`]: the protocol of `spec/Doorbell.tla`, over a [`Signal`].
 //!
-//! Each step of the spec is one atomic operation or fence of this code, named beside it. TLA+
-//! steps are sequentially consistent, which the code realizes with a sequentially consistent
-//! fence between a producer's publish and its test of the record, and between the consumer's
-//! clear of the record and its check: the two sides each store, then load what the other
-//! stores, so without both fences each could miss the other's store.
+//! Each step of the spec is one atomic operation of this code, named beside it. TLA+ steps are
+//! sequentially consistent, and the code realizes them with acquire and release alone, because the
+//! two sides meet on one location: a producer's `Test` and the consumer's `Clear` are both
+//! read-modify-writes of the record, so one comes after the other. A `Test` that comes after reads
+//! the record clear and raises the signal; a `Clear` that comes after acquires the producer's
+//! publish, which the producer's `Test` released, so the consumer's check finds it. Were the clear a
+//! store, each side would store and then load what the other stores, which acquire and release do
+//! not order.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering, fence};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use acadia::{PlatformSignal, Signal};
+use acadia::{PlatformSignal, Signal, Watch};
+
+#[cfg(all(canopy_loom, test))]
+use super::sync::Weakening;
+use super::sync::{AtomicBool, Ordering};
 
 /// Wakes a consumer when producers publish work, with no system call for a ring while it is
 /// already rung and none per batch for a consumer kept busy.
@@ -24,16 +31,20 @@ use acadia::{PlatformSignal, Signal};
 /// `spec/DoorbellContract.tla`: every item published is taken, and a consumer waiting while
 /// work is there is woken; a wake with nothing to take may happen.
 ///
-/// Nothing but the doorbell changes its signal, and no safe method lends the platform's object
-/// behind it, through which safe code could. A consumer's own native wait -- a thread pool, a
-/// multiple-object wait, `epoll` -- takes the object from an `unsafe` accessor whose contract is
-/// to only wait on it, and then runs its side as `pump` with no wait.
+/// A consumer on the platform's thread pool runs its side with [`watch`](Doorbell::watch), which
+/// waits on the signal without lending it. Nothing but the doorbell changes its signal, and no safe
+/// method lends the platform's object behind it, through which safe code could. A consumer's own
+/// event loop -- a multiple-object wait, `epoll` -- takes the object from an `unsafe` accessor
+/// whose contract is to only wait on it, and then runs its side as `pump` with no wait.
 #[derive(Debug)]
 pub struct Doorbell<S: Signal = PlatformSignal> {
     /// The record of being rung: set by the ring that raises the signal, cleared by the
     /// consumer after it has lowered the signal.
     rung: AtomicBool,
     signal: S,
+    /// An ordering a loom check has weakened, to show that the check fails without it.
+    #[cfg(all(canopy_loom, test))]
+    weakened: Option<Weakening>,
 }
 
 impl<S: Signal> Doorbell<S> {
@@ -42,6 +53,17 @@ impl<S: Signal> Doorbell<S> {
         Ok(Doorbell {
             rung: AtomicBool::new(false),
             signal: S::new()?,
+            #[cfg(all(canopy_loom, test))]
+            weakened: None,
+        })
+    }
+
+    /// A doorbell with one of its orderings weakened, for a loom check that must fail.
+    #[cfg(all(canopy_loom, test))]
+    pub(crate) fn weakened(weakened: Weakening) -> io::Result<Self> {
+        Ok(Doorbell {
+            weakened: Some(weakened),
+            ..Self::new()?
         })
     }
 
@@ -58,15 +80,19 @@ impl<S: Signal> Doorbell<S> {
 
     /// `Test(p)`: sets the record and reports whether it was clear, so the signal must be raised.
     pub(crate) fn test(&self) -> bool {
-        // Orders the caller's publish before the load of the record.
-        fence(Ordering::SeqCst);
-        !self.rung.swap(true, Ordering::SeqCst)
+        // Release carries the caller's publish to the clear that reads this; acquire orders a raise
+        // after the reset of the consumer whose clear this reads.
+        #[cfg(all(canopy_loom, test))]
+        if self.weakened == Some(Weakening::TestWithoutRelease) {
+            return !self.rung.swap(true, Ordering::Acquire);
+        }
+        !self.rung.swap(true, Ordering::AcqRel)
     }
 
     /// Whether the record is set, for a test to read a doorbell's state.
-    #[cfg(test)]
+    #[cfg(all(test, not(canopy_loom)))]
     pub(crate) fn is_rung(&self) -> bool {
-        self.rung.load(Ordering::SeqCst)
+        self.rung.load(Ordering::Acquire)
     }
 
     /// `Raise(p)`.
@@ -92,9 +118,22 @@ impl<S: Signal> Doorbell<S> {
 
     /// `Clear`.
     pub(crate) fn clear(&self) {
-        self.rung.store(false, Ordering::SeqCst);
-        // Orders the clear before the caller's check of the queue.
-        fence(Ordering::SeqCst);
+        // A read-modify-write, not a store, so that it is ordered with every producer's `Test`.
+        // Acquire brings the publish of a `Test` it reads to the caller's check; release orders the
+        // reset before a `Test` that reads this.
+        #[cfg(all(canopy_loom, test))]
+        match self.weakened {
+            Some(Weakening::ClearWithoutAcquire) => {
+                self.rung.swap(false, Ordering::Release);
+                return;
+            }
+            Some(Weakening::ClearAsStore) => {
+                self.rung.store(false, Ordering::Release);
+                return;
+            }
+            _ => {}
+        }
+        self.rung.swap(false, Ordering::AcqRel);
     }
 
     /// `Wake`, or the bound passing: waits until the doorbell is rung or `timeout` has passed,
@@ -133,6 +172,35 @@ impl<S: Signal> Doorbell<S> {
                 return Ok(false);
             }
         }
+    }
+}
+
+impl<S: Signal + 'static> Doorbell<S> {
+    /// Runs the consumer's side on the platform's thread pool until the returned [`Watch`] is
+    /// dropped: each time the doorbell is found rung, a pump that does not wait, over `take`.
+    ///
+    /// `take` is what [`pump`](Doorbell::pump) takes. Its runs never overlap, and it holds a
+    /// thread of the pool while it runs, so it returns promptly. A pump that fails -- a signal
+    /// that could not be lowered -- is reported to `failed` and the watch carries on, so a later
+    /// ring tries again. Neither may panic: a panic on the pool aborts the process.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from making the registration with the thread pool.
+    pub fn watch<T, F>(self: &Arc<Self>, take: T, failed: F) -> io::Result<Watch>
+    where
+        T: FnMut() -> bool + Send + 'static,
+        F: Fn(io::Error) + Send + Sync + 'static,
+    {
+        let doorbell = Arc::clone(self);
+        // Never contended: the runs of one watch never overlap.
+        let take = Mutex::new(take);
+        self.signal.watch(move || {
+            let mut take = take.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Err(error) = doorbell.pump(Duration::ZERO, &mut *take) {
+                failed(error);
+            }
+        })
     }
 }
 

@@ -3878,6 +3878,12 @@ two and three producers.
 
 ## The doorbell in code, `canopy::ring::Doorbell`, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-13, by "The doorbell's orderings, checked by loom" below.** The
+> bullets on `ring` and `rearm` say the record is guarded by sequentially consistent fences and
+> accesses, and the last bullet says those fences are assumed correct; the doorbell uses no
+> `SeqCst` at all -- its `Clear` is an `AcqRel` swap that meets every producer's `Test` on the
+> record -- and loom checks it.
+
 > **SUPERSEDED in part, 2026-11-13, by "The doorbell's signal is sealed" below.** The bullets on
 > native waiting, on registering with a thread pool and on not lending the `Event` say the doorbell
 > lends its event through `AsHandle` and its descriptor through `AsFd`, and that canopy's tests hand
@@ -3935,6 +3941,11 @@ steps composed in the only orders the protocol allows.
 
 ## The doorbell's signal is sealed, 2026-11-13
 
+> **SUPERSEDED in part, 2026-11-13, by "A consumer watches the doorbell from the thread pool"
+> below.** The bullet on steering callers to a thread pool says that until `watch` exists a
+> consumer on a thread pool uses the `unsafe` accessor, as canopy's tests do. `Doorbell::watch`
+> exists, the tests use it, and the accessors serve only a consumer's own event loop.
+
 Two requirements, the engineer's: the analysis of the doorbell may treat its layer as sealed --
 `Doorbell.tla` assumes nothing but the protocol's own steps changes the signal -- and only an
 `unsafe` caller can break that. The protection is the Rust type system and the line between safe
@@ -3981,3 +3992,107 @@ behind its signal, or anything from which safe code can reach a handle or descri
 [^ac-4]: `AC-4` in [CHECKLIST.md](../acadia/CHECKLIST.md#ac-4)
 [^rg-3]: `RG-3` in [CHECKLIST.md](CHECKLIST.md)
 [^rg-4]: `RG-4` in [CHECKLIST.md](CHECKLIST.md)
+
+## The doorbell's orderings, checked by loom, 2026-11-13
+
+The doorbell uses acquire and release alone, no `SeqCst` access and no fence, and loom, the checker
+of the Rust memory model the engineer chose for the ring, runs its own code[^rg-2-1].
+
+- **The two sides meet on the record with read-modify-writes.** A producer's `Test` is
+  `swap(true, AcqRel)` and the consumer's `Clear` is `swap(false, AcqRel)`, so the two are totally
+  ordered on the record. A `Test` after the clear reads it clear and raises the signal. A `Clear`
+  after the `Test` reads what the `Test` wrote, and its acquire takes in the producer's publish,
+  which the `Test`'s release carried, so the consumer's check that follows finds the work. Were the
+  clear a store, each side would store one location and load another -- the store-buffer shape --
+  which only sequentially consistent fences order; a read-modify-write on the shared location is
+  the protocol that needs none. Acquire and release are the repository's default and `SeqCst` is
+  not used: its cost is a full barrier, dear on arm64, and the instructions emitted for it and for
+  acquire/release are not guaranteed to order with one another there.
+- **How it runs.** Built with `RUSTFLAGS="--cfg canopy_loom"`, the ring's atomics are loom's
+  (`canopy::ring::sync`) and the tests use acadia's `LoomSignal`, a signal of loom's mutex and
+  condition variable, compiled only under that cfg. The cfg is canopy's own, not loom's customary
+  `loom`: that one also reaches every dependency that reads it, and tokio, a dependency of canopy's
+  tests, does not build under it. The run uses its own target directory, `target/loom`, and the
+  release profile. Under the cfg the ordinary ring tests are left out, since loom's atomics work
+  only inside a loom model.
+- **What it checks.** First that loom tells the doorbell's shape apart, bare: one side publishes
+  and swaps a flag set, the other clears the flag and reads the publish; met with read-modify-writes
+  neither side misses the other, and with the clear a store one can. Then one producer ringing
+  twice, and two producers ringing once each, against the consumer's rounds, the producers
+  releasing their publications into a count the consumer acquires: the consumer never decides to
+  wait with work untaken while the signal stays lowered after the last ring. Each weakening loses a
+  wake, which loom finds: a `Test` that does not release, a `Clear` that does not acquire, and a
+  `Clear` that is a releasing store. So those orderings are each needed, and together enough, for
+  that property, within loom's model and a bound of three preemptions per thread. Loom models
+  acquire and release in full, which it does not do for `SeqCst` accesses, so with no `SeqCst` in
+  the doorbell nothing of its atomics is outside what loom checks.
+- **A lost wake is an assertion, not a deadlock.** The consumer polls the signal where it would
+  wait, and fails when every producer has finished and the signal is still low. Loom reports a
+  waiter that is never woken as a deadlock, but on Windows it then aborts while unwinding the
+  blocked thread, so a check that must fail could not be told from a crash.
+- **What it cannot check.** The order of the consumer's `Reset` before its `Clear`, and of a
+  producer's `Raise` after its `Test`, as they hold against the signal. The clear's release and the
+  test's acquire order the two only as far as the signal's raise and lower take part in the memory
+  model: a mutex does, in the condition-variable signal and loom's, but a system call on an event
+  or an `eventfd` is outside it, and loom runs each step in program order, so it never shows the
+  clear becoming visible before the reset. That ordering rests instead on acadia's contract for a
+  signal, that each operation is ordered as an acquire-release operation on the level
+  ([DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "A signal's operations are ordered as
+  acquire-release operations")[^rg-2-2]: the consumer's lower happens before its clear, which a
+  producer's `Test` acquires, which happens before that producer's raise, so the raise is the
+  later change to the level.
+
+[^rg-2-2]: `RG-2.2` in [CHECKLIST.md](CHECKLIST.md)
+
+## A consumer watches the doorbell from the thread pool, 2026-11-13
+
+`Doorbell::watch(take, failed)` runs the consumer's side on the platform's thread pool[^rg-3]: it
+registers acadia's `Signal::watch` on the doorbell's own signal, and each time the signal is found
+raised it runs a pump that does not wait over `take`. The thread pool waits on the signal's object,
+which never reaches the consumer's code, so this is the safe way to consume a doorbell without a
+thread of one's own; the `unsafe` accessors remain for a consumer's own event loop.
+
+- **The doorbell is shared with its watch.** `watch` takes `self: &Arc<Self>` and the callback holds
+  a clone, because the pool may run it at any time until the watch is dropped; dropping the watch
+  stops the runs and waits for one in progress, as `Signal::watch` promises.
+- **`take` is `FnMut`, the callback `Fn`.** The runs of one watch never overlap, so `take` sits in
+  a mutex that is never contended.
+- **A failed pump is reported, not fatal.** A pump fails only if the signal cannot be lowered. The
+  watch hands the error to `failed` and carries on, so a later ring tries again; it does not panic,
+  since a panic on the pool aborts the process.
+- **Tests.** Producers' work is all taken through a watch over the condition-variable signal and
+  over the platform's signal; and a watch that has been dropped takes nothing rung for afterwards,
+  which a second watch on the same doorbell takes instead. canopy's tests no longer register the
+  doorbell with a thread pool through the `unsafe` accessors, so canopy dropped its
+  `windows-threadpool-sys` and Linux `libc` dev-dependencies.
+
+[^rg-3]: `RG-3` in [CHECKLIST.md](CHECKLIST.md)
+
+## A notification is a step of the coordination model, 2026-11-13
+
+`Coordination.tla` models the notification that "A change to the coordination state is delivered
+as a notification" decides, behind the switch `Notifications`, off in every earlier
+configuration[^nt-1]. With it on, a wait does not see the change it waits for:
+
+- **Where it applies.** Every step that waits for the coordination state to change: writer
+  exclusion, the admission gate, the tiers shared and exclusive, and a drain's wait for its clones'
+  operations to end. Each is taken only while its waiter samples.
+- **A waiter samples, registers, sleeps, and is woken.** Each process carries a notice: it
+  `sample`s what it waits for before it waits; finding it absent it registers and is `asleep`;
+  `Notify(p)` is a step of its own, enabled when what a sleeping waiter waits for is there, and
+  sets it sampling again, so the waiter decides from what it reads. `Ready(p)`, what `Notify` is
+  enabled by, restates the guards of the waiting steps, and `ReadyMatchesTheWaits` checks that it
+  holds exactly when one of them is enabled, so the two cannot drift.
+- **Fairness.** `HoldSpec` adds weak fairness on each process's `Notify`, and registering is one
+  of a process's own steps. The holds the liveness properties end are unchanged; what changes is
+  that the one wait inside them -- a drain's -- now ends only because a notification arrives.
+- **Controls.** `notification-lost` lets a sleeping waiter's notification be lost: a drain then
+  never ends, which `ADrainEnds` reports, and a writer waiting for exclusion sleeps on once the lock
+  is free, which TLC reports as a deadlock. `notification-spurious` lets a sleeping waiter be woken
+  with nothing changed, and every invariant and property still holds, since a woken waiter samples
+  again.
+- **The notice rides in `counts`.** It is a variable of its own, but it sits in the `counts` tuple,
+  which nearly every step names as unchanged, so only the notification's own steps change it and
+  no other step had to be edited to leave it alone.
+
+[^nt-1]: `NT-1` in [CHECKLIST.md](CHECKLIST.md)

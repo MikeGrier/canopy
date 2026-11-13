@@ -13,7 +13,7 @@ $milestoneTier = @(
     'Coordination-RecoveryUnlogged', 'Coordination-RecoveryMixed',
     'Coordination-HoldsEnd-Txn', 'Coordination-HoldsEnd-Unlogged', 'Coordination-HoldsEnd-UpgradeBody',
     'Coordination-HoldsEnd-Registry', 'Coordination-HoldsEnd-Unsafe', 'Coordination-Callback',
-    'Coordination', 'Coordination-Attachment', 'Coordination-AttachmentUnsafe',
+    'Coordination', 'Coordination-Attachment', 'Coordination-AttachmentUnsafe', 'Coordination-Notify',
     'Coordination-CallbackUpgradeBody', 'Coordination-CumulativeLayerPairReads',
     'Coordination-CumulativeLayersUnsafeBody', 'Coordination-HoldsEnd-Callback',
     'Coordination-NoDeadlock-TwoSafeUpgraders', 'Coordination-NoDeadlock-TwoUpgraders',
@@ -117,7 +117,7 @@ $layered = @{
     TwoLayerUpgradesFloor = @{ Name = 'TwoLayerUpgradesFloor'; Procs = 3; Upgraders = 2 }
 }
 
-function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false) {
+function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false, $notifications = $false) {
     $n = $s.Procs
     $procs = '{' + ((1..$n) -join ', ') + '}'
     $lines = @(
@@ -138,6 +138,7 @@ function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $dead
         "    MixedWrites = $(if ($mixedWrites) { 'TRUE' } else { 'FALSE' })",
         "    UpSteps = $upSteps",
         "    Callbacks = $(if ($callbacks) { 'TRUE' } else { 'FALSE' })",
+        "    Notifications = $(if ($notifications) { 'TRUE' } else { 'FALSE' })",
         "    Scenario = `"$($s.Name)`"",
         "    Control = `"$control`"",
         "SPECIFICATION $spec"

@@ -3,14 +3,15 @@
 //! `ring::Doorbell`: every interleaving of a few producers and the consumer, step by step as
 //! `spec/Doorbell.tla` names them over a condition-variable signal, checked against
 //! `spec/DoorbellContract.tla`; the same checker finding the lost wake of each of the spec's
-//! controls; and the doorbell over the platform's own signal, pumped and waited on natively.
+//! controls; and the doorbell over the platform's own signal, pumped, waited on natively, and
+//! watched from the thread pool.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use acadia::{CondvarSignal, PlatformSignal};
+use acadia::{CondvarSignal, PlatformSignal, Signal};
 
 use crate::ring::Doorbell;
 
@@ -326,12 +327,12 @@ struct Queue {
 
 impl Queue {
     fn publish(&self) {
-        self.published.fetch_add(1, Ordering::SeqCst);
+        self.published.fetch_add(1, Ordering::Release);
     }
 
     /// The consumer's take: everything published since `taken`.
     fn take(&self, taken: &mut usize) -> bool {
-        let published = self.published.load(Ordering::SeqCst);
+        let published = self.published.load(Ordering::Acquire);
         let found = published > *taken;
         *taken = published;
         found
@@ -467,167 +468,101 @@ fn a_thread_waiting_natively_takes_everything_producers_publish() {
     });
 }
 
-// -- A thread pool's wait ---------------------------------------------------------------------
+// -- A watch on the thread pool --------------------------------------------------------------
 
-/// The consumer of a thread pool's wait on a doorbell: what each callback pumps, and where the
-/// last one reports how much it took.
-#[cfg(any(windows, target_os = "linux"))]
-struct PoolConsumer {
-    doorbell: Arc<Doorbell<PlatformSignal>>,
-    queue: Arc<Queue>,
-    total: usize,
-    taken: std::sync::Mutex<usize>,
-    done: std::sync::mpsc::Sender<std::io::Result<usize>>,
+/// A watch's `take`: everything published into `queue`, with the count taken so far sent to `seen`
+/// after each run that took anything.
+fn watching(queue: Arc<Queue>, seen: mpsc::Sender<usize>) -> impl FnMut() -> bool + Send {
+    let mut taken = 0;
+    move || {
+        let found = queue.take(&mut taken);
+        if found {
+            let _ = seen.send(taken);
+        }
+        found
+    }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
-impl PoolConsumer {
-    /// One callback's work: a pump that does not wait. Returns whether the wait must be
-    /// registered again; when it need not be, the result has been sent.
-    fn on_rung(&self) -> bool {
-        let mut taken = self.taken.lock().unwrap();
-        let pumped = self
-            .doorbell
-            .pump(Duration::ZERO, || self.queue.take(&mut taken));
-        match pumped {
-            Ok(_) if *taken < self.total => true,
-            Ok(_) => {
-                let _ = self.done.send(Ok(*taken));
-                false
-            }
-            Err(e) => {
-                let _ = self.done.send(Err(e));
-                false
-            }
+/// Waits until the count a watch reports reaches `total`.
+fn seen_until(seen: &mpsc::Receiver<usize>, total: usize) -> usize {
+    loop {
+        let taken = test_timers::mpsc::recv_timeout(seen, LONG).expect("the watch stopped taking");
+        if taken >= total {
+            return taken;
         }
     }
 }
 
-/// Producers publishing `items` each into `queue` and ringing `doorbell`, on threads of `scope`.
-#[cfg(any(windows, target_os = "linux"))]
-fn produce<'scope>(
-    scope: &'scope std::thread::Scope<'scope, '_>,
-    doorbell: &Arc<Doorbell<PlatformSignal>>,
-    queue: &Arc<Queue>,
-    producers: usize,
-    items: usize,
-) {
-    for _ in 0..producers {
-        let (doorbell, queue) = (Arc::clone(doorbell), Arc::clone(queue));
-        scope.spawn(move || {
-            for _ in 0..items {
-                queue.publish();
-                doorbell.ring().unwrap();
-            }
-        });
+/// A watch's `failed`, sending what it is told to `errors`.
+fn failures(errors: mpsc::Sender<std::io::Error>) -> impl Fn(std::io::Error) + Send + Sync {
+    move |error| {
+        let _ = errors.send(error);
     }
 }
 
-/// The Windows thread pool waits on the doorbell through the handle it lends that can only wait:
-/// each callback pumps without waiting and arms the one-shot wait again, so no thread of the
-/// test's own waits for a ring.
-#[cfg(windows)]
-#[test]
-fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
-    use windows_threadpool_sys::wait::ThreadpoolWait;
-
-    let doorbell = Arc::new(Doorbell::<PlatformSignal>::new().unwrap());
+fn a_watch_takes_everything<S: Signal + 'static>(producers: usize, items: usize) {
+    let doorbell = Arc::new(Doorbell::<S>::new().unwrap());
     let queue = Arc::new(Queue::default());
-    let (producers, items) = (3, 300);
-    let (done, finished) = std::sync::mpsc::channel();
-    let consumer = PoolConsumer {
-        doorbell: Arc::clone(&doorbell),
-        queue: Arc::clone(&queue),
-        total: producers * items,
-        taken: std::sync::Mutex::new(0),
-        done,
-    };
-    let wait = ThreadpoolWait::new(
-        // SAFETY: the thread pool only waits on the handle, and the callback never reaches it.
-        unsafe { doorbell.native_wait_handle() }.unwrap().into(),
-        move |activation| {
-            if consumer.on_rung() {
-                activation.rearm(None);
-            }
-        },
-        None,
-    )
-    .unwrap();
-    wait.arm(None);
-
-    std::thread::scope(|scope| produce(scope, &doorbell, &queue, producers, items));
-    let outcome = test_timers::mpsc::recv_timeout(&finished, LONG);
-    wait.stop_and_drain();
-    drop(wait);
-    let taken = outcome
-        .expect("the pool's callbacks did not take everything")
+    let (seen, counts) = mpsc::channel();
+    let (errors, failed) = mpsc::channel();
+    let watch = doorbell
+        .watch(watching(Arc::clone(&queue), seen), failures(errors))
         .unwrap();
-    assert_eq!(taken, producers * items);
+    let total = producers * items;
+    std::thread::scope(|scope| {
+        for _ in 0..producers {
+            let (doorbell, queue) = (Arc::clone(&doorbell), Arc::clone(&queue));
+            scope.spawn(move || {
+                for _ in 0..items {
+                    queue.publish();
+                    doorbell.ring().unwrap();
+                }
+            });
+        }
+    });
+    assert_eq!(seen_until(&counts, total), total);
+    drop(watch);
+    assert!(failed.try_recv().is_err(), "a pump failed");
 }
 
-/// On Linux a thread pool waits on an `epoll` set: the doorbell's descriptor is registered
-/// level-triggered, and a pool thread that sees it ready pumps without waiting.
-#[cfg(target_os = "linux")]
+/// The consumer's side runs on the thread pool, which waits on the signal's own object, and no
+/// thread of the test's own waits for a ring.
 #[test]
-fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+fn a_watch_takes_everything_producers_publish() {
+    a_watch_takes_everything::<CondvarSignal>(3, 300);
+    a_watch_takes_everything::<PlatformSignal>(3, 300);
+}
 
-    let doorbell = Arc::new(Doorbell::<PlatformSignal>::new().unwrap());
+fn a_dropped_watch_takes_nothing_more<S: Signal + 'static>() {
+    let doorbell = Arc::new(Doorbell::<S>::new().unwrap());
     let queue = Arc::new(Queue::default());
-    let (producers, items) = (3, 300);
-
-    // SAFETY: plain system calls; the descriptor returned is owned at once.
-    let epoll = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-    assert!(epoll >= 0, "{}", std::io::Error::last_os_error());
-    // SAFETY: `epoll` is a descriptor this test owns and nothing else closes.
-    let epoll = unsafe { OwnedFd::from_raw_fd(epoll) };
-    let mut interest = libc::epoll_event {
-        events: libc::EPOLLIN as u32,
-        u64: 0,
-    };
-    // SAFETY: the descriptor is only registered with `epoll`, which waits on it.
-    let fd = unsafe { doorbell.native_fd() }.as_raw_fd();
-    // SAFETY: both descriptors are open, and `interest` is a valid event.
-    let added =
-        unsafe { libc::epoll_ctl(epoll.as_raw_fd(), libc::EPOLL_CTL_ADD, fd, &mut interest) };
-    assert_eq!(added, 0, "{}", std::io::Error::last_os_error());
-
-    let (done, finished) = std::sync::mpsc::channel();
-    let consumer = PoolConsumer {
-        doorbell: Arc::clone(&doorbell),
-        queue: Arc::clone(&queue),
-        total: producers * items,
-        taken: std::sync::Mutex::new(0),
-        done,
-    };
-    std::thread::scope(|scope| {
-        let epoll = &epoll;
-        let consumer = &consumer;
-        scope.spawn(move || {
-            let timeout = i32::try_from(LONG.as_millis()).unwrap();
-            loop {
-                let mut ready = [libc::epoll_event { events: 0, u64: 0 }];
-                // SAFETY: `ready` has room for the one event asked for.
-                let n =
-                    unsafe { libc::epoll_wait(epoll.as_raw_fd(), ready.as_mut_ptr(), 1, timeout) };
-                if n < 0 {
-                    let e = std::io::Error::last_os_error();
-                    if e.kind() == std::io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    let _ = consumer.done.send(Err(e));
-                    return;
-                }
-                assert_eq!(n, 1, "the pool's wait timed out");
-                if !consumer.on_rung() {
-                    return;
-                }
-            }
-        });
-        produce(scope, &doorbell, &queue, producers, items);
-    });
-    let taken = test_timers::mpsc::recv_timeout(&finished, LONG)
-        .expect("the pool thread did not take everything")
+    let (errors, failed) = mpsc::channel();
+    let (seen, counts) = mpsc::channel();
+    let first = doorbell
+        .watch(watching(Arc::clone(&queue), seen), failures(errors.clone()))
         .unwrap();
-    assert_eq!(taken, producers * items);
+    queue.publish();
+    doorbell.ring().unwrap();
+    assert_eq!(seen_until(&counts, 1), 1);
+    drop(first);
+
+    // Work rung for after the drop is taken by a second watch, and never by the first.
+    let (later, later_counts) = mpsc::channel();
+    let _second = doorbell
+        .watch(watching(Arc::clone(&queue), later), failures(errors))
+        .unwrap();
+    queue.publish();
+    doorbell.ring().unwrap();
+    assert_eq!(seen_until(&later_counts, 2), 2);
+    assert!(
+        counts.try_recv().is_err(),
+        "a dropped watch took work rung for after it was dropped"
+    );
+    assert!(failed.try_recv().is_err(), "a pump failed");
+}
+
+#[test]
+fn a_dropped_watch_takes_nothing_more_while_producers_ring() {
+    a_dropped_watch_takes_nothing_more::<CondvarSignal>();
+    a_dropped_watch_takes_nothing_more::<PlatformSignal>();
 }

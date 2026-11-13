@@ -530,3 +530,36 @@ raised runs again and that runs never overlap, and a condition-variable watch th
 drop failed the test that a drop waits for a running callback.
 
 [^ac-4]: `AC-4` in [CHECKLIST.md](CHECKLIST.md#ac-4)
+
+## A signal's operations are ordered as acquire-release operations, 2026-11-13
+
+`Signal` promises that `raise`, `lower` and `wait` are each ordered with the calling thread's own
+memory accesses as an acquire-release read-modify-write of the signal's level would be. A protocol
+over a signal -- canopy's doorbell is the one there is -- may then treat the level as one more
+atomic location, and order it with its own atomics by acquire and release alone ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's orderings, checked by loom")[^rg-2-2].
+The contract is the engineer's: it is the obvious one, and it follows from what each platform
+documents of the operations behind it.
+
+- **Windows, `EventSignal`.** Microsoft's documentation of the Win32 synchronization functions
+  ([Synchronization and Multiprocessor
+  Issues](https://learn.microsoft.com/en-us/windows/win32/sync/synchronization-and-multiprocessor-issues),
+  "Memory Ordering") lists the functions that signal synchronization objects, and the wait
+  functions, among those that use the barriers needed to order memory around them: `SetEvent`,
+  behind `raise`, and `WaitForSingleObject`, behind `wait`. `ResetEvent`, behind `lower`, is not
+  named. The doorbell needs no barrier of `lower`'s own, only that its effect on the event is done
+  before the call returns, which `ResetEvent` states; the release of the caller's next atomic then
+  orders it, since the release orders everything the thread did before it, the call included.
+- **Linux, `EventFdSignal`.** A write to or read from an `eventfd` changes its counter under the
+  `eventfd`'s own lock, before the system call returns, and a `poll` reads it under the same lock;
+  the kernel's lock release and acquire order those accesses with one another, and the caller's
+  atomics before and after the call order them with the caller's program as above.
+- **`CondvarSignal` and `LoomSignal`.** The level is a `bool` under a mutex, so every operation is
+  a lock acquire and release, inside the Rust memory model.
+
+What this does not cover is the thread's program order across the call itself, which the contract
+takes as given: a system call is part of the calling thread's execution, and a thread that is moved
+between processors mid-call is moved through the scheduler's own barriers. A probe of the platform
+would be a data point for an ambiguity here, not a proof of the contract, so none is scheduled.
+
+[^rg-2-2]: `RG-2.2` in [CHECKLIST.md](../canopy/CHECKLIST.md)

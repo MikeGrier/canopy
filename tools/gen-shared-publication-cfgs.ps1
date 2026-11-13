@@ -48,6 +48,7 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
     $lines += "    MixedWrites = $(& $flag $mixed)"
     $lines += '    UpSteps = 0'
     $lines += '    Callbacks = FALSE'
+    $lines += '    Notifications = FALSE'
     $lines += "    Scenario = `"Plain$procs`""
     $lines += "    Control = `"$coordControl`""
     $lines += "    Docs = {$((1..$docs) -join ', ')}"

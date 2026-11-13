@@ -28,7 +28,11 @@ mod publication;
 mod quiescence;
 mod recovery;
 mod removal;
+// Under `--cfg canopy_loom` the doorbell's atomics are loom's, which work only inside a loom model.
+#[cfg(not(canopy_loom))]
 mod ring;
+#[cfg(canopy_loom)]
+mod ring_loom;
 mod surface;
 mod transaction;
 mod verbs;

@@ -599,7 +599,7 @@ fn observation_runs_an_action_and_can_record_at_the_same_time() {
                 PathMatcher::file_name("watched"),
                 Fault::Observe(Observation::recording(&log).and_run(move |op, _path| {
                     assert_eq!(op, FaultOp::Write);
-                    counter.fetch_add(1, Ordering::SeqCst);
+                    counter.fetch_add(1, Ordering::AcqRel);
                 })),
                 When::Always,
             );
@@ -611,7 +611,7 @@ fn observation_runs_an_action_and_can_record_at_the_same_time() {
             fs.write(&watched, b"second").expect("write is undisturbed");
 
             assert_eq!(fs.read(&watched).unwrap(), b"second");
-            assert_eq!(seen.load(Ordering::SeqCst), 2);
+            assert_eq!(seen.load(Ordering::Acquire), 2);
             assert_eq!(log.len(), 2);
         },
     );

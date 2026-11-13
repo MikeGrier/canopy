@@ -131,6 +131,6 @@ DiscoveryMutatesNothing ==
           Discover(p) =>
               UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rphase,
                           rbefore, rseenA, rseenB, rpart, scache, diedIn,
-                          requests, deaths, crashes, reads, upgrades>>]_vars
+                          requests, deaths, crashes, reads, upgrades, woken>>]_vars
 
 =============================================================================

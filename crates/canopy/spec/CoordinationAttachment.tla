@@ -36,7 +36,7 @@ Request(p) ==
     /\ req' = Set(req, p, "pending")
     /\ requests' = Tick(requests)
     /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, deaths,
-                   crashes, reads, discoveries, upgrades>>
+                   crashes, reads, discoveries, upgrades, woken>>
 
 \* The waiter gives up.
 Withdraw(p) ==
@@ -181,7 +181,7 @@ StartUpgrade(p) ==
     /\ att' = Set(att, p, "draining")
     /\ areq' = Set(areq, p, "pending")
     /\ UNCHANGED <<schema, lease, reg, req, eligible, coord, store, handle, reader,
-                   diedIn, requests, deaths, crashes, reads, discoveries>>
+                   diedIn, requests, deaths, crashes, reads, discoveries, woken>>
 
 RefuseUpgrade(p) ==
     /\ Upgrader(p) /\ att[p] = "attached" /\ InsideOperation(p)

@@ -252,4 +252,9 @@ SettledReadSawNoPartOfAnOperation ==
     [][\A p \in Procs :
           Accepted(p) => (rseenA[p] = a /\ rseenB[p] = b /\ a = b)]_vars
 
+\* Audience: internal.
+\* What a waiter samples is what it waits for: Ready, which a notification is woken by, holds
+\* exactly when one of the steps that wait is enabled, so the two cannot drift apart.
+ReadyMatchesTheWaits == \A p \in Procs : Waiting(p) => (Ready(p) <=> ENABLED WaitSteps(p))
+
 =============================================================================

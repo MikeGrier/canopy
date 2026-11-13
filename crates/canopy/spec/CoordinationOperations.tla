@@ -385,7 +385,8 @@ ReadBefore(p) ==
                /\ rphase' = Set(rphase, p, "obsA")
                /\ UNCHANGED rpart
     /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rseenA, rseenB,
-                   disc, diedIn, requests, deaths, crashes, discoveries, upgrades>>
+                   disc, diedIn, requests, deaths, crashes, discoveries, upgrades,
+                   woken>>
 
 ReadBefore2(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "before2"
@@ -659,6 +660,6 @@ Discover(p) ==
                    THEN FALSE ELSE fence
     /\ UNCHANGED <<adm, pc, req, eligible, lockHolder, owner, trusted, count, gen,
                    store, handle, rphase, rbefore, rseenA, rseenB, rpart, scache,
-                   diedIn, requests, deaths, crashes, reads, upgrades>>
+                   diedIn, requests, deaths, crashes, reads, upgrades, woken>>
 
 =============================================================================

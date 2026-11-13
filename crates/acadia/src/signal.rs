@@ -7,7 +7,7 @@
 //! A signal is a **level**, not an event count: raising a raised signal and lowering a lowered
 //! one change nothing and report nothing, and a wait returns as soon as the signal is raised,
 //! whenever it was raised, without lowering it. Everything that makes a doorbell correct --
-//! which side raises, when it is lowered, the fences around it -- is the protocol above this,
+//! which side raises, when it is lowered, the orderings around it -- is the protocol above this,
 //! written once for every implementation.
 //!
 //! [`PlatformSignal`] names the platform's implementation: `EventSignal`, a manual-reset
@@ -30,9 +30,13 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(canopy_loom)]
+mod loom;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(canopy_loom)]
+pub use self::loom::LoomSignal;
 #[cfg(target_os = "linux")]
 pub use linux::{EventFdSignal, wait_native};
 #[cfg(windows)]
@@ -56,6 +60,17 @@ mod sealed {
 ///
 /// Sealed: the implementations are this crate's, so a protocol written over `Signal` is argued
 /// against these three and no other.
+///
+/// # Ordering
+///
+/// Each of [`raise`](Signal::raise), [`lower`](Signal::lower) and [`wait`](Signal::wait) is
+/// ordered with the calling thread's own memory accesses as an acquire-release read-modify-write of
+/// the signal's level would be: what the thread did before the call happens before the call's
+/// effect on the level, and the call's effect, and what a raise it observed was preceded by,
+/// happen before what the thread does after it. A protocol over a signal may therefore reason
+/// about the level as one more atomic location, ordered with its own atomics by acquire and
+/// release (acadia's design notes, "A signal's operations are ordered as acquire-release
+/// operations").
 pub trait Signal: sealed::Sealed + Send + Sync + fmt::Debug + Sized {
     /// A new signal, lowered.
     fn new() -> io::Result<Self>;
@@ -236,11 +251,11 @@ impl Signal for CondvarSignal {
                             let _raised = level
                                 .changed
                                 .wait_while(raised, |raised| {
-                                    !*raised && !stopped.load(Ordering::SeqCst)
+                                    !*raised && !stopped.load(Ordering::Acquire)
                                 })
                                 .unwrap_or_else(PoisonError::into_inner);
                         }
-                        if stopped.load(Ordering::SeqCst) {
+                        if stopped.load(Ordering::Acquire) {
                             return;
                         }
                         run_callback(&callback);
@@ -266,7 +281,7 @@ struct ThreadWatch {
 
 impl Drop for ThreadWatch {
     fn drop(&mut self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        self.stopped.store(true, Ordering::Release);
         // Taken under the lock so the thread, which tests `stopped` under it, cannot miss the
         // wake between its test and its wait.
         drop(

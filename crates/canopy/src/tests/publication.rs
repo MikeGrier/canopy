@@ -192,7 +192,7 @@ fn the_record_name_is_synced_once_per_open() {
         FaultOp::Fsync,
         PathMatcher::exact("once-per-open"),
         Fault::observe_with(move |_, _| {
-            counted.fetch_add(1, Ordering::SeqCst);
+            counted.fetch_add(1, Ordering::AcqRel);
         }),
         When::Always,
     );
@@ -201,13 +201,13 @@ fn the_record_name_is_synced_once_per_open() {
     store
         .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
-    let after_first = root_syncs.load(Ordering::SeqCst);
+    let after_first = root_syncs.load(Ordering::Acquire);
     for (round, tag) in [(2u8, "w2"), (3, "w3"), (4, "w4")] {
         store
             .write_document_replicated_as(&node, &d, &body(&[round]), &nonce(tag))
             .unwrap();
     }
-    assert_eq!(root_syncs.load(Ordering::SeqCst), after_first);
+    assert_eq!(root_syncs.load(Ordering::Acquire), after_first);
 }
 
 // -- The record's own durability (T24, T25) -----------------------------------------------------
@@ -646,7 +646,7 @@ fn marker_rewritten_under_the_lock(version: u32) -> (Arc<dyn Vfs>, PathBuf, Arc<
         FaultOp::LockExclusive,
         PathMatcher::file_name(LOCK_NAME),
         Fault::observe_with(move |_, _| {
-            if fire.swap(0, Ordering::SeqCst) == 1
+            if fire.swap(0, Ordering::AcqRel) == 1
                 && let Some(fs) = reach.get().and_then(Weak::upgrade)
             {
                 let vfs: Arc<dyn Vfs> = fs;
@@ -667,7 +667,7 @@ fn marker_rewritten_under_the_lock(version: u32) -> (Arc<dyn Vfs>, PathBuf, Arc<
 fn a_migration_reads_the_marker_again_under_the_lock() {
     let (vfs, root, armed) = marker_rewritten_under_the_lock(GENESIS_FORMAT_VERSION);
     set_marker_version(&vfs, &root, MIGRATABLE_FORMAT_VERSION);
-    armed.store(1, Ordering::SeqCst);
+    armed.store(1, Ordering::Release);
     assert_eq!(
         Store::migrate(vfs, root).unwrap(),
         Migration::AlreadyCurrent,
@@ -678,7 +678,7 @@ fn a_migration_reads_the_marker_again_under_the_lock() {
 #[test]
 fn an_open_reads_the_marker_again_under_the_lock() {
     let (vfs, root, armed) = marker_rewritten_under_the_lock(GENESIS_FORMAT_VERSION + 1);
-    armed.store(1, Ordering::SeqCst);
+    armed.store(1, Ordering::Release);
     assert!(matches!(
         Store::open_unsourced(vfs, root),
         Err(StoreError::UnsupportedFormatVersion { .. })

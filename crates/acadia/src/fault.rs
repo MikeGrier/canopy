@@ -228,18 +228,18 @@ impl FaultGate {
 
     /// Opens the gate: rules holding it begin to apply.
     pub fn open(&self) {
-        self.open.store(true, Ordering::SeqCst);
+        self.open.store(true, Ordering::Release);
     }
 
     /// Closes the gate: rules holding it stop applying.
     pub fn close(&self) {
-        self.open.store(false, Ordering::SeqCst);
+        self.open.store(false, Ordering::Release);
     }
 
     /// Whether the gate is currently open.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        self.open.load(Ordering::SeqCst)
+        self.open.load(Ordering::Acquire)
     }
 }
 

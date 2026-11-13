@@ -49,6 +49,10 @@ Witness_AnOperationEndsWithoutAnEffect ==
 Witness_ACallbackReturns ==
     [][~(\E p \in Procs : pc[p] = "wrote" /\ pc'[p] = "observed")]_vars
 
+\* A waiter that registered and slept is woken by a change to what it waits for.
+Witness_AWaiterIsNotified ==
+    [][~(\E p \in Procs : woken[p] = "asleep" /\ woken'[p] = "sample" /\ Ready(p))]_vars
+
 Witness_ASettledReadIsAccepted ==
     [][~(\E p \in Procs : Accepted(p))]_vars
 

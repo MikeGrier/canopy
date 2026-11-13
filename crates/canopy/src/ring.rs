@@ -9,5 +9,7 @@
 //! `eventfd` and a condition variable is the same code, monomorphized.
 
 mod doorbell;
+pub(crate) mod sync;
 
+pub use acadia::Watch;
 pub use doorbell::Doorbell;

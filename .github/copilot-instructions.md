@@ -1085,6 +1085,26 @@ git config --local alias.blame-split "blame -w -C1 -C1"
 
 The alias gives `git blame-split -- <file>` as shorthand for the verification in step 8.
 
+### Atomics use acquire and release, never `SeqCst`
+
+Write lock-free code with `Acquire` loads, `Release` stores and `AcqRel` read-modify-writes, and
+design the protocol so that those are enough. Never use `Ordering::SeqCst` or `fence(SeqCst)`, and
+never mix them with acquire/release operations on the same data.
+
+- **Cost.** A `SeqCst` fence or access is a full barrier on every architecture that matters, and
+  dear on arm64 in particular, where acquire/release maps onto `ldar`/`ldapr`/`stlr` and costs far
+  less.
+- **Mixing is not sound in practice.** The instructions code generators emit for `SeqCst` fences and
+  accesses and for acquire/release primitives are not guaranteed to order with one another in the
+  store buffers on arm64, so a protocol that relies on a `SeqCst` fence beside acquire/release
+  accesses is relying on more than either model promises.
+- **When a protocol seems to need `SeqCst`, change the protocol.** The store-buffer shape -- each
+  side stores one location and then loads another -- is the usual reason, and the remedy is to make
+  the two sides meet on one location with read-modify-writes, which are totally ordered on that
+  location, so `AcqRel` is enough. `canopy::ring::Doorbell` is the worked example: its clear is a
+  swap, not a store ([DESIGN-NOTES.md](../crates/canopy/DESIGN-NOTES.md) "The doorbell's orderings,
+  checked by loom").
+
 ### No manifest numeric constants in source code
 
 Never write bare integer or byte literals as discriminants or protocol tags inline in logic code.

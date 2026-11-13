@@ -77,7 +77,7 @@ impl Signal for EventSignal {
             ThreadpoolWait::new(
                 self.event.duplicate_wait_only()?.into(),
                 move |activation| {
-                    if state.stopped.load(Ordering::SeqCst) {
+                    if state.stopped.load(Ordering::Acquire) {
                         return;
                     }
                     state.set_running(Some(thread::current().id()));
@@ -85,7 +85,7 @@ impl Signal for EventSignal {
                     state.set_running(None);
                     // Armed again only after the callback returns, so runs never overlap; armed
                     // on a raised event, the wait completes at once, which is the level.
-                    if !state.stopped.load(Ordering::SeqCst) {
+                    if !state.stopped.load(Ordering::Acquire) {
                         activation.rearm(None);
                     }
                 },
@@ -124,7 +124,7 @@ impl PoolState {
 
 impl Drop for PoolWatch {
     fn drop(&mut self) {
-        self.state.stopped.store(true, Ordering::SeqCst);
+        self.state.stopped.store(true, Ordering::Release);
         let Some(wait) = self.wait.take() else {
             return;
         };

@@ -322,7 +322,7 @@ fn watch_counting(signal: &Arc<dyn Probe>) -> (Watch, Arc<AtomicUsize>, mpsc::Re
         let runs = Arc::clone(&runs);
         signal.watch(Box::new(move || {
             lowering.lower();
-            let _ = report.send(runs.fetch_add(1, Ordering::SeqCst) + 1);
+            let _ = report.send(runs.fetch_add(1, Ordering::AcqRel) + 1);
         }))
     };
     (watch, runs, reports)
@@ -344,12 +344,12 @@ fn a_lowered_signal_does_not_run_the_watch() {
         let signal: Arc<dyn Probe> = Arc::from(make());
         let (_watch, runs, reports) = watch_counting(&signal);
         sleep(SETTLE);
-        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        assert_eq!(runs.load(Ordering::Acquire), 0);
         signal.raise();
         assert_eq!(recv_timeout(&reports, LONG), Ok(1));
         sleep(SETTLE);
         assert_eq!(
-            runs.load(Ordering::SeqCst),
+            runs.load(Ordering::Acquire),
             1,
             "one raise, lowered by the run, is one run"
         );
@@ -376,7 +376,7 @@ fn a_callback_that_leaves_the_signal_raised_runs_again() {
             let lowering = Arc::clone(&signal);
             let runs = Arc::clone(&runs);
             signal.watch(Box::new(move || {
-                let run = runs.fetch_add(1, Ordering::SeqCst) + 1;
+                let run = runs.fetch_add(1, Ordering::AcqRel) + 1;
                 if run == 3 {
                     lowering.lower();
                     let _ = report.send(run);
@@ -387,7 +387,7 @@ fn a_callback_that_leaves_the_signal_raised_runs_again() {
         assert_eq!(recv_timeout(&reports, LONG), Ok(3));
         sleep(SETTLE);
         assert_eq!(
-            runs.load(Ordering::SeqCst),
+            runs.load(Ordering::Acquire),
             3,
             "lowered, it is not run again"
         );
@@ -406,12 +406,12 @@ fn runs_of_one_watch_never_overlap() {
             let lowering = Arc::clone(&signal);
             let overlapped = Arc::clone(&overlapped);
             signal.watch(Box::new(move || {
-                if inside.swap(true, Ordering::SeqCst) {
-                    overlapped.store(true, Ordering::SeqCst);
+                if inside.swap(true, Ordering::AcqRel) {
+                    overlapped.store(true, Ordering::Release);
                 }
                 sleep(Duration::from_millis(1));
-                inside.store(false, Ordering::SeqCst);
-                if runs.fetch_add(1, Ordering::SeqCst) + 1 == 20 {
+                inside.store(false, Ordering::Release);
+                if runs.fetch_add(1, Ordering::AcqRel) + 1 == 20 {
                     lowering.lower();
                     let _ = report.send(());
                 }
@@ -419,7 +419,7 @@ fn runs_of_one_watch_never_overlap() {
         };
         signal.raise();
         assert_eq!(recv_timeout(&reports, LONG), Ok(()));
-        assert!(!overlapped.load(Ordering::SeqCst), "two runs at once");
+        assert!(!overlapped.load(Ordering::Acquire), "two runs at once");
     });
 }
 
@@ -437,7 +437,7 @@ fn many_raises_from_many_threads_each_lead_to_a_run_that_finds_them() {
             signal.watch(Box::new(move || {
                 // Lowered before the work is read, so a raise after the read runs it again.
                 lowering.lower();
-                if published.load(Ordering::SeqCst) == THREADS * EACH {
+                if published.load(Ordering::Acquire) == THREADS * EACH {
                     let _ = report.send(());
                 }
             }))
@@ -446,7 +446,7 @@ fn many_raises_from_many_threads_each_lead_to_a_run_that_finds_them() {
             for _ in 0..THREADS {
                 scope.spawn(|| {
                     for _ in 0..EACH {
-                        published.fetch_add(1, Ordering::SeqCst);
+                        published.fetch_add(1, Ordering::AcqRel);
                         signal.raise();
                     }
                 });
@@ -469,14 +469,14 @@ fn dropping_the_watch_waits_for_a_running_callback() {
                 lowering.lower();
                 let _ = entered.send(());
                 sleep(Duration::from_millis(50));
-                done.store(true, Ordering::SeqCst);
+                done.store(true, Ordering::Release);
             }))
         };
         signal.raise();
         assert_eq!(recv_timeout(&entries, LONG), Ok(()));
         drop(watch);
         assert!(
-            done.load(Ordering::SeqCst),
+            done.load(Ordering::Acquire),
             "the drop returned before the run did"
         );
     });
@@ -492,7 +492,7 @@ fn a_dropped_watch_is_not_run() {
         drop(watch);
         signal.raise();
         sleep(SETTLE);
-        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(runs.load(Ordering::Acquire), 1);
         assert!(signal.wait(Duration::ZERO), "nothing lowered the raise");
     });
 }
@@ -508,7 +508,7 @@ fn a_watch_dropped_by_its_own_callback_returns_and_is_not_run_again() {
             let slot = Arc::clone(&slot);
             let runs = Arc::clone(&runs);
             signal.watch(Box::new(move || {
-                runs.fetch_add(1, Ordering::SeqCst);
+                runs.fetch_add(1, Ordering::AcqRel);
                 let watch = slot.lock().unwrap().take();
                 drop(watch);
                 let _ = report.send(());
@@ -519,7 +519,7 @@ fn a_watch_dropped_by_its_own_callback_returns_and_is_not_run_again() {
         assert_eq!(recv_timeout(&reports, LONG), Ok(()));
         sleep(SETTLE);
         assert_eq!(
-            runs.load(Ordering::SeqCst),
+            runs.load(Ordering::Acquire),
             1,
             "the signal is still raised, but the watch is gone"
         );

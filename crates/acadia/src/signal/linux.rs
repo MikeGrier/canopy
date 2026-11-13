@@ -185,7 +185,7 @@ impl Service {
     }
 
     fn register(&self, entry: &Arc<Entry>) -> io::Result<u64> {
-        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let token = self.next_token.fetch_add(1, Ordering::AcqRel);
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
