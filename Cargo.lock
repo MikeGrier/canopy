@@ -12,6 +12,7 @@ dependencies = [
  "test-timers",
  "win-sync-sys",
  "windows-sys 0.61.2",
+ "windows-threadpool-sys",
 ]
 
 [[package]]

@@ -66,7 +66,7 @@ pub use fault::{
 };
 pub use mem::MemFs;
 pub use os::OsFs;
-pub use signal::{CondvarSignal, PlatformSignal, Signal};
+pub use signal::{CondvarSignal, PlatformSignal, Signal, Watch};
 #[cfg(target_os = "linux")]
 pub use signal::{EventFdSignal, wait_native};
 #[cfg(windows)]

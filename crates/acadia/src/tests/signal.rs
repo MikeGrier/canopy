@@ -3,10 +3,14 @@
 //! `Signal`: every implementation is a level that is raised, lowered and waited on, and the
 //! platform's own wait on its native object sees the same level.
 
-use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::{CondvarSignal, PlatformSignal, Signal};
+use test_timers::mpsc::recv_timeout;
+use test_timers::thread::sleep;
+
+use crate::{CondvarSignal, PlatformSignal, Signal, Watch};
 
 /// Long enough that a wait the test expects to be woken never reaches it.
 const LONG: Duration = Duration::from_secs(30);
@@ -22,6 +26,7 @@ trait Probe: Send + Sync {
     fn raise(&self);
     fn lower(&self);
     fn wait(&self, timeout: Duration) -> bool;
+    fn watch(&self, callback: Box<dyn Fn() + Send + Sync>) -> Watch;
 }
 
 impl<S: Signal> Probe for S {
@@ -34,7 +39,13 @@ impl<S: Signal> Probe for S {
     fn wait(&self, timeout: Duration) -> bool {
         Signal::wait(self, timeout).unwrap()
     }
+    fn watch(&self, callback: Box<dyn Fn() + Send + Sync>) -> Watch {
+        Signal::watch(self, callback).unwrap()
+    }
 }
+
+/// Long enough for a watch that should run to have run, so that one that has not is not going to.
+const SETTLE: Duration = Duration::from_millis(30);
 
 #[test]
 fn a_new_signal_is_lowered() {
@@ -300,4 +311,232 @@ fn the_platform_signal_is_the_platforms_own() {
     } else {
         assert!(name.ends_with("CondvarSignal"), "{name}");
     }
+}
+
+/// Watches `signal` with a callback that lowers it, then counts the run and reports the count.
+fn watch_counting(signal: &Arc<dyn Probe>) -> (Watch, Arc<AtomicUsize>, mpsc::Receiver<usize>) {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (report, reports) = mpsc::channel();
+    let watch = {
+        let lowering = Arc::clone(signal);
+        let runs = Arc::clone(&runs);
+        signal.watch(Box::new(move || {
+            lowering.lower();
+            let _ = report.send(runs.fetch_add(1, Ordering::SeqCst) + 1);
+        }))
+    };
+    (watch, runs, reports)
+}
+
+#[test]
+fn a_raise_runs_the_watch() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let (_watch, _, reports) = watch_counting(&signal);
+        signal.raise();
+        assert_eq!(recv_timeout(&reports, LONG), Ok(1));
+    });
+}
+
+#[test]
+fn a_lowered_signal_does_not_run_the_watch() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let (_watch, runs, reports) = watch_counting(&signal);
+        sleep(SETTLE);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        signal.raise();
+        assert_eq!(recv_timeout(&reports, LONG), Ok(1));
+        sleep(SETTLE);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "one raise, lowered by the run, is one run"
+        );
+    });
+}
+
+#[test]
+fn a_signal_raised_before_the_watch_runs_it() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        signal.raise();
+        let (_watch, _, reports) = watch_counting(&signal);
+        assert_eq!(recv_timeout(&reports, LONG), Ok(1));
+    });
+}
+
+#[test]
+fn a_callback_that_leaves_the_signal_raised_runs_again() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (report, reports) = mpsc::channel();
+        let _watch = {
+            let lowering = Arc::clone(&signal);
+            let runs = Arc::clone(&runs);
+            signal.watch(Box::new(move || {
+                let run = runs.fetch_add(1, Ordering::SeqCst) + 1;
+                if run == 3 {
+                    lowering.lower();
+                    let _ = report.send(run);
+                }
+            }))
+        };
+        signal.raise();
+        assert_eq!(recv_timeout(&reports, LONG), Ok(3));
+        sleep(SETTLE);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            3,
+            "lowered, it is not run again"
+        );
+    });
+}
+
+#[test]
+fn runs_of_one_watch_never_overlap() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let inside = AtomicBool::new(false);
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let runs = AtomicUsize::new(0);
+        let (report, reports) = mpsc::channel();
+        let _watch = {
+            let lowering = Arc::clone(&signal);
+            let overlapped = Arc::clone(&overlapped);
+            signal.watch(Box::new(move || {
+                if inside.swap(true, Ordering::SeqCst) {
+                    overlapped.store(true, Ordering::SeqCst);
+                }
+                sleep(Duration::from_millis(1));
+                inside.store(false, Ordering::SeqCst);
+                if runs.fetch_add(1, Ordering::SeqCst) + 1 == 20 {
+                    lowering.lower();
+                    let _ = report.send(());
+                }
+            }))
+        };
+        signal.raise();
+        assert_eq!(recv_timeout(&reports, LONG), Ok(()));
+        assert!(!overlapped.load(Ordering::SeqCst), "two runs at once");
+    });
+}
+
+#[test]
+fn many_raises_from_many_threads_each_lead_to_a_run_that_finds_them() {
+    const THREADS: usize = 8;
+    const EACH: usize = 100;
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let published = Arc::new(AtomicUsize::new(0));
+        let (report, reports) = mpsc::channel();
+        let _watch = {
+            let lowering = Arc::clone(&signal);
+            let published = Arc::clone(&published);
+            signal.watch(Box::new(move || {
+                // Lowered before the work is read, so a raise after the read runs it again.
+                lowering.lower();
+                if published.load(Ordering::SeqCst) == THREADS * EACH {
+                    let _ = report.send(());
+                }
+            }))
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| {
+                    for _ in 0..EACH {
+                        published.fetch_add(1, Ordering::SeqCst);
+                        signal.raise();
+                    }
+                });
+            }
+        });
+        assert_eq!(recv_timeout(&reports, LONG), Ok(()));
+    });
+}
+
+#[test]
+fn dropping_the_watch_waits_for_a_running_callback() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let done = Arc::new(AtomicBool::new(false));
+        let (entered, entries) = mpsc::channel();
+        let watch = {
+            let lowering = Arc::clone(&signal);
+            let done = Arc::clone(&done);
+            signal.watch(Box::new(move || {
+                lowering.lower();
+                let _ = entered.send(());
+                sleep(Duration::from_millis(50));
+                done.store(true, Ordering::SeqCst);
+            }))
+        };
+        signal.raise();
+        assert_eq!(recv_timeout(&entries, LONG), Ok(()));
+        drop(watch);
+        assert!(
+            done.load(Ordering::SeqCst),
+            "the drop returned before the run did"
+        );
+    });
+}
+
+#[test]
+fn a_dropped_watch_is_not_run() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let (watch, runs, reports) = watch_counting(&signal);
+        signal.raise();
+        assert_eq!(recv_timeout(&reports, LONG), Ok(1));
+        drop(watch);
+        signal.raise();
+        sleep(SETTLE);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(signal.wait(Duration::ZERO), "nothing lowered the raise");
+    });
+}
+
+#[test]
+fn a_watch_dropped_by_its_own_callback_returns_and_is_not_run_again() {
+    on_every_signal(|make| {
+        let signal: Arc<dyn Probe> = Arc::from(make());
+        let slot: Arc<Mutex<Option<Watch>>> = Arc::new(Mutex::new(None));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (report, reports) = mpsc::channel();
+        let watch = {
+            let slot = Arc::clone(&slot);
+            let runs = Arc::clone(&runs);
+            signal.watch(Box::new(move || {
+                runs.fetch_add(1, Ordering::SeqCst);
+                let watch = slot.lock().unwrap().take();
+                drop(watch);
+                let _ = report.send(());
+            }))
+        };
+        *slot.lock().unwrap() = Some(watch);
+        signal.raise();
+        assert_eq!(recv_timeout(&reports, LONG), Ok(()));
+        sleep(SETTLE);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the signal is still raised, but the watch is gone"
+        );
+    });
+}
+
+#[test]
+fn many_watches_of_many_signals_each_run() {
+    const SIGNALS: usize = 16;
+    on_every_signal(|make| {
+        let signals: Vec<Arc<dyn Probe>> = (0..SIGNALS).map(|_| Arc::from(make())).collect();
+        let watched: Vec<_> = signals.iter().map(watch_counting).collect();
+        for signal in &signals {
+            signal.raise();
+        }
+        for (_watch, _, reports) in &watched {
+            assert_eq!(recv_timeout(reports, LONG), Ok(1));
+        }
+    });
 }

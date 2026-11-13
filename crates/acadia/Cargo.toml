@@ -32,3 +32,5 @@ libc = "0.2.176"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 # The event behind `EventSignal`, and the platform's wait on it.
 win-sync-sys = "0.1.0"
+# The thread-pool wait behind `EventSignal::watch`; 0.4.1 is the first that takes a wait-only handle.
+windows-threadpool-sys = "0.4.1"

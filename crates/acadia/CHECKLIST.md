@@ -18,17 +18,6 @@ store".
 
 ## M3 -- Waiting on a signal without a thread of the caller's own
 
-- [ ] <a id="ac-4"></a>**AC-4** -- Add `Signal::watch`, a registration that runs a callback on the
-  platform's thread pool each time the signal is found raised, made by acadia on its own object so
-  that the object never reaches the caller's code ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md)
-  "The doorbell's signal is sealed"). On Windows a `windows-threadpool-sys` `ThreadpoolWait` on the
-  event, armed again after each callback returns and never handing the callback its activation;
-  on Linux an `epoll` registration serviced by a thread acadia owns; for `CondvarSignal` a thread
-  waiting on the condition variable. The callback sees the level: one that returns without the
-  signal lowered is run again at once. Dropping the registration stops it and waits for a running
-  callback to return. Tests: a raise runs the callback, a lowered signal does not run it, a
-  callback that leaves the signal raised runs again, many raises from many threads each lead to a
-  run that finds them, and a drop during a callback waits for it; on Windows and on Linux (WSL),
-  with the condition-variable signal everywhere.
+- [x] <a id="ac-4"></a>**AC-4** -- Add `Signal::watch`, which runs a callback on a thread pool each time the signal is found raised, on acadia's own registration of the object. -> [completed 2026-11-13](COMPLETED-CHECKLIST.md#ac-4)
   > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M5+ -> `RG-3`
   > (`Doorbell::watch`). See [CHECKLIST.md](../canopy/CHECKLIST.md).

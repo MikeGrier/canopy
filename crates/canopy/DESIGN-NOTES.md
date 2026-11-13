@@ -3937,30 +3937,28 @@ steps composed in the only orders the protocol allows.
 
 Two requirements, the engineer's: the analysis of the doorbell may treat its layer as sealed --
 `Doorbell.tla` assumes nothing but the protocol's own steps changes the signal -- and only an
-`unsafe` caller can break that. So no safe method of the doorbell lends the platform object behind
-its signal, or anything from which safe code can reach it.
+`unsafe` caller can break that. The protection is the Rust type system and the line between safe
+and `unsafe`, not a handle's access: once code holds a handle to the object, it can reach the
+object whatever that handle's access. So no safe method of the doorbell lends the platform object
+behind its signal, or anything from which safe code can reach a handle or descriptor to it.
 
 - **Lending the object safely would break the seal, on both platforms.** `AsHandle` and `AsFd` are
   safe traits, and the standard library's I/O safety guarantees only that a borrowed handle or
   descriptor stays open, not what is done with it; changing an event's or an `eventfd`'s level is
-  not memory-unsafe, so any crate may offer it safely. On Windows the event's own handle carries
-  the right to reset it. A wait-only handle (`win-sync-sys`'s `WaitOnlyEvent`, `SYNCHRONIZE` alone)
-  is refused a set or reset by the kernel, but `win-handles-sys`'s safe
-  `duplicate_handle_with_access` can ask for a duplicate with more access, which Windows grants
-  the event's creator, so safe code holding the wait-only handle can get one that resets. A
-  client's `windows-threadpool-sys` wait hands its handle back to safe code through
-  `WaitActivation::handle`. On Linux, safe code holding the descriptor can make a `File` of a
-  duplicate and read it, which lowers the signal, or write it, which raises it; and waiting needs
-  the descriptor, so no wait-only form exists.
+  not memory-unsafe, so any crate may offer it safely over `impl AsHandle` or `impl AsFd` --
+  `win-handles-sys`'s `duplicate_handle_with_access` is one already in the dependency graph. A
+  wait-only handle (`win-sync-sys`'s `WaitOnlyEvent`) does not change that: it implements
+  `AsHandle`, and a client's `windows-threadpool-sys` wait hands its handle back to safe code
+  through `WaitActivation::handle`. On Linux, safe code holding the descriptor can make a `File` of
+  a duplicate and read it, which lowers the signal, or write it, which raises it.
 - **The platform object is lent only through `unsafe` accessors.** On Windows
   `Doorbell<EventSignal>::native_wait_handle` returns a new wait-only handle to the event
   (acadia's `EventSignal::wait_only`), and on Linux `Doorbell<EventFdSignal>::native_fd` borrows
   the `eventfd`. Each is an `unsafe fn` whose contract is that the caller only waits on the object
   and changes its level by no means -- no duplicate, no `File` -- nor lets code it hands the object
   to do so. They are for a consumer's own native wait: a thread pool, a multiple-object wait, an
-  `epoll` set. The wait-only handle is defence in depth on Windows: a caller that breaks the
-  contract by accident is still refused a reset by the kernel. `AsHandle` and `AsFd` are no longer
-  implemented for the doorbell, and no accessor to its signal remains, in tests or out.
+  `epoll` set. `AsHandle` and `AsFd` are no longer implemented for the doorbell, and no accessor
+  to its signal remains, in tests or out.
 - **Callers are steered to a thread pool, through a registration in the sealed layer.** The
   engineer's direction is that consumers wait on a thread pool rather than block a thread. The
   safe way to do that is a registration acadia makes on its own object, which runs a callback when
@@ -3973,12 +3971,12 @@ its signal, or anything from which safe code can reach it.
   and then re-arms the wait has done both in that order.
 - **The completion doorbell of the queue pairs is a `Doorbell` over the platform's signal**, so it
   is sealed by the same type and carries the same accessors when the pairs are built[^api-3].
-- **A safe native wait on Windows depends on the windows-threadpool-sys crate family.** An event
-  whose later handles the kernel holds to `SYNCHRONIZE`, or a wait-only handle no safe code can
-  borrow, would let the doorbell lend its event without `unsafe`; what the family would provide is
-  specified in [WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md](../../WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md)[^rg-4].
-  On Linux an `eventfd` has no wait-only form, so the descriptor stays behind `unsafe` and `watch`
-  is the safe path.
+- **A safe native wait on Windows depends on the windows-threadpool-sys crate family.** A
+  wait-only event that safe code can wait on but never borrow a handle from -- in the family's
+  waits and its thread-pool wait alike -- would let the doorbell lend its event without `unsafe`;
+  what the family would provide is specified in
+  [WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md](../../WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md)[^rg-4].
+  On Linux the descriptor stays behind `unsafe`, and `watch` is the safe path.
 
 [^ac-4]: `AC-4` in [CHECKLIST.md](../acadia/CHECKLIST.md#ac-4)
 [^rg-3]: `RG-3` in [CHECKLIST.md](CHECKLIST.md)

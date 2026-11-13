@@ -148,8 +148,8 @@ impl Doorbell<acadia::EventSignal> {
     /// # Safety
     ///
     /// The caller must only wait on the handle. It must not change the event's level by any
-    /// means -- neither through this handle nor through a duplicate of it, which Windows lets ask
-    /// for more access -- and must keep any code it hands the handle to from doing so. A set or
+    /// means -- through this handle, a duplicate of it, or anything else it can reach from it --
+    /// and must keep any code it hands the handle to from doing so. A set or
     /// reset outside the doorbell's protocol can leave the doorbell rung with its signal low, so
     /// that no ring wakes the consumer; the protocol, and the model it is checked against,
     /// assume nothing but the doorbell changes the signal.

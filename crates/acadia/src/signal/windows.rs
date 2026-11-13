@@ -4,11 +4,15 @@
 
 use std::io;
 use std::os::windows::io::{AsHandle, BorrowedHandle};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use win_sync_sys::{Event, ResetMode, WaitOnlyEvent, WaitOutcome, wait_for_single_object};
+use windows_threadpool_sys::wait::ThreadpoolWait;
 
-use super::{Signal, sealed, wait_until_deadline};
+use super::{Callback, Registration, Signal, Watch, run_callback, sealed, wait_until_deadline};
 
 /// A [`Signal`] that is a Windows manual-reset event, a `win-sync-sys` [`Event`]: raised by
 /// setting it, lowered by resetting it, and signalled to every wait while it is raised.
@@ -60,6 +64,95 @@ impl Signal for EventSignal {
 
     fn wait(&self, timeout: Duration) -> io::Result<bool> {
         wait_native(self.event.as_handle(), timeout)
+    }
+
+    fn watch<F>(&self, callback: F) -> io::Result<Watch>
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let state = Arc::new(PoolState::default());
+        let callback: Callback = Arc::new(callback);
+        let wait = {
+            let state = Arc::clone(&state);
+            ThreadpoolWait::new(
+                self.event.duplicate_wait_only()?.into(),
+                move |activation| {
+                    if state.stopped.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    state.set_running(Some(thread::current().id()));
+                    run_callback(&callback);
+                    state.set_running(None);
+                    // Armed again only after the callback returns, so runs never overlap; armed
+                    // on a raised event, the wait completes at once, which is the level.
+                    if !state.stopped.load(Ordering::SeqCst) {
+                        activation.rearm(None);
+                    }
+                },
+                None,
+            )?
+        };
+        wait.arm(None);
+        Ok(Watch {
+            _registration: Registration::Pool(PoolWatch {
+                wait: Some(wait),
+                state,
+            }),
+        })
+    }
+}
+
+/// An [`EventSignal`]'s watch: a thread-pool wait on a wait-only handle to the event, which the
+/// callback never sees.
+pub(super) struct PoolWatch {
+    wait: Option<ThreadpoolWait>,
+    state: Arc<PoolState>,
+}
+
+#[derive(Default)]
+struct PoolState {
+    stopped: AtomicBool,
+    /// The thread running the callback, if one is.
+    running: Mutex<Option<ThreadId>>,
+}
+
+impl PoolState {
+    fn set_running(&self, thread: Option<ThreadId>) {
+        *self.running.lock().unwrap_or_else(PoisonError::into_inner) = thread;
+    }
+}
+
+impl Drop for PoolWatch {
+    fn drop(&mut self) {
+        self.state.stopped.store(true, Ordering::SeqCst);
+        let Some(wait) = self.wait.take() else {
+            return;
+        };
+        let current = thread::current().id();
+        let from_own_callback = *self
+            .state
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            == Some(current);
+        if !from_own_callback {
+            // Disarms, then waits for a running callback to return.
+            drop(wait);
+            return;
+        }
+        // Closing the wait waits for its callbacks, which from inside the callback would wait for
+        // itself; so it is closed on a thread of its own once this run returns. It is passed
+        // through a slot so that a thread that fails to start drops the slot and not the wait.
+        let slot = Arc::new(Mutex::new(Some(wait)));
+        let closer = Arc::clone(&slot);
+        let started = thread::Builder::new()
+            .name("acadia-signal-watch-close".into())
+            .spawn(move || drop(closer.lock().unwrap_or_else(PoisonError::into_inner).take()));
+        if started.is_err() {
+            // No thread to close it on: with `stopped` set it is never armed again, so it is
+            // left idle rather than closed.
+            std::mem::forget(slot.lock().unwrap_or_else(PoisonError::into_inner).take());
+        }
     }
 }
 

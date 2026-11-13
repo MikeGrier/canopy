@@ -433,12 +433,12 @@ primitive, behind a contract spec")[^ac-3]: raise, lower and a bounded wait, all
 
 `EventSignal::wait_only` returns a new handle to the event carrying `SYNCHRONIZE` access alone --
 `win-sync-sys`'s `WaitOnlyEvent`, made by `Event::duplicate_wait_only` -- so the kernel refuses a
-set or a reset through it. That guards a level against a holder that misuses the handle by
-accident, not against one bent on changing it: a safe duplicate of it may ask for more access, which
-Windows grants the event's creator. So a crate that must keep a signal's level its own, as canopy's
-doorbell does, lends the wait-only handle only through an `unsafe` accessor whose contract forbids
-changing the level ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's signal
-is sealed"), and the wait-only handle is that accessor's defence in depth. `windows-threadpool-sys`
+set or a reset through it. That access is not what protects the level: code holding a handle to
+the event can reach the event whatever that handle's access, and `WaitOnlyEvent` lends its handle
+through `AsHandle`. The protection is the line between safe and `unsafe`, so a crate that must keep
+a signal's level its own, as canopy's doorbell does, lends the wait-only handle only through an
+`unsafe` accessor whose contract forbids changing the level ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's signal is sealed"). `windows-threadpool-sys`
 takes a `WaitOnlyEvent` without further `unsafe` from 0.4.1, for the reason it takes an `Event`: a
 `WaitOnlyEvent` can only be made from an `Event`, so it is known to be an event and never a mutex.
 acadia re-exports the type on Windows, so a crate that lends it on names it without depending on
@@ -491,3 +491,42 @@ doorbell, over the platform's signal -- can wait on it without a system call or 
 before its bound has passed.
 
 [^rg-2]: `RG-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#rg-2)
+
+## A signal is watched on a thread pool, by acadia, on its own object, 2026-11-13
+
+`Signal::watch` runs a callback on a thread pool each time the signal is found raised, until the
+`Watch` it returns is dropped[^ac-4]. It is how a crate that keeps a signal sealed -- canopy's
+doorbell ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's signal is
+sealed") -- waits without a thread of its own and without lending the platform object: acadia
+registers the object, and the callback is handed nothing.
+
+- **A level, as the signal is.** A callback that returns with the signal still raised is run
+  again at once. So a consumer lowers the signal first and then looks for the work, and a raise
+  that lands after the look runs it again; a raise is never lost between two runs.
+- **One run at a time, per watch.** Each platform re-arms only after the callback returns: the
+  Windows thread-pool wait from inside its callback, after the caller's code; the Linux `epoll`
+  registration is one-shot and modified back in after the run; the condition-variable watch is a
+  single thread. The callback never receives the pool's activation, so it cannot re-arm early and
+  overlap itself.
+- **Where the threads come from.** On Windows, the process's default thread pool, through a
+  `windows-threadpool-sys` `ThreadpoolWait` on a wait-only duplicate of the event. On Linux, a
+  process-wide service acadia starts on the first watch: one `epoll` set and up to four threads,
+  each registration holding a duplicate of the `eventfd` under a token that is never reused. For
+  `CondvarSignal`, a thread per watch, since a condition variable has no pool to join; it shares
+  the signal's state through an `Arc`.
+- **Dropping waits for a run in progress, except its own.** A drop marks the watch stopped, so it
+  is not run again, and then waits for a running callback to return. Dropped from inside its own
+  callback it cannot wait for itself: the condition-variable watch skips the join, the `epoll`
+  watch waits only for another thread's run, and the Windows wait is closed on a thread started
+  for it once the run returns, since closing it from its own callback would wait for itself.
+- **A panicking callback aborts the process.** The Windows pool's callback is entered through an
+  `extern "system"` trampoline, where a panic aborts; every platform does the same, so a callback
+  cannot behave differently by platform. A failed `epoll` wait or re-arm aborts too: acadia owns
+  both descriptors, and the failure would otherwise leave a watch silently stopped, which no caller
+  could detect.
+
+Revert-probes: not re-arming the Windows wait failed the tests that a callback leaving the signal
+raised runs again and that runs never overlap, and a condition-variable watch that did not join on
+drop failed the test that a drop waits for a running callback.
+
+[^ac-4]: `AC-4` in [CHECKLIST.md](CHECKLIST.md#ac-4)

@@ -61,3 +61,19 @@ waiting, and a simulated death letting a waiter in while an unrelated death does
 cross-process suite has waiters woken by a killed holder, for a file and for a range, and a waiting
 process let in when this one lets go, on Windows and on Linux under WSL. Removing the wake from
 `MemFs`'s abandonment failed the simulated-death test.
+
+## Moved 2026-11-13 -- Waiting on a signal without a thread of the caller's own (M3 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="ac-4"></a>AC-4 -- Add `Signal::watch`, which runs a callback on a thread pool each time the signal is found raised, on acadia's own registration of the object. *(completed 2026-11-13 12:57:30 -05:00)*
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "A signal is watched on a thread pool, by
+acadia, on its own object". Windows uses a `windows-threadpool-sys` `ThreadpoolWait` on a
+wait-only duplicate of the event, re-armed after each callback; Linux a process-wide `epoll`
+service with one-shot registrations; `CondvarSignal` a thread per watch. The tests run over
+`CondvarSignal` and the platform's signal on Windows and on Linux under WSL: a raise runs the
+callback, a lowered signal does not, a signal raised before the watch runs it, a callback leaving
+the signal raised runs again, runs never overlap, many raises from many threads lead to a run that
+finds them all, a drop waits for a running callback, a dropped watch is not run, a watch dropped by
+its own callback returns and is not run again, and many watches of many signals each run. Removing
+the Windows re-arm failed the run-again and no-overlap tests; skipping the condition-variable
+watch's join failed the drop-waits test.
