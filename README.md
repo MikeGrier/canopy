@@ -1,28 +1,20 @@
 # canopy
 
-A template repository for building and publishing a Rust crate on crates.io.
+A durable, replicated store for tree-structured documents, written in Rust.
 
-## What this template includes
+## Crates
 
-- A Cargo workspace with one placeholder library crate at `crates/canopy`
-- GitHub Actions CI for formatting, clippy, tests, MSRV checks, and CodeQL
-- `release-please` automation for changelog, tags, and release PRs
-- A publish workflow that pushes the crate to crates.io from `v*` tags
-- Copilot instructions and lightweight planning/design placeholders
-
-## Specialize this template
-
-Before your first real release, replace the placeholder values below:
-
-1. Replace the example author in `Cargo.toml`.
-2. Replace the placeholder library code with your actual crate implementation.
-3. Set the repository secrets required for releases:
-   - `RELEASE_PLEASE_TOKEN`
-   - `CARGO_REGISTRY_TOKEN`
+| Crate | Published | Purpose |
+|---|---|---|
+| [`canopy`](crates/canopy/README.md) | yes | The document store: atomic writes and transactions, quorum reads, self-repair. |
+| [`acadia`](crates/acadia/README.md) | yes | The filesystem contract canopy runs on, with OS, in-memory, and fault-injecting backends. |
+| [`komorebi`](crates/komorebi/README.md) | no | Logging setup and test-time event capture. |
+| [`test-timers`](crates/test-timers/README.md) | no | The one sanctioned way for tests to reach a timer. |
+| [`canopy-lock-holder`](crates/canopy-lock-holder/README.md) | no | Test fixture for canopy's cross-process root lock. |
 
 ## Build
 
-Requires Rust `1.97` or newer.
+Rust `1.98`, pinned by [rust-toolchain.toml](rust-toolchain.toml).
 
 ```sh
 cargo fmt --all --check
@@ -32,6 +24,15 @@ cargo test --workspace --locked
 
 ## Release
 
-Merging conventional commits to `main` allows `release-please` to open or update
-release PRs. Merging a release PR creates a `v<version>` tag, which triggers the
-crates.io publish workflow.
+Merging conventional commits to `main` lets `release-please` open or update a release
+PR. Publishable crates share the workspace version and are released in lockstep:
+merging a release PR creates a `v<version>` tag, which triggers the crates.io publish
+workflow to publish every member not marked `publish = false`. `acadia` is published
+because `canopy`'s public API exposes its `Vfs` trait.
+
+Releases need two repository secrets: `RELEASE_PLEASE_TOKEN` and
+`CARGO_REGISTRY_TOKEN`.
+
+## License
+
+MIT -- see [LICENSE](LICENSE).

@@ -1,0 +1,11 @@
+# Copyright (c) Michael Grier.
+
+[package]
+name = "contention-sim"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Seeded discrete-event simulation of contention in canopy's coordination contract."
+
+[dependencies]

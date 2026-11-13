@@ -1,0 +1,11 @@
+# Copyright (c) 2026 Mike Grier
+
+# Timer entry points (D120, D483). Production code must annotate each use with an
+# `#[expect]` stating why; tests go through the `test-timers` crate (D484, D485).
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "timers are governed by D120/D483; tests use test-timers" },
+    { path = "std::thread::park_timeout", reason = "timers are governed by D120/D483; tests use test-timers" },
+    { path = "std::sync::mpsc::Receiver::recv_timeout", reason = "timers are governed by D120/D483; tests use test-timers" },
+    { path = "tokio::time::sleep", reason = "timers are governed by D120/D483; tests use test-timers" },
+    { path = "tokio::time::interval", reason = "timers are governed by D120/D483; tests use test-timers" },
+]
