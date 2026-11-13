@@ -429,6 +429,22 @@ primitive, behind a contract spec")[^ac-3]: raise, lower and a bounded wait, all
 
 [^ac-3]: `AC-3` in [CHECKLIST.md](CHECKLIST.md#ac-3)
 
+## `EventSignal` lends a handle that can only wait, 2026-11-13
+
+`EventSignal::wait_only` returns a new handle to the event carrying `SYNCHRONIZE` access alone --
+`win-sync-sys`'s `WaitOnlyEvent`, made by `Event::duplicate_wait_only` -- so the kernel refuses a
+set or a reset through it. That guards a level against a holder that misuses the handle by
+accident, not against one bent on changing it: a safe duplicate of it may ask for more access, which
+Windows grants the event's creator. So a crate that must keep a signal's level its own, as canopy's
+doorbell does, lends the wait-only handle only through an `unsafe` accessor whose contract forbids
+changing the level ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's signal
+is sealed"), and the wait-only handle is that accessor's defence in depth. `windows-threadpool-sys`
+takes a `WaitOnlyEvent` without further `unsafe` from 0.4.1, for the reason it takes an `Event`: a
+`WaitOnlyEvent` can only be made from an `Event`, so it is known to be an event and never a mutex.
+acadia re-exports the type on Windows, so a crate that lends it on names it without depending on
+`win-sync-sys`. The handle is its own, so it keeps the event open after the signal is dropped, and
+a wait through it sees the level `Signal::wait` sees.
+
 ## A lock may be waited for, without a bound, 2026-11-12
 
 `Vfs::lock` takes the same locks as `Vfs::try_lock` and waits while another holder's lock

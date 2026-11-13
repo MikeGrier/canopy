@@ -24,9 +24,10 @@ use acadia::{PlatformSignal, Signal};
 /// `spec/DoorbellContract.tla`: every item published is taken, and a consumer waiting while
 /// work is there is woken; a wake with nothing to take may happen.
 ///
-/// On Windows a doorbell over the platform's signal lends its event through `AsHandle`, and on
-/// Linux its descriptor through `AsFd`, so a consumer can wait for it with a thread pool, a
-/// multiple-object wait or `epoll` and then run its side as `pump` with no wait.
+/// Nothing but the doorbell changes its signal, and no safe method lends the platform's object
+/// behind it, through which safe code could. A consumer's own native wait -- a thread pool, a
+/// multiple-object wait, `epoll` -- takes the object from an `unsafe` accessor whose contract is
+/// to only wait on it, and then runs its side as `pump` with no wait.
 #[derive(Debug)]
 pub struct Doorbell<S: Signal = PlatformSignal> {
     /// The record of being rung: set by the ring that raises the signal, cleared by the
@@ -66,13 +67,6 @@ impl<S: Signal> Doorbell<S> {
     #[cfg(test)]
     pub(crate) fn is_rung(&self) -> bool {
         self.rung.load(Ordering::SeqCst)
-    }
-
-    /// The signal, for a test to register with a platform's wait. Kept from callers: lowering it
-    /// outside the protocol can leave the doorbell rung with its signal low, so no ring wakes.
-    #[cfg(all(test, windows))]
-    pub(crate) fn signal(&self) -> &S {
-        &self.signal
     }
 
     /// `Raise(p)`.
@@ -143,15 +137,48 @@ impl<S: Signal> Doorbell<S> {
 }
 
 #[cfg(windows)]
-impl std::os::windows::io::AsHandle for Doorbell<acadia::EventSignal> {
-    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
-        self.signal.as_handle()
+impl Doorbell<acadia::EventSignal> {
+    /// A new handle to the doorbell's event that can wait on it and cannot set or reset it, for a
+    /// consumer's own native wait: a thread-pool wait, which takes it without further `unsafe`, or
+    /// a multiple-object wait.
+    ///
+    /// The wait sees the signal's level, so a thread-pool callback that re-arms its wait before
+    /// the consumer has rearmed the doorbell is called again at once.
+    ///
+    /// # Safety
+    ///
+    /// The caller must only wait on the handle. It must not change the event's level by any
+    /// means -- neither through this handle nor through a duplicate of it, which Windows lets ask
+    /// for more access -- and must keep any code it hands the handle to from doing so. A set or
+    /// reset outside the doorbell's protocol can leave the doorbell rung with its signal low, so
+    /// that no ring wakes the consumer; the protocol, and the model it is checked against,
+    /// assume nothing but the doorbell changes the signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from duplicating the handle.
+    pub unsafe fn native_wait_handle(&self) -> io::Result<acadia::WaitOnlyEvent> {
+        self.signal.wait_only()
     }
 }
 
 #[cfg(target_os = "linux")]
-impl std::os::fd::AsFd for Doorbell<acadia::EventFdSignal> {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+impl Doorbell<acadia::EventFdSignal> {
+    /// The doorbell's `eventfd`, for a consumer's own native wait: an `epoll` set or `poll`.
+    ///
+    /// The descriptor is readable while the doorbell's signal is raised, so a level-triggered
+    /// registration reports it again until the consumer has rearmed the doorbell.
+    ///
+    /// # Safety
+    ///
+    /// The caller must only wait for the descriptor to be readable. It must not read from it or
+    /// write to it by any means -- through this borrow, a duplicate, or a `File` made from one --
+    /// and must keep any code it hands the descriptor to from doing so: a read lowers the signal
+    /// and a write raises it, and a change outside the doorbell's protocol can leave the doorbell
+    /// rung with its signal low, so that no ring wakes the consumer. The protocol, and the model
+    /// it is checked against, assume nothing but the doorbell changes the signal.
+    pub unsafe fn native_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
         self.signal.as_fd()
     }
 }

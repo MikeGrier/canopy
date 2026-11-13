@@ -260,6 +260,26 @@ Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one sto
   "The doorbell in code, `canopy::ring::Doorbell`"). The ring's queues (API-3) are checked by the
   same checker.
 
+- [ ] **RG-3** -- `Doorbell::watch(take)`: the consumer's side run from acadia's `Signal::watch`, a
+  pump with a zero bound each time the signal is raised, so that a consumer waits on the platform's
+  thread pool without a native object reaching its code ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The
+  doorbell's signal is sealed"). canopy's thread-pool tests move onto it from the `unsafe`
+  accessors, which stay for a consumer's own event loop. Tests: producers' work is all taken
+  through a watch on each platform, and a watch dropped while producers ring stops taking.
+  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M3 -> `AC-4` (`Signal::watch`) lands first.
+  > See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-4).
+
+- [ ] **RG-4** -- A safe accessor for a consumer's own native wait on the doorbell on Windows, once
+  the windows-threadpool-sys crate family provides waits on an event the waiter cannot change, as
+  specified in [WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md](../../WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md):
+  acadia makes its event with the family's sealed constructor or lends its sealed wait-only handle,
+  and the doorbell lends that without `unsafe`; decide with the engineer whether
+  `native_wait_handle` stays as `unsafe` or is retired, and record it in
+  [DESIGN-NOTES.md](DESIGN-NOTES.md). Blocked on the family's release. Tests: a thread-pool wait
+  and a multiple-object wait on the doorbell through the safe accessor take everything producers
+  publish, and on the sealed event an attempt to duplicate the lent handle with more access is
+  refused (step 2) or does not compile (step 3).
+
 ## M6 -- Writers in several processes take turns
 
 - [ ] **MP-8** -- Implement the contract's writer exclusion in every implementation: across
@@ -418,14 +438,10 @@ MP-3 and MP-4, was done in M3.
   `canopy::ring`'s, generic over the signal as RG-2's doorbell is, following
   [durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring)'s
   ring, with the step of `Ring.tla` each line realizes named beside it, and checked by the
-  memory-model checker RG-2.1 chooses. On Windows the completion doorbell lends a handle that can
-  only wait (`win-sync-sys`'s `WaitOnlyEvent`), never its `Event`, whose reset would break the
-  doorbell ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The doorbell in code,
-  `canopy::ring::Doorbell`"); `windows-threadpool-sys` 0.4.0 takes a waitable handle without
-  `unsafe` only from an `Event`, so a client's safe thread-pool wait on it depends on that crate
-  accepting a `WaitOnlyEvent`, specified in
-  [WINDOWS-THREADPOOL-SYS-WAIT-ONLY-EVENT.md](../../WINDOWS-THREADPOOL-SYS-WAIT-ONLY-EVENT.md)
-  with the acadia and canopy work that follows it. Tests: exactly one
+  memory-model checker RG-2.1 chooses. The completion doorbell is a `Doorbell` over the
+  platform's signal, so it is sealed: a client waits on it through `Doorbell::watch` (RG-3) or the
+  synchronous wait, and reaches its platform object only through the `unsafe` accessors
+  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The doorbell's signal is sealed"). Tests: exactly one
   completion per entry under many pairs, per-pair order, a full completion queue refusing a
   submission, a pair dropped with entries unstarted and started, a client waiting on the
   completion doorbell from a thread pool's wait, many waiting entries holding no engine thread,

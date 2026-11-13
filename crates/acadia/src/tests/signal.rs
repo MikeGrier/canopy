@@ -221,6 +221,43 @@ fn the_platform_wait_on_the_event_sees_the_same_level() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn a_wait_only_handle_sees_the_signals_level() {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use win_sync_sys::{WaitOutcome, wait_for_single_object};
+
+    let signal = crate::EventSignal::new().unwrap();
+    let handle: crate::WaitOnlyEvent = signal.wait_only().unwrap();
+    let wait = |millis| {
+        wait_for_single_object(handle.as_handle(), Some(Duration::from_millis(millis))).unwrap()
+    };
+    assert_ne!(
+        handle.as_handle().as_raw_handle(),
+        signal.as_handle().as_raw_handle(),
+        "a handle of its own, so its access is its own"
+    );
+    assert_eq!(wait(0), WaitOutcome::TimedOut);
+    Signal::raise(&signal).unwrap();
+    assert_eq!(wait(0), WaitOutcome::Signalled);
+    assert_eq!(wait(0), WaitOutcome::Signalled, "waiting does not lower it");
+    Signal::lower(&signal).unwrap();
+    assert_eq!(wait(0), WaitOutcome::TimedOut);
+
+    std::thread::scope(|scope| {
+        let raiser = scope.spawn(|| Signal::raise(&signal).unwrap());
+        assert_eq!(wait(30_000), WaitOutcome::Signalled);
+        raiser.join().unwrap();
+    });
+
+    drop(signal);
+    assert_eq!(
+        wait(0),
+        WaitOutcome::Signalled,
+        "the handle keeps the event open after the signal is gone"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn the_platform_wait_on_the_descriptor_sees_the_same_level() {

@@ -6,6 +6,16 @@ canopy work that follows it. Decided 2026-11-12: a client waits on canopy's comp
 through a handle that can only wait, and `windows-threadpool-sys` takes such a handle without
 `unsafe`.
 
+**Status, 2026-11-13: done.** `windows-threadpool-sys` 0.4.1 implements
+`From<WaitOnlyEvent> for WaitableHandle`; the change was additive and so released as a patch
+version, not the minor version proposed below. acadia's `EventSignal::wait_only` and the
+dev-dependency requiring 0.4.1 are done. The canopy step was revised: a wait-only handle can be
+escalated by safe code, so the doorbell lends it only through an `unsafe` accessor,
+`Doorbell::native_wait_handle`, through which canopy's thread-pool test registers, and a safe
+thread-pool registration made inside the sealed layer is queued
+([crates/canopy/DESIGN-NOTES.md](crates/canopy/DESIGN-NOTES.md) "The doorbell's signal is
+sealed").
+
 ## Why
 
 canopy's doorbell ([crates/canopy/src/ring/doorbell.rs](crates/canopy/src/ring/doorbell.rs)) is a

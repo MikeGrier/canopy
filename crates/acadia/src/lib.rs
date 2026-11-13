@@ -71,6 +71,10 @@ pub use signal::{CondvarSignal, PlatformSignal, Signal};
 pub use signal::{EventFdSignal, wait_native};
 #[cfg(windows)]
 pub use signal::{EventSignal, wait_native};
+/// The handle [`EventSignal::wait_only`] lends, named here so that a crate lending it on does not
+/// depend on `win-sync-sys` for the name.
+#[cfg(windows)]
+pub use win_sync_sys::WaitOnlyEvent;
 
 /// The result of a [`Vfs`] operation: success, or a [`VfsError`] value.
 pub type VfsResult<T> = Result<T, VfsError>;

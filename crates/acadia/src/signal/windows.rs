@@ -6,7 +6,7 @@ use std::io;
 use std::os::windows::io::{AsHandle, BorrowedHandle};
 use std::time::Duration;
 
-use win_sync_sys::{Event, ResetMode, WaitOutcome, wait_for_single_object};
+use win_sync_sys::{Event, ResetMode, WaitOnlyEvent, WaitOutcome, wait_for_single_object};
 
 use super::{Signal, sealed, wait_until_deadline};
 
@@ -14,8 +14,9 @@ use super::{Signal, sealed, wait_until_deadline};
 /// setting it, lowered by resetting it, and signalled to every wait while it is raised.
 ///
 /// [`AsHandle`] gives the event to a platform wait -- `WaitForSingleObject`, a multiple-object
-/// wait -- which sees exactly the level [`Signal::wait`] does, and [`event`](Self::event) gives it
-/// as an [`Event`], which a thread-pool wait takes without `unsafe`.
+/// wait -- which sees exactly the level [`Signal::wait`] does. [`wait_only`](Self::wait_only)
+/// gives it as a handle that can wait and cannot set or reset it, and [`event`](Self::event) as
+/// an [`Event`], which can; a thread-pool wait takes either without `unsafe`.
 #[derive(Debug)]
 pub struct EventSignal {
     event: Event,
@@ -28,6 +29,17 @@ impl EventSignal {
     /// wait. A clone of it is the same event, so resetting one lowers this signal.
     pub fn event(&self) -> &Event {
         &self.event
+    }
+
+    /// A new handle to the event that can wait on it and cannot set or reset it: the kernel
+    /// refuses both through it. It is what to lend a consumer that must not change the signal's
+    /// level, such as a thread-pool wait a client registers.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from duplicating the handle.
+    pub fn wait_only(&self) -> io::Result<WaitOnlyEvent> {
+        self.event.duplicate_wait_only()
     }
 }
 

@@ -3573,6 +3573,11 @@ of the Rust memory model, chosen as a toolchain decision when the queues are bui
 
 ## The ring: a portable protocol over one platform primitive, behind a contract spec
 
+> **SUPERSEDED in part, 2026-11-13, by "The doorbell's signal is sealed".** The bullet "Native
+> waiting, by `cfg`" has the completion doorbell implement `AsHandle` and `AsFd`; through those safe
+> code can change the signal, so the doorbell lends its platform object only through `unsafe`
+> accessors.
+
 The queue pairs and doorbells of "A client reaches the store through a session and its queue pairs"
 follow the ring of
 [durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring),
@@ -3873,6 +3878,12 @@ two and three producers.
 
 ## The doorbell in code, `canopy::ring::Doorbell`, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-13, by "The doorbell's signal is sealed" below.** The bullets on
+> native waiting, on registering with a thread pool and on not lending the `Event` say the doorbell
+> lends its event through `AsHandle` and its descriptor through `AsFd`, and that canopy's tests hand
+> a thread-pool wait a clone of the `Event`. Safe code can change the signal through either, so
+> the doorbell lends its platform object only through `unsafe` accessors, and the tests use them.
+
 `canopy::ring::Doorbell<S: Signal = PlatformSignal>` is `Doorbell.tla` in code[^rg-2]. Each step of
 the spec is one atomic operation or fence of a method named for it, and the public surface is the
 steps composed in the only orders the protocol allows.
@@ -3921,3 +3932,54 @@ steps composed in the only orders the protocol allows.
   floor is the fences', and the engineer owns establishing it[^rg-2-1].
 
 [^rg-2-1]: `RG-2.1` in [CHECKLIST.md](CHECKLIST.md)
+
+## The doorbell's signal is sealed, 2026-11-13
+
+Two requirements, the engineer's: the analysis of the doorbell may treat its layer as sealed --
+`Doorbell.tla` assumes nothing but the protocol's own steps changes the signal -- and only an
+`unsafe` caller can break that. So no safe method of the doorbell lends the platform object behind
+its signal, or anything from which safe code can reach it.
+
+- **Lending the object safely would break the seal, on both platforms.** `AsHandle` and `AsFd` are
+  safe traits, and the standard library's I/O safety guarantees only that a borrowed handle or
+  descriptor stays open, not what is done with it; changing an event's or an `eventfd`'s level is
+  not memory-unsafe, so any crate may offer it safely. On Windows the event's own handle carries
+  the right to reset it. A wait-only handle (`win-sync-sys`'s `WaitOnlyEvent`, `SYNCHRONIZE` alone)
+  is refused a set or reset by the kernel, but `win-handles-sys`'s safe
+  `duplicate_handle_with_access` can ask for a duplicate with more access, which Windows grants
+  the event's creator, so safe code holding the wait-only handle can get one that resets. A
+  client's `windows-threadpool-sys` wait hands its handle back to safe code through
+  `WaitActivation::handle`. On Linux, safe code holding the descriptor can make a `File` of a
+  duplicate and read it, which lowers the signal, or write it, which raises it; and waiting needs
+  the descriptor, so no wait-only form exists.
+- **The platform object is lent only through `unsafe` accessors.** On Windows
+  `Doorbell<EventSignal>::native_wait_handle` returns a new wait-only handle to the event
+  (acadia's `EventSignal::wait_only`), and on Linux `Doorbell<EventFdSignal>::native_fd` borrows
+  the `eventfd`. Each is an `unsafe fn` whose contract is that the caller only waits on the object
+  and changes its level by no means -- no duplicate, no `File` -- nor lets code it hands the object
+  to do so. They are for a consumer's own native wait: a thread pool, a multiple-object wait, an
+  `epoll` set. The wait-only handle is defence in depth on Windows: a caller that breaks the
+  contract by accident is still refused a reset by the kernel. `AsHandle` and `AsFd` are no longer
+  implemented for the doorbell, and no accessor to its signal remains, in tests or out.
+- **Callers are steered to a thread pool, through a registration in the sealed layer.** The
+  engineer's direction is that consumers wait on a thread pool rather than block a thread. The
+  safe way to do that is a registration acadia makes on its own object, which runs a callback when
+  the signal is raised and never hands the object to client code, and which the doorbell offers
+  as `watch`. Until it exists, a consumer on a thread pool uses the `unsafe` accessor, as canopy's
+  tests do[^ac-4][^rg-3].
+- **A wait sees the level, so the consumer rearms before the wait is armed again.** A thread-pool
+  callback that re-arms its one-shot wait before the doorbell has been rearmed -- the signal
+  lowered by the consumer's `Reset` -- runs again at once. A consumer that pumps from the callback
+  and then re-arms the wait has done both in that order.
+- **The completion doorbell of the queue pairs is a `Doorbell` over the platform's signal**, so it
+  is sealed by the same type and carries the same accessors when the pairs are built[^api-3].
+- **A safe native wait on Windows depends on the windows-threadpool-sys crate family.** An event
+  whose later handles the kernel holds to `SYNCHRONIZE`, or a wait-only handle no safe code can
+  borrow, would let the doorbell lend its event without `unsafe`; what the family would provide is
+  specified in [WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md](../../WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md)[^rg-4].
+  On Linux an `eventfd` has no wait-only form, so the descriptor stays behind `unsafe` and `watch`
+  is the safe path.
+
+[^ac-4]: `AC-4` in [CHECKLIST.md](../acadia/CHECKLIST.md#ac-4)
+[^rg-3]: `RG-3` in [CHECKLIST.md](CHECKLIST.md)
+[^rg-4]: `RG-4` in [CHECKLIST.md](CHECKLIST.md)

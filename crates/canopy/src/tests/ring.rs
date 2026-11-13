@@ -405,13 +405,15 @@ fn a_pump_after_a_ring_takes_at_once() {
 #[cfg(windows)]
 fn native_wait(doorbell: &Doorbell<PlatformSignal>, timeout: Duration) -> bool {
     use std::os::windows::io::AsHandle;
-    acadia::wait_native(doorbell.as_handle(), timeout).unwrap()
+    // SAFETY: the handle is only waited on.
+    let handle = unsafe { doorbell.native_wait_handle() }.unwrap();
+    acadia::wait_native(handle.as_handle(), timeout).unwrap()
 }
 
 #[cfg(target_os = "linux")]
 fn native_wait(doorbell: &Doorbell<PlatformSignal>, timeout: Duration) -> bool {
-    use std::os::fd::AsFd;
-    acadia::wait_native(doorbell.as_fd(), timeout).unwrap()
+    // SAFETY: the descriptor is only waited on.
+    acadia::wait_native(unsafe { doorbell.native_fd() }, timeout).unwrap()
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -521,8 +523,9 @@ fn produce<'scope>(
     }
 }
 
-/// The Windows thread pool waits on the doorbell's event: each callback pumps without waiting and
-/// arms the one-shot wait again, so no thread of the test's own waits for a ring.
+/// The Windows thread pool waits on the doorbell through the handle it lends that can only wait:
+/// each callback pumps without waiting and arms the one-shot wait again, so no thread of the
+/// test's own waits for a ring.
 #[cfg(windows)]
 #[test]
 fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
@@ -540,7 +543,8 @@ fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
         done,
     };
     let wait = ThreadpoolWait::new(
-        doorbell.signal().event().clone().into(),
+        // SAFETY: the thread pool only waits on the handle, and the callback never reaches it.
+        unsafe { doorbell.native_wait_handle() }.unwrap().into(),
         move |activation| {
             if consumer.on_rung() {
                 activation.rearm(None);
@@ -566,7 +570,7 @@ fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
-    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     let doorbell = Arc::new(Doorbell::<PlatformSignal>::new().unwrap());
     let queue = Arc::new(Queue::default());
@@ -581,7 +585,8 @@ fn a_thread_pool_wait_on_the_doorbell_takes_everything_producers_publish() {
         events: libc::EPOLLIN as u32,
         u64: 0,
     };
-    let fd = doorbell.as_fd().as_raw_fd();
+    // SAFETY: the descriptor is only registered with `epoll`, which waits on it.
+    let fd = unsafe { doorbell.native_fd() }.as_raw_fd();
     // SAFETY: both descriptors are open, and `interest` is a valid event.
     let added =
         unsafe { libc::epoll_ctl(epoll.as_raw_fd(), libc::EPOLL_CTL_ADD, fd, &mut interest) };
