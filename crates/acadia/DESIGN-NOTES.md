@@ -387,7 +387,7 @@ a store root, modelled in `Creation.tla`")[^ac-1].
   the bytes durable, the name not, so a crash before the parent's sync loses the file and a
   crash after keeps all of it.
 
-[^ac-1]: `AC-1` in [CHECKLIST.md](CHECKLIST.md#ac-1)
+[^ac-1]: `AC-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-1) [completed 2026-11-12; `f63b76f`]
 
 ## A signal is a level, one per platform behind a sealed trait, 2026-11-12
 
@@ -427,7 +427,7 @@ primitive, behind a contract spec")[^ac-3]: raise, lower and a bounded wait, all
   failed the tests that a raise stays raised through waits, wakes every waiter, and is seen by
   the platform's wait without being consumed.
 
-[^ac-3]: `AC-3` in [CHECKLIST.md](CHECKLIST.md#ac-3)
+[^ac-3]: `AC-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-3) [completed 2026-11-12; `f63b76f`]
 
 ## `EventSignal` lends a handle that can only wait, 2026-11-13
 
@@ -476,7 +476,7 @@ DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Writer exclusion and its ownership 
   when this one lets go, on Windows and on Linux under WSL. Removing the wake from `MemFs`'s
   abandonment fails the test of a waiter let in by a simulated death.
 
-[^ac-2]: `AC-2` in [CHECKLIST.md](CHECKLIST.md#ac-2)
+[^ac-2]: `AC-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-2) [completed 2026-11-12; `f63b76f`]
 
 ## The platform's own wait on a borrowed signal, 2026-11-12
 
@@ -491,6 +491,7 @@ doorbell, over the platform's signal -- can wait on it without a system call or 
 before its bound has passed.
 
 [^rg-2]: `RG-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#rg-2)
+    [completed 2026-11-12; `f63b76f`]
 
 ## A signal is watched on a thread pool, by acadia, on its own object, 2026-11-13
 
@@ -529,7 +530,7 @@ Revert-probes: not re-arming the Windows wait failed the tests that a callback l
 raised runs again and that runs never overlap, and a condition-variable watch that did not join on
 drop failed the test that a drop waits for a running callback.
 
-[^ac-4]: `AC-4` in [CHECKLIST.md](CHECKLIST.md#ac-4)
+[^ac-4]: `AC-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-4) [completed 2026-11-13; `191fbf2`]
 
 ## A signal's operations are ordered as acquire-release operations, 2026-11-13
 
@@ -562,4 +563,5 @@ takes as given: a system call is part of the calling thread's execution, and a t
 between processors mid-call is moved through the scheduler's own barriers. A probe of the platform
 would be a data point for an ambiguity here, not a proof of the contract, so none is scheduled.
 
-[^rg-2-2]: `RG-2.2` in [CHECKLIST.md](../canopy/CHECKLIST.md)
+[^rg-2-2]: `RG-2.2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#rg-22)
+    [completed 2026-11-13; `d01bc42`]

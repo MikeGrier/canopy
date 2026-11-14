@@ -1,19 +1,25 @@
 # Copyright (c) Michael Grier.
 #
-# The full TLA+ sweep and probe run, on a schedule. It runs only when something it covers -- the
-# specs, their configurations and scenario tables, the tools, or the pinned TLC -- differs from the
-# last run that came out green, which the cache records under a key that digests all of them.
+# The full TLA+ sweep and probe run. It runs when a push to main changes something it covers -- the
+# specs, their configurations and scenario tables, the tools, or this workflow, which pins TLC --
+# and on demand, so an idle repository runs nothing. A burst of pushes is collapsed: one run at a
+# time per branch, and a newer pending run replaces an older one of the same branch, so the run that
+# starts covers that branch's newest commit.
 name: TLA+ sweep
 
 on:
-  schedule:
-    - cron: '41 4 * * 0'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/canopy/spec/**'
+      - 'tools/**'
+      - '.github/workflows/tla-sweep.yml'
   workflow_dispatch:
-    inputs:
-      force:
-        description: Run even when nothing the sweep covers changed since the last green run
-        type: boolean
-        default: false
+
+concurrency:
+  # Per ref, so a dispatch on another branch never replaces a pending run for main.
+  group: tla-sweep-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -44,28 +50,7 @@ jobs:
             throw "tla2tools.jar has digest $hash, not the pinned one"
           }
 
-      - name: Digest what the sweep covers
-        id: covers
-        shell: pwsh
-        run: |
-          $root = (Get-Location).Path
-          $lines = Get-ChildItem crates/canopy/spec, tools -Recurse -File | Sort-Object FullName | ForEach-Object {
-            '{0} {1}' -f $_.FullName.Substring($root.Length).Replace('\', '/'), (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-          }
-          $lines += 'tla2tools 1.8.0'
-          $bytes = [Text.Encoding]::UTF8.GetBytes($lines -join "`n")
-          $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-          "digest=$digest" >> $env:GITHUB_OUTPUT
-
-      - name: Find the last green run
-        id: green
-        uses: actions/cache/restore@v4
-        with:
-          path: .scratch/tlc/record
-          key: tla-green-${{ steps.covers.outputs.digest }}
-
       - name: Probes, then the sweep
-        if: steps.green.outputs.cache-hit != 'true' || inputs.force
         shell: pwsh
         run: |
           $failed = @()
@@ -92,10 +77,3 @@ jobs:
         with:
           name: tlc-output
           path: .scratch/tlc/*.out
-
-      - name: Record the green run
-        if: steps.green.outputs.cache-hit != 'true' && success()
-        uses: actions/cache/save@v4
-        with:
-          path: .scratch/tlc/record
-          key: tla-green-${{ steps.covers.outputs.digest }}
