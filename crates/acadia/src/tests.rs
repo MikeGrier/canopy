@@ -28,6 +28,7 @@ use crate::fault::{
 use crate::{FileType, MemFs, OsFs, Vfs, VfsErrorKind, VfsResult};
 
 mod conformance;
+mod coord;
 mod fault;
 mod locks;
 mod mem_delta_sync;

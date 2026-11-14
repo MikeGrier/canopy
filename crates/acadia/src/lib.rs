@@ -47,11 +47,19 @@
 //! injection ([`FaultyFs`], VFS-4) layers over any backend, and the conformance
 //! suite (VFS-5) exercises both backends and the fault decorator against this
 //! contract.
+//!
+//! # Coordination
+//!
+//! [`coord`] is the crate's second layer, above the seam: the contract through
+//! which the participants on one store root -- threads and processes alike --
+//! decide who may act and when. It depends on the seam and on [`signal`]; nothing
+//! in them depends on it.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod coord;
 pub mod fault;
 pub mod mem;
 pub mod os;
@@ -623,6 +631,26 @@ pub trait Vfs: Send + Sync {
     /// what the wrapped filesystem is.
     fn is_os_filesystem(&self) -> bool {
         false
+    }
+
+    /// An identity of the current boot of the host this filesystem lives on: the same on every
+    /// call, from every process, while the host runs, and different once it has restarted.
+    ///
+    /// It is what lets state kept only in memory, or in files never synced, tell whether it has
+    /// survived: a restart loses such state, and the identity says one happened. [`OsFs`] reads
+    /// the identity the kernel generates at boot on Linux and the boot sequence number Windows
+    /// keeps in the data it shares with every process; [`MemFs`] counts its simulated crashes,
+    /// since [`MemFs::simulate_crash`] is its power loss.
+    ///
+    /// The default implementation reports [`VfsErrorKind::Unsupported`], as does [`OsFs`] on a
+    /// platform with no such identity, and **a decorator must forward this explicitly**, for the
+    /// reason given at [`lock_exclusive`](Vfs::lock_exclusive).
+    fn boot_identity(&self) -> VfsResult<Vec<u8>> {
+        Err(VfsError::new(
+            VfsErrorKind::Unsupported,
+            "boot_identity",
+            "this backend cannot identify a boot",
+        ))
     }
 }
 

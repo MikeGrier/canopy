@@ -699,6 +699,10 @@ impl Vfs for OsFs {
         true
     }
 
+    fn boot_identity(&self) -> VfsResult<Vec<u8>> {
+        boot_identity()
+    }
+
     fn open_output(&self, path: &Path) -> VfsResult<fs::File> {
         // `std`'s default share mode on Windows already admits concurrent readers
         // and Unix imposes none, so a tailing reader can open the file meanwhile.
@@ -709,4 +713,39 @@ impl Vfs for OsFs {
             .open(path)
             .map_err(|e| err("open_output", path, &e))
     }
+}
+
+/// The identity the kernel generates for each boot.
+#[cfg(target_os = "linux")]
+fn boot_identity() -> VfsResult<Vec<u8>> {
+    const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
+    let mut id = fs::read(BOOT_ID).map_err(|e| err("boot_identity", Path::new(BOOT_ID), &e))?;
+    id.truncate(id.trim_ascii_end().len());
+    Ok(id)
+}
+
+/// The boot sequence number the kernel keeps in `KUSER_SHARED_DATA`, which it advances at every
+/// boot.
+#[cfg(windows)]
+fn boot_identity() -> VfsResult<Vec<u8>> {
+    use windows_sys::Wdk::System::SystemServices::KUSER_SHARED_DATA;
+    /// Where the kernel maps `KUSER_SHARED_DATA` in every user-mode process
+    /// (`MM_SHARED_USER_DATA_VA`).
+    const SHARED_USER_DATA: usize = 0x7FFE_0000;
+    let boot_id: *const u32 = std::ptr::with_exposed_provenance(
+        SHARED_USER_DATA + std::mem::offset_of!(KUSER_SHARED_DATA, BootId),
+    );
+    // SAFETY: the kernel maps the shared data read-only at this address in every user-mode process
+    // for the process's whole life, and `BootId` is an aligned `u32` within it.
+    let boot_id = unsafe { boot_id.read_volatile() };
+    Ok(boot_id.to_le_bytes().to_vec())
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn boot_identity() -> VfsResult<Vec<u8>> {
+    Err(VfsError::new(
+        VfsErrorKind::Unsupported,
+        "boot_identity",
+        "this platform offers no boot identity",
+    ))
 }
