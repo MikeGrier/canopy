@@ -1440,3 +1440,128 @@ them, at 2026-11-13 13:41:15 -05:00, and each was written as a round estimate af
 run ahead of real time: all four items were complete before [NT-1](#nt-1), whose stamp,
 15:14:41, was read from the clock. Their true order is the order of the entries above, and each
 falls between 13:41:15 and 15:14:41 -05:00. The entries are left as they were written.
+
+## Moved 2026-11-13 -- The coordination interface defined (M6 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="m6-1"></a>M6-1 -- Define the coordination interface as `acadia::coord`, with the file-based layout, the conformance harness, a second implementation and abandonment. *(completed 2026-11-13 20:52:22 -05:00)*
+
+The decisions are in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "The coordination
+interface is acadia's, as a layer of its own above `Vfs`" and "The coordination interface,
+defined". Each part M6-2 to M6-9 implements is a trait in `acadia::coord` with its contract stated
+on it, and joins `Coordination` as a supertrait when its item builds it. The file-based
+implementation lays out its state beneath the root with every name under the reserved prefix, and
+keeps every lock a participant takes in a table that abandonment empties without bookkeeping. The
+harness runs each case against both implementations over `MemFs`, `OsFs` and `FaultyFs`, and runs
+the cross-process cases by starting the test binary again as a helper, on Windows and on Linux under
+WSL. Making abandonment keep its locks failed the three abandonment cases.
+
+### <a id="m6-2"></a>M6-2 -- Creation exclusion and the creation reservation, built in the file-based implementation and joined to `Coordination`. *(completed 2026-11-13 21:13:05 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "Creating a root through
+the file-based implementation". The conformance cases cover every case the item named --
+simultaneous creation through two implementations, a creator suspended before and after publishing
+its reservation, an interrupted creation resumed and refused for other inputs and another
+implementation, a resumer that waited while its creation finished, a root holding something creation
+does not make refused to a creator, to a resumer and to a creator it appeared to while it waited, a
+creator that died between making its marker and making it durable followed by an open and a crash,
+and a crash at every step -- with both implementations over every backend where the case allows. A
+combined revert-probe -- one reading of the root, a plain write for the reservation, an open that
+syncs nothing -- failed the cases built for each.
+
+### <a id="m6-3"></a>M6-3 -- Restart recognition from the boot identity the filesystem reports, with untrusted state requiring recovery, joined to `Coordination`. *(completed 2026-11-13 21:21:05 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "A host restart is
+recognised from the boot identity the filesystem reports". `Vfs::boot_identity` is new: the kernel's
+boot id on Linux, `KUSER_SHARED_DATA.BootId` on Windows, a crash count in `MemFs`, forwarded and
+faultable by `FaultyFs`. The file-based implementation keeps a boot record in its state directory
+and trusts the state only when the record names this boot and a recovery has vouched for it. The
+cases cover state never made, made and vouched, a crash that keeps the record and one that loses
+it, a filesystem that cannot identify a boot or fails to, an unreadable record, an abandoned
+participant, and state vouched for in another process, over both implementations and every
+backend, on Windows and Linux. A revert-probe ignoring the recorded boot failed the crash case.
+
+### <a id="m6-4"></a>M6-4 -- The modification count, published whole with its boot and standing, raised by the outermost modification, joined to `Coordination`. *(completed 2026-11-13 21:28:14 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "The modification count
+is one record, carrying its boot and its standing". The holder's raising is built and reached by
+writer exclusion's hold, which M6-5 and M6-6 supply. The cases cover a sample during a publication
+suspended at its write and at its rename, a holder killed before its raise is published and one
+killed in another process with its count raised, each publication failing, a reader with the record
+open while it is replaced, a sample after a restart, a count never published, untrusted or garbled,
+nested and unresolved modifications, and an abandoned participant, over both implementations and
+every backend, on Windows and Linux. Revert-probes on the standing and on the fence after a failed
+close each failed their cases.
+
+### <a id="m6-5"></a>M6-5 -- Writer exclusion in the file-based implementation: one lock file held whole, across every thread of every process, released by a death. *(completed 2026-11-13 21:48:36 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "Writer exclusion is one
+lock file, held whole, in the participant's table of holds". The item and M6-6 meet at
+`ExclusionHold`, whose report of what an acquisition found is M6-6's ownership record, fence and
+generation; so this item built the exclusion and its release, and M6-6 builds the hold over it and
+joins `WriterExclusion` to `Coordination`. The cases cover refusal without waiting, re-entry, a
+dropped hold letting the next in, a waiter let in by a release, many threads holding it alone,
+releases overlapping tries, abandonment, a hold outliving its borrow, separate roots, a holder in
+another process refusing this one until it is killed, and a waiter in another process let in by
+this one's release, over both implementations and every backend, on Windows and Linux. A
+revert-probe that kept the lock after its hold was dropped left the waiting cases waiting.
+
+### <a id="m6-6"></a>M6-6 -- The `ExclusionHold` over the exclusion, with the ownership record, the fence, the generation, the boot record and the count's raising kept under it, joining `WriterExclusion` to `Coordination`. *(completed 2026-11-13 21:58:50 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "The hold of writer
+exclusion keeps its bookkeeping in files replaced whole". The cases cover the first acquisition of
+new state, the generation found and advanced with and without another holder between, a clean
+release and a dropped hold, a holder that dies in this process and one killed in another, the fence
+outliving the clean release of the holder that found a death, a live holder releasing never
+reported dead, acquirers failing at each step before their record, a release that cannot clear its
+record, the recovery gate on ordinary modifications, a completed recovery, nested raising through
+the hold, a restart, an unreadable generation, and the whole hold reached through `dyn
+Coordination`, over both implementations and every backend, on Windows and Linux. Revert-probes on
+the release order and on setting the fence each failed their cases.
+
+### <a id="m6-7"></a>M6-7 -- The admission gate and the reader and writer tiers, with ordinary attachment and the upgrade taking the gate, then the reader tier when unsafe for readers, then the writer tier, joining `Admission` to `Coordination`. *(completed 2026-11-13 22:15:18 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "The admission gate and
+the tiers are locks in two files, held in the participant's table of holds". The cases cover
+readers and writers attaching together, the gate free after attachment, a reader-safe upgrade
+admitting readers and holding off writers, a reader-unsafe upgrade waiting for every reader and
+admitting no one, only the unsafe upgrade keeping the gate, a refused upgrade holding nothing, an
+upgrade let in by the last reader leaving, two upgraders taking turns, a writer arriving during an
+unsafe upgrade waiting at the gate, a writer waiting inside the gate beside an unsafe upgrader
+without deadlock, the deaths of an attachment and of an upgrader, and admission reached through
+`dyn Coordination`, over both implementations and every backend; and, across processes, a reader
+holding off an unsafe upgrade and an unsafe upgrade holding off attachment until each is killed, on
+Windows and Linux. Revert-probes on the tier order, on each release of the gate, and on the
+upgrade's release of its shared tiers each failed their cases. The overlapping-tries case of
+writer exclusion now runs each contender until it has held the lock once, since on Linux a
+contender could lose every one of a fixed number of tries.
+
+### <a id="m6-8"></a>M6-8 -- The registry of attached participants: entries claimed and probed as tries, registration and unregistration around the tiers, an upgrade's conversion included, and the overflow record discarded by a host restart, joining `Registry` to `Coordination`. *(completed 2026-11-13 22:29:29 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "The registry is a pair of
+lock bytes and a record file per entry, every lock taken as a try". The cases cover listing with
+tiers and payload, an empty registry, re-registering and an update refused while inspected, a
+detached entry cleared, a dead participant's entry never listed and reused after each of several
+deaths, a reuser paused between its liveness lock and its token -- by holding its locks, and by a
+listing run during the reuser's own write -- a registrant moving on from a claimed entry and from a
+live one, an owner unable to claim its entry leaving it dead, an unreadable live record counted
+unknown, every entry held attaching unregistered with the overflow kept until a host restart, an
+entry cleared while its tiers are held at a drop and at a conversion, the conversion removing the
+entry and the upgrade registering anew, a cancelled upgrade, a listing past an upgrade holding the
+gate, abandonment, simultaneous listings, a churn of deaths beside a listing, and the registry
+reached through `dyn Coordination`, over both implementations and every backend; and, across
+processes, an entry listed until its process is killed and then reused, on Windows and Linux.
+Revert-probes on the listing's claim, the registrant's claim, the order of leaving, the conversion
+and the overflow record each failed their cases.
+
+### <a id="m6-9"></a>M6-9 -- Notification when the count moves or a deadline passes, delivered by a ring the registrant supplies, from one poller per process sampling each registration with its own backoff, joining `CountNotification` to `Coordination`. *(completed 2026-11-13 23:19:41 -05:00)*
+
+The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "One poller per process
+samples the count for every registration, each with its own backoff". The cases cover a ring when
+the count moves, at once when it already differs, at the deadline and not before, exactly once, never
+after the notice is dropped, many registrations on many participants each ringing for its own
+reason, no sampling while nothing is outstanding or after a registration has rung and a bounded
+number while one is, a ring that panics, an abandoned participant, and notification reached through
+`dyn Coordination`, over both implementations and every backend; and, across processes, a count
+raised in another process ringing a registration in this one, on Windows and Linux. Revert-probes on
+the backoff, the count comparison, withdrawal, removal after ringing and the panic guard each failed
+their cases; the removal probe first survived, and the sampling case was extended to catch it.

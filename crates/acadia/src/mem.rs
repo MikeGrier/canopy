@@ -107,6 +107,8 @@ struct Inner {
     examined_entries: usize,
     /// Next inode id to hand out.
     next_inode: u64,
+    /// How many simulated crashes there have been, which is the boot this filesystem is in.
+    boots: u64,
 }
 
 /// An in-memory [`Vfs`] that models write-vs-durable ordering.
@@ -190,6 +192,7 @@ impl MemFs {
         inner.carried.clear();
         inner.replaced.clear();
         inner.dirty.clear();
+        inner.boots += 1;
         inner.live = inner.durable.clone();
         let mut ids = Vec::new();
         collect_ids(&inner.live, &mut ids);
@@ -1713,6 +1716,10 @@ impl Vfs for MemFs {
         *live_refs.entry(id).or_default() += 1;
         mark(dirty, parents, name);
         Ok(())
+    }
+
+    fn boot_identity(&self) -> VfsResult<Vec<u8>> {
+        Ok(self.tree().boots.to_le_bytes().to_vec())
     }
 }
 

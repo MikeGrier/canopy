@@ -28,117 +28,24 @@ Each item here names the event it waits on; it joins a milestone once that event
   producers publish, and `compile_fail` doctests show that no handle can be borrowed from what the
   doorbell lends.
 
-## M6 -- The coordination interface
-
-Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store".
-
-The coordination interface, a layer above `Vfs`, with its file-based implementation and a
-conformance suite every implementation must pass (was `MP-5`).
-
-- [ ] **M6-1** (was `MP-5.1`) -- Decide which crate holds the coordination interface and define the interface:
-  every part M6-2 to M6-9 implement, each operation's contract stated on it. Lay out
-  the file-based implementation's state, built on `Vfs` primitives so it runs over `OsFs` on
-  Windows and Linux, `MemFs` and `FaultyFs` alike. Build the conformance suite's harness, which
-  runs every case against every implementation and spawns real processes for the cross-process
-  cases, on Windows and on Linux under WSL; a second implementation for tests, differing from the
-  file-based one in its identity and its creation exclusion, so that the cases between two
-  implementations run before M10 provides a real one; and abandonment, for tests: releasing a
-  simulated process's holds without clean-release bookkeeping.
-  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> M1 -> `AC-1` (the `Vfs` primitives this
-  > needs) must land first. See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-1).
-
-- [ ] **M6-2** (was `MP-5.2`) -- Creation exclusion and the creation reservation: the creator reads the root
-  and, finding no marker, no reservation and nothing that creation does not make, takes its
-  implementation's creation exclusion and reads the root again under it, then publishes the
-  reservation -- implementation, every creation input, nonce -- with an exclusive
-  publish-if-absent, so it is complete or absent even if power is lost, and makes it and its
-  directory entry durable before creation makes any other artifact, then makes each artifact
-  durable before the next, the marker last; a mismatched open is refused; an open makes the marker
-  durable before it relies on it, since its creator may have died between publishing the marker and
-  making it durable; an interrupted creation is resumed only through the same implementation, once
-  its creation exclusion is free, after reading the root again for a marker, the reservation it
-  decided on and nothing else beneath it, and only with identical inputs, completing exactly
-  creation's artifacts in creation's order ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Creating a store
-  root, modelled in `Creation.tla`"). Conformance cases: simultaneous creation through two
-  implementations, a creator suspended before and after publishing its reservation, an
-  interrupted creation resumed and one refused for different inputs, a resumer that waited while
-  its creation finished, a root holding something creation does not make refused to a creator and
-  to a resumer, a creator that dies after making its marker and before making it durable followed
-  by an open and a host crash, and a crash between each step of creation.
-
-- [ ] **M6-3** (was `MP-5.3`) -- Restart recognition from the OS boot identity on each platform, with state it
-  cannot vouch for reported as requiring recovery.
-
-- [ ] **M6-4** (was `MP-5.4`) -- The modification count, published atomically (a fresh file renamed over the
-  published one) so a sample is one lock-free read of a complete value, with a dead holder's odd
-  count left odd; a failed opening publication permitting no effect and a failed closing
-  publication leaving the count odd and the fence set; and state that cannot be vouched for
-  reading as odd until a completed recovery publishes a trusted even value; with a raise ordered
-  before the holder's next filesystem effect and a sample ordered with the sampler's own reads, a
-  cached sample invalidated synchronously with the publication that outdates it, and only the
-  outermost operation under a hold raising it -- the ordering is assumed, not checked, by the
-  model ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The modification count, the generation and reads,
-  modelled in `Coordination.tla`"). Conformance cases: a sampler running while the updating
-  process is suspended or killed part-way through publishing the count, each count publication
-  failing, a sampler paused with the published count open while it is replaced, and a sample
-  taken after a restart reading odd.
-
-- [ ] **M6-5** (was `MP-8`) -- Writer exclusion in every implementation: across every thread of every process,
-  waiting, with no order among waiters promised, released when the holder dies
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion and its ownership record, modelled in
-  `Coordination.tla`"); extend the conformance suite to cover it, including a release that
-  overlaps another acquirer, on Windows and Linux. It builds on acadia's waiting lock, `Vfs::lock`
-  ([CHECKLIST.md](../acadia/CHECKLIST.md#ac-2)).
-
-- [ ] **M6-6** (was `MP-5.5`) -- The fence and the generation, acquisition of M6-5's exclusion returning the
-  generation it found before advancing it; and the ownership record, telling the next acquirer
-  that the holder died, with the fence set before an abandoned record is replaced and a clean
-  release clearing the record before it drops the lock, so a record found under the lock always
-  means its holder died ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion and its ownership
-  record, modelled in `Coordination.tla`"). Conformance case: the fence surviving the clean
-  release of the holder that found an abandoned record.
-
-- [ ] **M6-7** (was `MP-5.6`) -- The admission gate, taken shared by ordinary admission only until the handle
-  holds its reader tier and exclusively by an upgrade, with no order among waiters promised; and
-  attachment in reader and writer tiers, held shared for a handle's life and taken exclusive,
-  released when the holder dies; an upgrade taking the gate, then the reader tier when it is
-  unsafe for readers, then the writer tier, never the writer tier first, which deadlocks against a
-  handle holding the reader tier shared and waiting for the writer tier
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The admission gate and the attachment tiers, modelled in
-  `Coordination.tla`").
-
-- [ ] **M6-8** (was `MP-5.7`) -- The registry of attached handles: an entry registered when a handle attaches,
-  updated when its tiers or draining state change, and removed when it detaches; every change to
-  and inspection of an entry made under its claim lock, taken without waiting; a reuser holding the
-  claim lock from before it takes the liveness lock until its token is written; a listing reporting
-  an entry it cannot claim as unknown, and liveness as of its shared probe; a handle that finds
-  every entry held attaching unregistered, recording that in the registry so that a listing says
-  it may be incomplete from the record and not from what it sees (a claim lock held for a moment
-  sends a registrant on, so an entry can be free when it does), the record discarded only by a
-  host restart; registration finishing before the attach returns and unregistration starting
-  before the tiers are released, an upgrade's conversion included, an entry the owner cannot claim
-  when it leaves left with only its liveness lock released; a dead handle's entry never reported
-  as live, and a listing saying when it may be incomplete ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The
-  registry of attached handles, modelled in `Coordination.tla`"). Conformance cases: registry
-  entries reused after a death including a reuser paused between taking the liveness lock and
-  writing its token, simultaneous listings, an entry removed by a cancelled upgrade's detachment,
-  and an attempt to reuse a live entry.
-
-- [ ] **M6-9** (was `MP-5.8`) -- A notification when the published count differs from a sampled value or a
-  deadline passes, delivered by ringing a doorbell the registrant supplies, so that no waiting work
-  holds a thread; the file-based implementation's default is one poller per process sampling with
-  backoff only while a registration is outstanding, and the interface leaves room for an
-  implementation notified by the OS ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the
-  coordination state is delivered as a notification").
-
 ## M7 -- Readers in other processes
 
 The store moves onto the coordination interface while one process still holds the root for a
 handle's lifetime (`D116`); readers in other processes come first, writers taking turns in M9
 ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store").
- The store on the coordination interface is M7-1 to M7-4 (was `MP-6`).
+The store on the coordination interface is M7-2 to M7-5 (was `MP-6`).
 
-- [ ] **M7-1** (was `MP-6.1`) -- FM-2.2 made genesis version 6 the barrier for the publication record and added
+- [ ] **M7-1** -- Rename "Shire" to "store" in code and live documentation: `ShireId` to `StoreId`,
+  the `shire_id` accessors to `store_id`, `StoreError::EmptyShireId` to `EmptyStoreId` and
+  `StoreError::NotAShire` to `NotAStore` with their messages, the docs and comments that call a
+  store root a Shire, komorebi's `shire` field and `open_shire` phase, the test roots and
+  identities named for it, and the example in
+  [copilot-instructions.md](../../.github/copilot-instructions.md). The marker's file name and its
+  `shire_id` key are on-disk format and stay until M7-2 renames them, so the genesis keeps its
+  serialized key here. Committed design records and archives keep the old name; record the
+  rename as a decision in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+- [ ] **M7-2** (was `MP-6.1`) -- FM-2.2 made genesis version 6 the barrier for the publication record and added
   `Store::migrate`, which advances a version-5 root by replacing its marker alone, refused by
   `open` with `StoreError::MigrationRequired`. Advance the version again as the barrier that makes
   an older binary refuse the root, and extend the migration of an existing root to the
@@ -151,14 +58,16 @@ handle's lifetime (`D116`); readers in other processes come first, writers takin
   lock. Refuse an unmigrated root with a distinct error naming the migration. Test an older binary
   refusing a migrated root, a migration interrupted at each step and resumed, a resume refused for
   different inputs, and a current binary paused between reading the marker and taking the lock
-  while a migration runs.
+  while a migration runs. In the same version advance, rename the marker's `.shire` file name and
+  its `shire_id` key to names that say store, chosen with the engineer and recorded in the M7-1
+  decision; the migration renames them, and a migrated root has neither old name.
 
-- [ ] **M7-2** (was `MP-6.2`) -- Move the modification count into the coordination state so a reader
+- [ ] **M7-3** (was `MP-6.2`) -- Move the modification count into the coordination state so a reader
   classifies contention against a writer in another process, including the partial state a dead
   writer left before anything recovers it. Cross-process tests spawn a real second process, on
   Windows and on Linux under WSL.
 
-- [ ] **M7-3** (was `MP-6.3`) -- Split `Store::open` into attaching, which changes no store data, and explicit
+- [ ] **M7-4** (was `MP-6.3`) -- Split `Store::open` into attaching, which changes no store data, and explicit
   recovery, which runs only under exclusion (in this milestone, the lifetime root lock) and
   includes directory-sync debt discharge. Recovery's public API: a discovery call that reports
   whether recovery is required and why, treating work a live holder owns as not requiring it,
@@ -176,13 +85,13 @@ handle's lifetime (`D116`); readers in other processes come first, writers takin
   ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Recovery and its discovery, modelled in
   `Coordination.tla`"). Tested within one process here; across processes in M9-2.
 
-- [ ] **M7-4** (was `MP-6.4`) -- While recovery is required, apply the permission table in
+- [ ] **M7-5** (was `MP-6.4`) -- While recovery is required, apply the permission table in
   [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store": writes, repairs,
   scrub, resets and upgrades are refused with `StoreError::RecoveryRequired`, and none of them
   replays anything; callers that relied on `open` recovering move to the explicit calls. A handle
   opened only to read cannot write.
 
-- [ ] **M7-5** (was `RD-1`) -- A snapshot that finds a write in progress, or is disturbed by one, is notified
+- [ ] **M7-6** (was `RD-1`) -- A snapshot that finds a write in progress, or is disturbed by one, is notified
   through the coordination interface when the count changes and tries again, up to a deadline,
   rather than retrying after a yield a fixed number of times, so that a write overlapping a read
   delays it instead of failing it ([DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract
@@ -193,7 +102,7 @@ handle's lifetime (`D116`); readers in other processes come first, writers takin
   `SnapshotContended` reports a deadline that passed. Tests show a snapshot that overlaps a write
   succeeds once the write ends, and one held off past its deadline failing.
 
-- [ ] **M7-6** (was `RD-2`) -- A Windows implementation of the notification notified by the OS instead of
+- [ ] **M7-7** (was `RD-2`) -- A Windows implementation of the notification notified by the OS instead of
   polling -- an opportunistic lock on the published count requested with overlapped I/O, broken
   when a fresh count is renamed over it, and delivered from an I/O completion -- with the poller
   kept as the fallback where the lock is not granted, as on file systems that do not support it
@@ -275,7 +184,7 @@ Upgrades contended between processes are tested in M9-3, once independent writer
 - [ ] **M9-1** (was `MP-9`) -- Replace the in-process writer gate and the root lock with the contract's
   exclusion, acquired once by the outermost write and by `init`, with callbacks receiving the
   read-only view WS-2 decided. When exclusion reports that the previous holder died holding it,
-  report `StoreError::RecoveryRequired` and replay nothing; recovery runs only through M7-3's
+  report `StoreError::RecoveryRequired` and replay nothing; recovery runs only through M7-4's
   API, under its own capability, keeping the dead holder's count odd until it finishes and
   clearing the fence only after it succeeds. Reload each handle's commit-log durability
   knowledge, directory-sync debt state and recorded agent version whenever the generation has
@@ -316,8 +225,7 @@ Upgrades contended between processes are tested in M9-3, once independent writer
 
 A shared-memory implementation of the whole coordination contract -- exclusion, attachment, the
 registry and the counters -- for stores on a local filesystem on Windows and Linux, passing the
-same conformance suite (was `MP-11`). It lives with the coordination interface, in the crate M6-1
-chose.
+same conformance suite (was `MP-11`). It lives with the coordination interface, in `crates/acadia`.
 
 - [ ] **M10-1** (was `MP-11.1`) -- The implementation's state: specify how it creates and re-creates it (a
   Windows mapping backed by the paging file vanishes when its last user exits), treating any state

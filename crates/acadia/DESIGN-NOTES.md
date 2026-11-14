@@ -565,3 +565,368 @@ would be a data point for an ambiguity here, not a proof of the contract, so non
 
 [^rg-2-2]: `RG-2.2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#rg-22)
     [completed 2026-11-13; `d01bc42`]
+
+## The coordination interface is acadia's, as a layer of its own above `Vfs`, 2026-11-13
+
+The coordination interface of canopy's several-process design -- the contract for writer exclusion,
+the fence and generation, the admission gate, the registry of attached handles, the modification
+count and its notification, and creation exclusion ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Several processes may open one store", "The
+coordination contract") -- lives in this crate, with its implementations and its conformance
+suite[^m6-1].
+
+- **A layer, not part of the seam.** The interface is the module `acadia::coord` and the modules
+  beneath it, apart from `Vfs`, its backends and `Signal`. It depends on them; none of them depends
+  on it, which review holds rather than the compiler. A consumer of the seam
+  alone -- a storage engine's data path -- names nothing of coordination, which is the relation the
+  contract has to `Vfs`: it decides who may act on a root and when, and the data operations stay
+  `Vfs` calls.
+- **It names no type of canopy's.** This crate is a dependency of canopy and cannot name what
+  canopy defines, so the interface speaks in its own types -- an implementation identity, a nonce, a
+  generation, a count -- and carries what only canopy can interpret as bytes the caller supplies.
+  The creation reservation records every creation input (the genesis configuration, the agent, the
+  schemas) as one such byte string, and an interrupted creation is resumed only when a resumer's
+  bytes are identical. Canopy encodes them canonically, so identity of inputs is identity of bytes.
+- **What canopy decides stays canopy's.** Admission by schema is canopy's check, made after the
+  interface grants the shared tiers, as the contract orders it; the interface provides the tiers
+  and the gate and knows no schema. A registry entry's contents -- the agent, the schemas spoken,
+  how to find the process -- are a payload canopy supplies and a listing returns; the interface
+  owns the entry's slot, its token and its liveness. A notification runs a callback the caller
+  registers, so canopy rings its own doorbell and lends the interface nothing of it. The agent's
+  version stamp and canopy's other durable records are written through `Vfs`, not through the
+  interface, which provides only the generation that tells a handle its caches of them are stale.
+- **Every implementation lives here.** The file-based one is built from `Vfs` primitives and so runs
+  over `OsFs`, `MemFs` and `FaultyFs`; the shared-memory one is built from OS facilities `Vfs` does
+  not model, as `Signal` already is, and carries the `unsafe` that needs, kept in modules of its own.
+- **The conformance suite lives here,** since it is what states the contract, and every
+  implementation, including the second one tests use, runs it. Its cross-process helpers are this
+  crate's own test binary run again, so they depend on nothing but this crate (see "The
+  coordination interface, defined").
+- **The crate's description and documentation change with it:** the seam is one layer of the crate
+  and coordination is the other.
+
+[^m6-1]: `M6-1` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## The coordination interface, defined, 2026-11-13
+
+`acadia::coord` states every part of the contract as a trait of its own, with each operation's
+contract on it[^m6-1]:
+
+- **One trait per part, joined into `Coordination` when implemented.** `Creation`,
+  `RestartRecognition`, `ModificationCount`, `WriterExclusion`, `Admission` with `Attachment` and
+  `Upgrade`, `Registry`, and `CountNotification`. `Coordination` itself names a participant's
+  implementation and abandons it; a part becomes a supertrait of `Coordination` in the change that
+  gives every implementation that part, so the interface a caller holds as `dyn Coordination` never
+  carries an operation that is not built, and no implementation carries a stub.
+- **What only the holder may do is reachable only through its hold.** Raising the count,
+  completing recovery and releasing exclusion are methods of the `ExclusionHold` that acquiring
+  returns; converting for an upgrade is a method of the `Attachment` it consumes; a registration
+  lives inside the attachment or upgrade it describes, so dropping either removes the entry before
+  releasing the tiers, in the order the registry's contract requires, without the caller arranging
+  it. Holds are `'static` boxed trait objects, so a participant can be held as `dyn Coordination`.
+- **Every acquisition says whether it may wait.** `Waiting::Wait` waits as the contract states,
+  without bound or order; `Waiting::Never` refuses with `WouldWait` and holds nothing. Work that must
+  not hold a thread tries, and is woken to try again by a notification or its deadline. Giving up a
+  wait is not offered, because `Vfs::lock` cannot be cancelled; the non-waiting form is what an
+  engine that holds no thread uses instead.
+- **A participant is the unit of death.** Each participant keeps every lock it takes in a table of
+  its own. `Coordination::abandon` empties the table without any bookkeeping -- a record stays, an
+  entry is left uncleared -- which is what the operating system does for a dead process, and makes
+  every later operation of the participant fail with `Abandoned`. Two participants in one process
+  are as separate as two processes, since every `Vfs` lock guard is its own holder.
+- **The file-based layout.** Beneath the root, the reservation (`.coord-reservation`), the
+  creation exclusion's lock file, and the state directory `.coord`; in it, data files for the boot
+  identity, the count, the ownership record, the fence, the generation, one file per registry
+  entry and the registry's overflow record, and lock files for exclusion, the gate, the tiers (a
+  byte each) and the registry (a claim byte and a liveness byte per entry). Every name beneath the
+  root begins with `RESERVED_PREFIX`, `.coord`, in every implementation, so a creator's reading of
+  the root knows them for coordination's own; no artifact of creation's may begin with it. A lock
+  file holds no data and a data file is never locked, because what a read or write does to a byte
+  another holder has locked is the platform's (`Vfs::try_lock`).
+- **The second implementation** is the file-based one with another identity and another creation
+  lock file. Two implementations need only those two differences to exercise the cases between
+  them: their creation exclusions do not exclude each other, and the reservation is what decides.
+- **Cross-process helpers are the test binary itself.** A cross-process case runs the same test
+  binary again on one ignored test, telling it through its environment what to hold, and reads
+  the line it writes once it holds it. The helpers live beside the cases and depend on nothing but
+  this crate, which `canopy-lock-holder` could not offer, since it depends on canopy. The cases run
+  on Windows and, under WSL, on Linux.
+
+## Creating a root through the file-based implementation, 2026-11-13
+
+The file-based implementation builds `Creation` as canopy's creation design states it ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Creating a store root, modelled in
+`Creation.tla`")[^m6-2], with these choices of its own:
+
+- **The reading under the exclusion decides.** A creator reads the root, waits for its creation
+  exclusion, and reads it again; what the second reading finds is what it does, and a resumer whose
+  reservation's nonce differs between the two readings is refused. The first reading only spares a
+  root that is plainly not to be created in from taking the lock.
+- **An artifact with no reservation occupies the root.** The reservation is durable before any
+  artifact exists, so no creation leaves an artifact without one, and something bearing an
+  artifact's name with no reservation is someone else's.
+- **The reservation is published with `Vfs::publish_new`**, which leaves it complete or absent
+  across a power loss, and its directory entry is made durable before the first artifact. A
+  publication that finds a reservation already there refuses the creation: only another
+  implementation, whose creation exclusion does not exclude this one's, can have put it there.
+- **The reservation is kept** after creation, as the record of which implementation coordinates the
+  root. Its encoding -- magic, version, identity, nonce, inputs -- is versioned by its own byte, and
+  anything that is not exactly what the encoder writes reads as malformed.
+- **An opener takes the creation exclusion shared**, as the contract states, so openers do not
+  exclude each other and an open that meets a creation in progress waits for it. Canopy's notes
+  record that the model finds this wait unnecessary for safety; it is kept because the contract
+  states it, at the cost of an open waiting for a creation that is slow.
+- **An open syncs the marker and the root before relying on it** (`UNSYNCED-MARKER`): the maker
+  syncs each artifact, the implementation syncs the root after each, and an open repeats both for
+  the marker. A crash after an open has done so keeps the marker; the conformance case that omits
+  the open shows the same crash losing it.
+
+Revert-probes: reading the root once instead of again under the exclusion, publishing the
+reservation with a plain write, and opening without syncing the marker each failed the cases built
+for them -- the resumer that waited, the intruder that appeared during the wait, the creator whose
+reservation was published second, the simultaneous creators, and the marker made durable by an
+open.
+
+[^m6-2]: `M6-2` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## A host restart is recognised from the boot identity the filesystem reports, 2026-11-13
+
+The coordination state is trusted only within the boot it was made in, and only once a completed
+recovery has vouched for it (canopy's DESIGN-NOTES.md, "Several processes may open one store",
+Survival)[^m6-3].
+
+- **The boot identity is a `Vfs` operation.** `Vfs::boot_identity` names the current boot of the
+  host the filesystem lives on, so a restart follows the backend: `OsFs` reports the operating
+  system's, and `MemFs` counts its simulated crashes, since `simulate_crash` is its power loss and
+  so its restart. The coordination is built from `Vfs` primitives, and this is the one it needed
+  that the seam did not have. `FaultyFs` forwards it and can fail it (`FaultOp::BootIdentity`,
+  matched against the empty path). The default, and `OsFs` on a platform with no identity, is
+  `Unsupported`, which the coordination reads as state it cannot vouch for, never as trusted.
+- **Linux: `/proc/sys/kernel/random/boot_id`**, which the kernel generates at each boot.
+  **Windows: the `BootId` field of `KUSER_SHARED_DATA`**, the boot sequence number the kernel
+  advances at each boot and shares, read-only, with every user-mode process at a fixed address;
+  `windows-sys` gives the layout, and the read is one volatile load. Both stay the same across a
+  sleep or hibernation, which preserves the state, and change across a boot, which loses it. On
+  Windows the number is a counter kept in the system's registry, so restoring an older copy of the
+  registry could repeat one: that is the one way the identity could fail to change across a boot,
+  and it is accepted.
+- **The boot record**, in the state directory, holds the boot identity the state was made in and
+  whether a recovery has vouched for it since. State is trusted only when the record names this
+  boot and is vouched; otherwise it is untrusted because the host restarted, because the state was
+  made and no recovery has completed on it (or was never made), or because the filesystem cannot
+  identify a boot or the record cannot be read.
+- **The record is replaced whole and never synced.** It is written to a fresh staged file and
+  renamed over itself, so a reader sees one record or the other. A restart is the only thing that
+  could lose an unsynced write, and a restart makes the record untrusted whatever it says.
+- **Reading the standing changes nothing.** The record is written only under writer exclusion --
+  remade untrusted by the acquisition that finds it from another boot, and vouched by a completed
+  recovery -- so the two writers are serialized and a slow remaker cannot undo a vouching. A
+  record that belongs to a boot is never deleted: a later record carries its boot identity instead,
+  so nothing written in this boot needs clearing after the next.
+
+A revert-probe that ignored the boot identity in the record failed the case of a vouched record
+surviving a crash.
+
+[^m6-3]: `M6-3` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## The modification count is one record, carrying its boot and its standing, 2026-11-13
+
+The file-based implementation publishes the modification count as canopy's design states it (canopy's
+DESIGN-NOTES.md, "The modification count, the generation and reads, modelled in
+`Coordination.tla`")[^m6-4], with these choices of its own:
+
+- **The record carries what a sample needs, so a sample is one read.** It holds the value, the boot
+  it was published in and whether a recovery has vouched for the state. A sample reads it once and
+  reports the value, made odd unless the record is vouched and from this boot; a missing or
+  unreadable record samples odd. Reading the boot record beside it would assemble a sample from two
+  separately published parts, which the contract forbids.
+- **Published whole, never synced.** A fresh file staged beside the record is renamed over it, so a
+  sampler sees the previous record or the new one, and a publisher killed before its rename leaves
+  the previous one. A staged file a failed publication leaves is removed when it can be. A restart is
+  the only thing an unsynced publication could lose, and a restart makes the record untrusted, so
+  odd, whatever it holds. Windows and Linux both let the record be replaced while a reader has it
+  open, and that reader reads the record it opened.
+- **Nothing caches a sample**, so none is stale; the cost is a read per sample, which the poller of
+  the notification (`CountNotification`) bounds.
+- **Raising belongs to the hold.** The outermost modification raises an even count to odd before the
+  caller's first effect and remembers the value, closing it one higher on a settled end; nested
+  modifications publish nothing. A count already odd -- a dead holder's, or untrusted -- is left
+  odd through the modification, so only a completed recovery lowers it. A failed opening
+  publication opens no modification and changes nothing; a failed closing publication, and an
+  unresolved end, set the fence and leave the count odd. The holder's own operations are built here
+  and reached only through `ExclusionHold`, which writer exclusion supplies.
+- **The orderings the model assumes are the operating system's.** A raise is a rename that has
+  returned before the holder's next effect is made, and a sample is a read made in the sampler's own
+  order; both rest on one host's filesystem showing every process a completed rename at once, which
+  the local filesystems the design is limited to provide.
+
+Revert-probes: a sample that ignored the standing failed the cases of a count never published, one
+no recovery vouched for, a record that is not one, and a sample after a restart; a failed closing
+publication that set no fence failed its case.
+
+[^m6-4]: `M6-4` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## Writer exclusion is one lock file, held whole, in the participant's table of holds, 2026-11-13
+
+The file-based implementation's writer exclusion is an exclusive `Vfs::lock` on the whole of the
+state's exclusion lock file[^m6-5]:
+
+- **Every guard is its own holder**, so it excludes another participant in this process exactly as
+  it excludes one in another process, and the contract's "every thread of every process" is the
+  lock's own property rather than an in-process gate laid over it. It waits without promising an
+  order among waiters, and the operating system releases it when its holder's process dies.
+- **Not re-entrant.** A participant that holds it and asks again waits for itself, or is refused
+  with `WouldWait`; canopy acquires it once, in its outermost write.
+- **A hold outlives the borrow it was taken through.** A participant's table of holds is shared by
+  every handle on it, so a hold carries a handle of its own and can be held as `'static`, as
+  `Box<dyn ExclusionHold>` must be; abandoning the participant releases the lock even while the
+  hold is still in hand, and dropping that hold afterwards releases nothing another holder has.
+- **The hold's bookkeeping is the next layer.** The ownership record, the fence, the generation and
+  raising the count all happen under this lock, in the `ExclusionHold` built over it, which is what
+  joins `WriterExclusion` to `Coordination`; the lock and its release are what this layer
+  guarantees, and its cases are run on the lock directly.
+
+A revert-probe that kept the lock after its hold was dropped left the waiting cases waiting until
+the harness's own timeout ended the run.
+
+[^m6-5]: `M6-5` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## The hold of writer exclusion keeps its bookkeeping in files replaced whole, 2026-11-13
+
+The file-based implementation's `ExclusionHold` keeps the ownership record, the fence, the
+generation and the boot record under the exclusion lock, as canopy's design states them (canopy's
+DESIGN-NOTES.md, "Writer exclusion and its ownership record, modelled in `Coordination.tla`")[^m6-6],
+and joins `WriterExclusion` to `Coordination`:
+
+- **Acquiring, in order:** take the lock; if an ownership record is there, its holder died, so set
+  the fence; read the trust, and remake the boot record untrusted if it is missing, unreadable or
+  from another boot; read the generation and write it advanced; write this holder's record last. A
+  death or failure at any step before the last leaves the previous record for the next acquirer,
+  and the lock is released. The fence is a file whose existence is the fence; the record, the
+  generation and the boot record are replaced whole, and none is synced.
+- **Releasing:** remove the record while the lock is held, then drop the lock, whether by `release`
+  or by dropping the hold. A removal that fails still drops the lock and is reported by `release`;
+  the record left behind costs the next acquirer a recovery, never correctness. An abandoned
+  participant's hold does no bookkeeping: the record stays, as a death leaves it.
+- **An unreadable generation is refused within a boot and read as zero across one.** Within a boot
+  the generation is replaced whole, so an unreadable one means something else wrote it, and
+  acquisition is refused rather than issue a generation a participant may remember. A power loss
+  can leave an unsynced file empty, and no participant from before the restart remembers anything,
+  so the acquisition that finds the state from another boot reads an unreadable generation as zero.
+- **What recovery being required refuses.** An ordinary modification is refused while what the
+  acquisition found requires recovery, or once this hold has set the fence itself by an unresolved
+  end or a failed closing publication. A recovery modification is not refused.
+  `complete_recovery`, refused while a modification is open, publishes a vouched even count, records
+  the boot vouched and removes the fence, after which the hold's ordinary modifications are allowed.
+  A death part-way through it leaves this holder's record, so the next acquirer sets the fence
+  again.
+
+Revert-probes: dropping the lock before removing the record made a live holder reported dead in the
+case of two holders releasing and acquiring in turn, and an acquirer that did not set the fence
+failed the case of the fence outliving the finder's clean release, with the other death cases.
+
+[^m6-6]: `M6-6` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## The admission gate and the tiers are locks in two files, held in the participant's table of holds, 2026-11-13
+
+The file-based implementation's admission gate is a lock on the whole of the state's gate lock
+file, and its reader and writer tiers are a byte each of its tiers lock file, all taken with
+`Vfs::lock` and kept in the participant's table of holds, as writer exclusion's lock is[^m6-7]:
+
+- **Ordinary admission** takes the gate shared, then the reader tier shared, releases the gate,
+  then takes the writer tier shared for a writer. A step refused or failed releases what the
+  attachment had taken, so nothing is held. An attachment holds the gate only while it attaches.
+- **An upgrade** releases its shared tiers first, so it never waits for the gate while holding a
+  tier, then takes the gate exclusive, the reader tier exclusive when the upgrade is unsafe for
+  readers, and the writer tier exclusive, in that order. A reader-safe upgrade releases the gate
+  once it holds the writer tier, so readers attach and new writers wait on the writer tier; an
+  unsafe one keeps the gate until it is dropped, so arrivals wait at the gate, holding nothing,
+  rather than inside it holding the gate shared. A refused or failed upgrade leaves the participant
+  detached.
+- **The reader tier before the writer tier is what makes the order deadlock-free.** A writer that
+  passed the gate before the upgrader holds the reader tier shared and may be waiting for the
+  writer tier; an upgrader that took the writer tier first would wait for that writer's reader tier
+  while the writer waited for its writer tier.
+- **A death releases every lock**, the gate included, since the operating system releases a dead
+  process's locks; abandoning the participant does the same in this process.
+- **The registry entry goes first.** An attachment's or an upgrade's registry entry is released
+  before its tiers, at a drop and at the upgrade's conversion alike.
+
+Revert-probes: taking the writer tier before the reader tier left the case of a writer waiting
+inside the gate and an unsafe upgrader deadlocked until the case's own wait ran out; keeping the
+gate after the reader tier was taken failed the case of the gate being free after attachment and
+the safe upgrade's case; keeping the gate after a safe upgrade, or releasing it after an unsafe
+one, failed the case that only the unsafe upgrade keeps it; and an upgrade that kept its shared
+tiers waited on itself.
+
+[^m6-7]: `M6-7` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## The registry is a pair of lock bytes and a record file per entry, every lock taken as a try, 2026-11-13
+
+The file-based implementation's registry, as canopy's design states it (canopy's DESIGN-NOTES.md,
+"The registry of attached handles, modelled in `Coordination.tla`")[^m6-8], joining `Registry` to
+`Coordination` and `Registrant` to `Attachment` and `Upgrade`:
+
+- **An entry is two bytes of the registry lock file and one record file.** The first byte is the
+  claim lock, the second the liveness lock; the record holds the token, the tiers and the caller's
+  payload, and is read and written only under the claim lock. There are 64 entries.
+- **Registering** tries each entry's claim lock, then its liveness lock exclusively, moving on from
+  an entry where either is held; writes the record; and lets go of the claim lock, keeping the
+  liveness lock for as long as the registration lasts. Registering again rewrites the record under
+  the claim lock with the same token, and is refused with `WouldWait` while a listing has it, the
+  record keeping its previous payload.
+- **Leaving** claims the entry if it can and removes the record, then releases the liveness lock.
+  An owner that finds the claim lock held releases only the liveness lock, which is what makes the
+  entry dead. It happens before the tiers are released, at a drop and at an upgrade's conversion;
+  an upgrade registers afresh once it holds its tiers, with a new token.
+- **Listing** claims each entry, probes its liveness lock shared, and reads the record only when
+  the probe is refused. An entry it cannot claim, or a held entry whose record cannot be read, is
+  counted unknown. It takes no tier and needs no attachment.
+- **The overflow record names the boot it was written in.** A participant that finds every entry
+  held writes it, replacing it whole, and a listing reports that it may be incomplete while the
+  record names this boot -- or cannot be read, or the boot cannot be identified. A host restart
+  therefore discards it without anyone removing it.
+- **A token is this process's identifier, the time its first token was made, and a count**, so two
+  registrations in one process differ by the count and two processes by their identifier or, when
+  an identifier is reused, by the time.
+
+Revert-probes: a listing that did not claim the entry it inspected reported a dead token live
+beside a reuser's liveness lock, in the paused reuser's case, the case of a listing run while a
+reuser writes its token, and the churning case; a registrant that let go of the claim lock before
+writing its token failed the case of the listing run during that write; leaving the registry after
+the tiers failed the case that an entry is cleared while its tiers are held; an upgrade that kept
+its entry through the conversion failed the conversion's case; and a listing that ignored the
+overflow record failed both overflow cases.
+
+[^m6-8]: `M6-8` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+
+## One poller per process samples the count for every registration, each with its own backoff, 2026-11-13
+
+The file-based implementation's `CountNotification`, as canopy's design states it (canopy's
+DESIGN-NOTES.md, "A change to the coordination state is delivered as a notification")[^m6-9],
+joining `CountNotification` to `Coordination`:
+
+- **One poller thread per process**, started by the first registration and kept for the life of
+  the process, serves every registration on every root. It waits without a timeout, and samples
+  nothing, while no registration is outstanding.
+- **Each registration has a backoff of its own**: sampled at once when it arrives, then after 1 ms,
+  doubling to 32 ms. A shared backoff would let every new registration make all the others sample
+  faster, which in a busy process means never backing off. The ceiling is set against a write
+  holding the count odd for tens of milliseconds.
+- **Registrations through one participant that are due together are sampled once.**
+- **A registration rings once and is gone**, when its count differs from what it sampled, when its
+  deadline passes, or when its count cannot be sampled -- so the caller, sampling again, meets the
+  failure itself. A dropped notice withdraws a registration that has not yet been taken to ring.
+- **Rings run on the poller's thread, outside its lock, each under `catch_unwind`**, so a ring that
+  panics costs its own registration and not the poller every other registration in the process
+  depends on.
+- **The poller's waits are condition-variable waits with a timeout.** They are not among the timer
+  entry points the workspace's lint governs, and they are the poller's purpose rather than a delay.
+
+Revert-probes: a fixed interval with no backoff exceeded the sample bound; a ring decided without
+the count failed every case that rings on a change; a withdrawal that did nothing rang a dropped
+notice; a registration kept after it rang went on sampling, which the case of no sampling after a
+ring caught once it held its notice past the ring; and a ring run without `catch_unwind` killed the
+poller and failed the panicking ring's case.
+
+[^m6-9]: `M6-9` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)

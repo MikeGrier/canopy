@@ -11,7 +11,7 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 documentation = "https://docs.rs/acadia"
-description = "The filesystem seam under canopy: a specified Vfs contract with OS, in-memory, and fault-injecting backends."
+description = "The filesystem seam under canopy -- a specified Vfs contract with OS, in-memory, and fault-injecting backends -- and the coordination layer above it."
 exclude = ["DESIGN-NOTES.md"]
 
 [dependencies]
@@ -34,9 +34,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(canopy_loom)"] }
 libc = "0.2.176"
 
 # For `LockFileEx`/`UnlockFileEx` behind `OsFs::try_lock`; `lock_exclusive` needs none, since
-# its exclusion is the share mode.
+# its exclusion is the share mode. The Wdk and kernel features give the layout of the data the
+# kernel shares with every process, whose boot sequence number is `OsFs::boot_identity`.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Wdk_System_SystemServices", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel"] }
 # The event behind `EventSignal`, and the platform's wait on it.
 win-sync-sys = "0.1.0"
 # The thread-pool wait behind `EventSignal::watch`; 0.4.1 is the first that takes a wait-only handle.

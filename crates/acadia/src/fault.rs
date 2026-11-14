@@ -91,6 +91,9 @@ pub enum FaultOp {
     Lock,
     PublishNew,
     OpenOutput,
+    /// [`Vfs::boot_identity`], which names no path; a rule for it is matched against the empty
+    /// path.
+    BootIdentity,
 }
 
 /// A caller-supplied path test, for what [`PathMatcher`]'s vocabulary does not
@@ -850,5 +853,14 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     // What a wrapper is does not change what it wraps.
     fn is_os_filesystem(&self) -> bool {
         self.inner.is_os_filesystem()
+    }
+
+    // Forwarded explicitly for the same reason as `lock_exclusive`.
+    fn boot_identity(&self) -> VfsResult<Vec<u8>> {
+        let path = Path::new("");
+        match self.check(FaultOp::BootIdentity, path) {
+            Some(Fault::Fail(kind)) => Err(fault_err(kind, "boot_identity", path)),
+            _ => self.inner.boot_identity(),
+        }
     }
 }
