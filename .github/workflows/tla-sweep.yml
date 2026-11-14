@@ -3,8 +3,8 @@
 # The full TLA+ sweep and probe run. It runs when a push to main changes something it covers -- the
 # specs, their configurations and scenario tables, the tools, or this workflow, which pins TLC --
 # and on demand, so an idle repository runs nothing. A burst of pushes is collapsed: one run at a
-# time, and a newer pending run replaces an older one, so the run that starts covers the newest
-# commit.
+# time per branch, and a newer pending run replaces an older one of the same branch, so the run that
+# starts covers that branch's newest commit.
 name: TLA+ sweep
 
 on:
@@ -17,7 +17,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: tla-sweep
+  # Per ref, so a dispatch on another branch never replaces a pending run for main.
+  group: tla-sweep-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
