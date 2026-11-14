@@ -1286,8 +1286,10 @@ attached.
 | 7 `FNC` | B | finds a record under the lock, concludes its holder died, and sets the fence; A is alive | fence: set |
 | 8 `REC2` | B | replaces the record and is told recovery is required | record: B |
 
-[^mp-5]: `MP-5` in [CHECKLIST.md](CHECKLIST.md)
-[^mp-8]: `MP-8` in [CHECKLIST.md](CHECKLIST.md)
+[^mp-5]: `MP-5`, milestone M6, in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m6-1)
+    [completed 2026-11-13; `d7daade`]
+[^mp-8]: `MP-8`, item M6-5, in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m6-5)
+    [completed 2026-11-13; `d7daade`]
 
 ## The modification count, the generation and reads, modelled in `Coordination.tla`, 2026-11-10
 
