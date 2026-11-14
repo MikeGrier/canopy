@@ -72,6 +72,27 @@ pub trait Creation {
         maker: &mut dyn ArtifactMaker,
     ) -> CoordResult<Created>;
 
+    /// Records this implementation as the one that coordinates a root whose store the caller makes
+    /// or changes itself, which [`create`](Creation::create) cannot be given: the reservation alone,
+    /// with no artifact.
+    ///
+    /// It follows `create`'s steps for the reservation. A reservation is read; one naming another
+    /// implementation or recording other `inputs` refuses with
+    /// [`Reserved`](super::CoordError::Reserved). Then this implementation's creation exclusion is
+    /// taken, waiting for it, and the reservation read again under it. With none, one is published --
+    /// this implementation, `inputs` and `nonce` -- complete or not at all even across a power loss,
+    /// and made durable with its directory entry; a reservation published first by another creator
+    /// refuses this call. With one this call may resume, it is made durable in case its creator died
+    /// first, and the call returns [`Created::Resumed`]. The exclusion is released on return, so the
+    /// caller's own exclusion of the root is what keeps others out while it makes what it makes.
+    /// What the root holds is not read: the caller knows what it is reserving.
+    ///
+    /// # Errors
+    ///
+    /// [`Reserved`](super::CoordError::Reserved) as above, which changes nothing in the root; a
+    /// failure of the filesystem, which a later call resumes.
+    fn reserve(&self, inputs: &[u8], nonce: CreationNonce) -> CoordResult<Created>;
+
     /// Confirms that the root is a store this implementation coordinates, before an open relies on
     /// it: the reservation must name this implementation, and the marker -- the last of the
     /// artifacts, named by `marker` -- must exist, and is made durable with its directory entry,

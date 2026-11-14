@@ -1565,3 +1565,187 @@ number while one is, a ring that panics, an abandoned participant, and notificat
 raised in another process ringing a registration in this one, on Windows and Linux. Revert-probes on
 the backoff, the count comparison, withdrawal, removal after ringing and the panic guard each failed
 their cases; the removal probe first survived, and the sampling case was extended to catch it.
+
+## Moved 2026-11-13 -- Naming the store (M7 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="m7-1"></a>M7-1 -- Rename "Shire" to "store" in code and live documentation, keeping the marker's file name and serialized key until the format advance. *(completed 2026-11-13 23:42:11 -05:00)*
+
+The decision is in [canopy's DESIGN-NOTES.md](DESIGN-NOTES.md) "A store is called a store". The
+rename covers `StoreId` and its accessors, `StoreError::EmptyStoreId` and `NotAStore` with their
+messages, the docs and comments that called a store root a Shire, komorebi's `store` field and
+`open_store` phase, every test root and identity, and the example in
+[copilot-instructions.md](../../.github/copilot-instructions.md). The genesis keeps serializing the
+identity as `shire_id`, by a serde rename on the one field, so a root written before and after
+opens in either build; a case reads the marker back to pin it, and removing the rename failed it
+and the cases that open markers carrying the key. The marker's file name is unchanged.
+
+### <a id="m7-2"></a>M7-2 -- Advance the genesis to version 7 as the barrier, migrate a version-6 root to the coordination layer's format, and name the marker `.store` with the identity under `store_id`. *(completed 2026-11-14 00:15:01 -05:00)*
+
+The decision is in [canopy's DESIGN-NOTES.md](DESIGN-NOTES.md) "A root is migrated to the coordination
+layer's format"; acadia's `Creation::reserve` is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md)
+"A root that already holds artifacts is reserved without creating any". Cases: init records the
+implementation before anything else, an interrupted init finished by an identical init and refused to
+any other, a root reserved for another creation, a root holding the previous marker, an unmigrated root
+refused by `open`, a migration that leaves the new names only and survives a power loss, other versions
+unsupported, a directory that is not a store, a held root, an interruption at each of ten durable
+steps with and without a power loss (`open` refused while the record exists, the next run finishing
+it), a forged record, a record for another implementation, a root reserved by another creation, a
+garbage record, the root read again under the lock by `migrate` and by `open`, and two migrations at
+once. Revert-probes that each failed their cases: publishing the new marker before the implementation
+record, removing the old marker before publishing the new one, not writing the record, accepting any
+implementation on resume, not reading again under the lock, `open` ignoring the record, and `init`
+reserving after its trees; and acadia's four for `reserve`. Confirming the implementation record on
+`open` came with M7-3, which gave `open` a coordination handle.
+
+### <a id="m7-3"></a>M7-3 -- Move the modification count into the coordination state, add a lock-free read-only open, and test both across real processes on Windows and on Linux under WSL. *(completed 2026-11-14 01:03:02 -05:00)*
+
+The decision is in [canopy's DESIGN-NOTES.md](DESIGN-NOTES.md) "The modification count is the
+coordination state's". The engineer chose to pull the lock-free read-only open (`Store::open_read_only`,
+with `StoreError::ReadOnly`) into this item, because a reader in another process had no handle to
+sample through while `open` held the root's lock for the handle's lifetime. Cases, in process: a reader
+opening beside a writer and several readers beside one; reads of twelve documents and of a later
+version; the count a reader samples equal to the writer's after each of ten writes; odd at every
+namespace rename of one write; a snapshot taken inside a write contended and one after it settled; every
+write verb refused to a reader with the count, the documents and a pending publication unchanged; an
+unresolved transaction read odd by a reader that recovers nothing and settled by the next writer's open;
+lost coordination state read odd until a writer vouches for it; the count kept across opens; clones
+sharing one count; a directory that is not a store, a root no creation made, and a root not yet
+migrated each refused; and an opening and a closing raise that cannot be published. Across processes: a
+fixture writer (`canopy-store-writer`) read from another process while paused part-way through a write,
+after finishing, after being killed outright, by a successor writer process, by several readers, and
+over four successive writers, on Windows and on Linux under WSL. Revert-probes that each failed their
+cases: no raise in `begin_modification`, an unresolved end closed as settled, a closing raise that
+does not mark the handle, no completed recovery after `open`, no recovery purpose during `open`, no
+refusal in `writable`, no confirmation in the read-only open, and no completed recovery after `init`.
+
+### <a id="m7-4"></a>M7-4 -- Make `Store::open` change no store data and report what it found, with discovery, explicit resolving, an incremental resumable recovery run and a convenience that runs to completion. *(completed 2026-11-14 07:51:56 -05:00)*
+
+The decision is in [canopy's DESIGN-NOTES.md](DESIGN-NOTES.md) "Recovery is a run the caller drives";
+acadia's `RecoveryDiscovery` is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "Whether
+recovery is required is observed with the writer lock tried". The engineer set the shape: leftover
+work belongs to a hold of writer exclusion, not to an open handle, so the first opener, the nth
+opener and a quiesced store with several handles attached differ only in whether the coordination
+state can be vouched for; `Store::open` keeps acquiring exclusion until M9 makes acquisition per
+modification, changes no store data, and returns a `RecoveryNeed` beside the handle; *resolve*
+(`Store::resolve`) finishes the root's work list -- directory-sync record, publication, commit log
+and claims -- and completes the recovery when the state was vouched, and *recover* is the general
+case. Cases in acadia, on both implementations and every backend: a root with no state, a vouched
+store nobody holds, a live holder's transaction not reported, a dead holder's record reported,
+discovery leaving the next acquirer to be told and the generation unadvanced, a fence reported held
+and free and not cleared by asking, a recovery in progress reported until it completes, a holder
+asking about itself, untrusted state, a host restart, a discovery that finds the lock held not
+waiting, an abandoned participant and a failing filesystem. Cases in canopy: opening changing no
+store data and requiring recovery, a handle refusing writes and still reading until recovery
+completes, a root that needs none, recovery in place after an unresolved transaction, discovery by a
+reader and by a writer, a live writer's write never reported as abandoned, lost state reported and
+vouched for, an open reporting a failed transaction and resolving making it writable, resolving a
+begun transaction back and a prepared one forward, untrusted state and a host restart needing an
+explicit recovery, a clean root opening with nothing found, each kind of work left behind reported
+on opening without requiring recovery and finished by resolving, a pending publication reported and
+resolved, a reader and a writer inside its own operation reporting that they cannot tell, resolving
+a store with nothing left changing nothing, resolving untrusted state leaving recovery required, the
+phases and totals reported in order, a finished run unchanged by a step, a run stopped at each of ten
+points finished by a later run and by resolving after the next open, a run stopped before completion
+leaving the fence, a failed step retried, the directory-sync, publication and claims phases, a reader
+refused recovery, and clones sharing a recovery. Across processes, on Windows and on Linux under
+WSL: a live writer not reported, and a killed writer reported, its successor told on opening that
+the holder died and left work, and recovered. Revert-probes that each failed their cases: acadia's
+discovery trusting the record whatever the lock says, not reading the fence, clearing the fence, and
+ignoring the restart state; canopy's completion skipping the coordination state's recovery, a phase
+order that completes before the transactions, a step not marked recovery's, a directory record never
+emptied, a refusal never lifted, an open that does not mark the handle, resolving that never
+completes a vouched recovery, resolving that completes one nothing vouched for, an open that
+resolves, a work list that ignores claims, and resolving that keeps claims. The permission-table
+check is queued in M7-5 of [CHECKLIST.md](CHECKLIST.md).
+
+## Moved 2026-11-14 -- M7 permission-table coverage
+
+### <a id="m7-5"></a>M7-5 -- Check the M7 permission table for recovery-required and read-only handles, including repair and scrub verbs. *(completed 2026-11-14 08:02:51 -05:00)*
+
+The recovery-fenced writer case checks that `repair_blob`, `repair_pointer`, `scrub_content`, `repair_reported_damage` and `quiesce` return `StoreError::RecoveryRequired` without changing the store tree or commit log. The read-only write-refusal case covers direct blob and pointer repairs and retains its unchanged-state assertions. Post-migration and post-crash tests call `recover()` before relying on data from the reopened handle. The permission contract is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store" and "Recovery is a run the caller drives".
+
+### <a id="m7-6"></a>M7-6 -- A snapshot waits on the coordination notification and resamples until a store-option deadline, rather than retrying a fixed number of times after a yield. *(completed 2026-11-14 12:31:30 -05:00)*
+
+`Store::snapshot` samples the count, runs its read only against an even count, and accepts the run only if the count is unchanged afterwards. When a write is in progress it registers a notification on the sampled count and the one deadline, waits for it, and samples again; a notification is a hint, so every wake resamples. `StoreOptions::with_snapshot_timeout` sets the deadline, defaulting to `DEFAULT_SNAPSHOT_TIMEOUT` (one second), which exceeds a write's tail hold. `StoreError::SnapshotContended` reports a deadline that passed, with the number of reads run. A store that needs recovery is still refused at once. Tests cover a snapshot that waits out a held transaction and reads its final state, one held off past a short deadline reporting contention, and a snapshot disturbed by a writer on every read. The decisions are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract makes a caller wait" and "A change to the coordination state is delivered as a notification".
+
+### <a id="m7-7"></a>M7-7 -- A Windows count notification notified by the operating system through an oplock on the published count, with the poller kept as the fallback. *(completed 2026-11-14 12:50:28 -05:00)*
+
+A rename over the published count was confirmed to break a read-and-handle-caching oplock on it and not a read oplock; the break holds the renaming writer until the holder acknowledges it. The registration takes the lock on an overlapped handle bound to the thread pool, acknowledges the break in the completion, samples on pool timers until the count differs, and rings; the deadline is a pool timer, so a waiting registration holds no thread and samples nothing. Where the lock is not granted, the filesystem is not the system's, no count file exists yet, or the count moved while registering, the poller takes the registration. `FileFactory::polled` makes a factory poll alone, because a holder that cannot answer a break delays a writer. The conformance suite's notification cases run against both forms, and Windows cases show a break ringing a registration with no reads of the count while it waited and no poller thread, a writer not held up by registrations, no wake lost while a writer publishes without pause, and a notice dropped from its own ring. The decision is in [acadia's DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "A count notification on Windows is a lock the system breaks".
+
+## Moved 2026-11-14 -- Agent metadata and format barrier
+
+### <a id="m8-1"></a>M8-1 -- Add the genesis v8 agent and schema barrier, explicit agent inputs, identity refusal and resumable v6/v7 migration. *(completed 2026-11-14 13:13:57 -05:00)*
+
+`StoreOptions` requires an explicit `Agent`. Creation records its identifier, software version and
+description with the current and oldest-reader schemas of both layers in the version-8 marker.
+Both open modes refuse a different agent identity and leave recorded metadata unchanged. Creation
+reservations bind every agent input; migrations from versions 6 and 7 bind retries to the complete
+agent and target marker. A version-7 migration preserves the coordination reservation rather than
+trying to reserve the root again with different creation inputs. Tests exercise missing metadata,
+reader-floor validation, both source formats, changed-input refusal and migration interruptions
+with and without simulated power loss. The decision is in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "Agent metadata is behind the genesis version-8 barrier".
+
+## Moved 2026-11-14 -- Snapshot timer lint conformance
+
+### <a id="timer-lint-1"></a>TIMER-LINT-1 -- Apply the timer lint policy to snapshot waits. *(completed 2026-11-14 13:17:17 -05:00)*
+
+The production notification wait carries the call-local `expect` required by
+[clippy.toml](../../clippy.toml), explaining that the snapshot deadline bounds a lost notification.
+Snapshot tests use `test_timers::mpsc::recv_timeout`; the production wait and its deadline behavior
+are unchanged.
+
+## Moved 2026-11-14 -- Store attachment and schema admission
+
+### <a id="m8-2"></a>M8-2 -- Attach and admit every store handle under shared tiers, with a best-effort registry entry retained through its last clone. *(completed 2026-11-14 14:09:16 -05:00)*
+
+Creation and both open modes retain acadia attachments in clone-shared coordination state. The
+marker is reread and each schema layer is checked under the tiers, before registration and writer
+exclusion. Writers require the current schema; readers may speak any schema from the reader floor
+through current. Refused handles leave no entry or tier hold, and final teardown unregisters before
+releasing tiers. Registry payloads contain named encoding tags, the agent, spoken schemas, tiers,
+process ID and draining state; ordinary operations do not rewrite them.
+
+Tests exercise admission boundaries on both layers, registration and final-clone lifetime, marker
+changes during an admission wait, mandatory attachment failure, registry exhaustion, failed
+registration, and unregister-before-release ordering. Acadia's first-registration error path
+attempts to mark possible incompleteness without replacing the original error or invalidating
+the attachment. The decisions are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store admission holds
+shared tiers for the handle's lifetime" and acadia's [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md)
+"A failed first registration records possible incompleteness".
+
+## Moved 2026-11-14 -- Independent agent-version stamps
+
+### <a id="m8-3"></a>M8-3 -- Stamp the agent version after successful mutations with generation-keyed caching and an independent WriteOutcome stamp result. *(completed 2026-11-14 14:39:43 -05:00)*
+
+Public mutations return `WriteOutcome<T>`, retaining their successful value beside an independent
+agent-stamp result. Stamps run under the operation's exclusion, compare the recorded version using
+a generation-keyed cache, preserve other marker metadata, and advance the cache only after durable
+publication succeeds. A stamp failure does not fail the original mutation or require recovery.
+Rejected transactions and no-ops skip stamping; repairs, scrub documents, backlog work, resolving,
+recovery units and quiescence include successful maintenance work without extending scrub exclusion.
+Implicit settlement of a nonempty publication record is included.
+
+Tests cover successive agent versions, unchanged-version I/O avoidance, failed and rejected writes,
+publication failures before and after rename, durable retry, stale-generation reload, preservation
+of unrelated metadata, repairs and empty or productive maintenance runs. Existing test callers
+consume the new receipts, and the public example distinguishes the operation from its stamp.
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Successful mutations stamp the agent version
+independently".
+
+## Moved 2026-11-14 -- Store management and diagnosis
+
+### <a id="m8-4"></a>M8-4 -- Add fresh store properties, durable description updates, typed attachment listings and a tier-free diagnostic view. *(completed 2026-11-14 15:04:20 -05:00)*
+
+`Store::properties` reads the current marker and reports the agent, schemas, reader floors,
+coordination identity and store layout. `set_agent_description` durably changes only the description
+before independently stamping the agent version, and preserves retry durability after a visible
+rename whose directory sync failed. Read-only and recovery-fenced handles refuse the mutation.
+
+`attached_handles` decodes canopy's registry payload while retaining unknown entries and possible
+incompleteness. `DiagnosticView` offers properties, listings and recovery discovery without an agent,
+tier hold, registry entry or document access. Tests exercise these calls through writers, readers
+and diagnostic views, escaped payloads, unsupported payload versions, registry exhaustion, failures
+and a held admission gate. Compile-fail documentation excludes document reads and description
+mutation from the diagnostic surface. The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md)
+"Store management and diagnosis do not borrow document access".

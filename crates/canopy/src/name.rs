@@ -55,7 +55,7 @@ impl From<&NodePath> for NodePath {
 /// `_`, bounded length, no reserved device stems) with one addition: an interior `.`
 /// is accepted so a caller may carry a conventional extension. A leading or trailing
 /// `.` is rejected -- a leading dot would collide with canopy's own dotfiles
-/// (`.shire`, staging temps) and a trailing dot is silently stripped on Windows, so
+/// (`.store`, staging temps) and a trailing dot is silently stripped on Windows, so
 /// both would break the "one name, one on-disk entry" guarantee.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentName {

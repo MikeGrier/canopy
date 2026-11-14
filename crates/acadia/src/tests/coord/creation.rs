@@ -38,7 +38,7 @@ fn artifacts() -> Vec<&'static OsStr> {
     ARTIFACTS.iter().map(OsStr::new).collect()
 }
 
-fn nonce(n: u8) -> CreationNonce {
+pub(super) fn nonce(n: u8) -> CreationNonce {
     CreationNonce::from_bytes([n; 16])
 }
 
@@ -127,7 +127,7 @@ fn create_through(
     )
 }
 
-fn reservation(vfs: &dyn Vfs, root: &Path) -> Option<Reservation> {
+pub(super) fn reservation(vfs: &dyn Vfs, root: &Path) -> Option<Reservation> {
     let path = FileFactory::new()
         .participant(Arc::new(MemFs::new()), root)
         .layout()

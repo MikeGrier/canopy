@@ -13,7 +13,7 @@ use std::thread;
 
 use acadia::{MemFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreOptions, Swap,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreId, StoreOptions, Swap,
     SwapSet,
 };
 
@@ -69,11 +69,14 @@ fn planned_pairs_are_never_seen_torn_and_no_increment_is_lost() {
     let root = PathBuf::from("racing");
     vfs.create_dir_all(&root).unwrap();
     let mut generator = SplitMix64(seed);
-    let options = StoreOptions::with_nonce_source(move || {
-        let (high, low) = (generator.next_u64(), generator.next_u64());
-        Nonce::new(&format!("{high:016X}{low:016X}")).unwrap()
-    });
-    let config = GenesisConfig::new(ShireId::new("racing").unwrap(), 1);
+    let options = StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || {
+            let (high, low) = (generator.next_u64(), generator.next_u64());
+            Nonce::new(&format!("{high:016X}{low:016X}")).unwrap()
+        },
+    );
+    let config = GenesisConfig::new(StoreId::new("racing").unwrap(), 1);
     let store = Store::init(vfs, root, config, options).unwrap();
 
     let trace: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -84,7 +87,10 @@ fn planned_pairs_are_never_seen_torn_and_no_increment_is_lost() {
             let (store, trace) = (store.clone(), Arc::clone(&trace));
             scope.spawn(move || {
                 for step in 0..WRITES_EACH {
-                    let (seen, commit) = store
+                    let canopy::WriteOutcome {
+                        value: (seen, commit),
+                        ..
+                    } = store
                         .plan_and_apply(|view| {
                             let left = value(view.body(node("pair"), &doc("left")).unwrap());
                             let right = value(view.body(node("pair"), &doc("right")).unwrap());

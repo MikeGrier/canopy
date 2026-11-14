@@ -3,6 +3,8 @@
 
 //! The store's error vocabulary and its conversions from the layers below.
 
+use acadia::coord::CoordError;
+
 use super::*;
 
 /// A failure from a [`Store`] layout operation ([`Store::init`] / [`Store::open`]).
@@ -30,14 +32,34 @@ pub enum StoreError {
         /// The first non-dotfile entry found.
         entry: OsString,
     },
-    /// `init` refused a root that already contains a [`.shire`](MARKER_NAME)
+    /// `init` refused a root that already contains a [`.store`](MARKER_NAME)
     /// marker -- it is already a store.
     AlreadyInitialized {
         /// The root that already held a marker.
         root: PathBuf,
     },
-    /// A [`ShireId`] was built from the empty string.
-    EmptyShireId,
+    /// A [`StoreId`] was built from the empty string.
+    EmptyStoreId,
+    /// An attaching handle speaks a schema its access mode does not admit.
+    SchemaMismatch {
+        /// The layer that refused admission.
+        layer: SchemaLayer,
+        /// The schema spoken by this handle.
+        spoken: u32,
+        /// The layer's recorded current schema.
+        current: u32,
+        /// The layer's oldest admissible reader schema.
+        oldest_reader: u32,
+        /// Whether the handle requested write access.
+        writable: bool,
+    },
+    /// The version-independent agent identity differs from the root's recorded owner.
+    AgentMismatch {
+        /// The identity recorded in the root.
+        recorded: String,
+        /// The identity supplied by the opener.
+        requested: String,
+    },
     /// A blob replica count that is not positive and no greater than
     /// [`MAX_REPLICA_COUNT`] was requested (`D316`, `D320`).
     ///
@@ -123,9 +145,9 @@ pub enum StoreError {
         /// How many replicas held a valid entry that was not part of any majority.
         disagreeing: usize,
     },
-    /// `open` found no [`.shire`](MARKER_NAME) marker at the root: it is not a
+    /// `open` found no [`.store`](MARKER_NAME) marker at the root: it is not a
     /// store.
-    NotAShire {
+    NotAStore {
         /// The root that carried no marker.
         root: PathBuf,
     },
@@ -134,7 +156,7 @@ pub enum StoreError {
     /// Named rather than folded into [`StoreError::Vfs`] because it is the one
     /// failure here a caller can act on without a code change: nothing is
     /// corrupt or misconfigured, and the usual cause is a second daemon pointed
-    /// at the same Shire.
+    /// at the same store.
     RootInUse {
         /// The root that is already held.
         root: PathBuf,
@@ -147,16 +169,34 @@ pub enum StoreError {
         /// The version this build writes and understands ([`GENESIS_FORMAT_VERSION`]).
         expected: u32,
     },
-    /// `open` read a marker written by the genesis version [`Store::migrate`] advances, so the
-    /// root must be migrated before this build opens it.
+    /// `open` found a root that must be migrated before this build opens it: its marker is the one
+    /// [`Store::migrate`] advances, or a migration of it was begun and not finished.
     MigrationRequired {
         /// The store root.
         root: PathBuf,
-        /// The version found in the marker ([`MIGRATABLE_FORMAT_VERSION`]).
+        /// The version the root is at ([`MIGRATABLE_FORMAT_VERSION`]).
         found: u32,
         /// The version this build writes and understands ([`GENESIS_FORMAT_VERSION`]).
         expected: u32,
     },
+    /// A migration was begun on this root with other inputs than this call's, so finishing it
+    /// would mix two sets in one root. Nothing is changed.
+    MigrationInputsDiffer {
+        /// The store root.
+        root: PathBuf,
+        /// The coordination implementation the migration in progress records.
+        recorded: String,
+        /// The coordination implementation this call asked for.
+        requested: String,
+    },
+    /// The root's coordination implementation is already recorded, by another implementation or for
+    /// another creation or migration, so this one cannot record itself. Nothing is changed.
+    RootReserved {
+        /// The store root.
+        root: PathBuf,
+    },
+    /// The coordination layer failed.
+    Coordination(CoordError),
     /// The publication record held a complete line that is not a record this store writes, so
     /// the publication it may name cannot be finished.
     MalformedPublicationRecord {
@@ -225,10 +265,16 @@ pub enum StoreError {
         /// The staged file whose contents changed.
         staged: PathBuf,
     },
-    /// A transaction through some handle to this store may have passed its commit point
-    /// without completing, so every handle refuses writes until the store is reopened and
-    /// recovery has finished it.
+    /// This handle needs recovery before it may write: a transaction through some handle to this
+    /// store may have passed its commit point without completing, or opening found the
+    /// coordination state requiring it. Every handle refuses writes until [`Store::recover`]
+    /// has finished it.
     RecoveryRequired {
+        /// The store root.
+        root: PathBuf,
+    },
+    /// A write was asked of a store opened only to read. Nothing is changed.
+    ReadOnly {
         /// The store root.
         root: PathBuf,
     },
@@ -236,9 +282,9 @@ pub enum StoreError {
     InvalidPointer(PointerError),
     /// A verb that mints its own nonce was called on a store opened without a nonce source.
     NoNonceSource,
-    /// A snapshot's read was disturbed by a modification on every attempt it was allowed.
+    /// A snapshot could not get an undisturbed read before its deadline passed.
     SnapshotContended {
-        /// How many times the read ran.
+        /// How many times the read ran before the deadline passed.
         attempts: usize,
     },
     /// An operation's nonce is already claimed -- by an operation in flight, or one that left
@@ -252,6 +298,21 @@ pub enum StoreError {
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            StoreError::SchemaMismatch {
+                layer,
+                spoken,
+                current,
+                oldest_reader,
+                writable,
+            } => write!(
+                f,
+                "{layer:?} schema {spoken} is not admitted for {} access (current {current}, oldest reader {oldest_reader})",
+                if *writable { "write" } else { "read" }
+            ),
+            StoreError::AgentMismatch {
+                recorded,
+                requested,
+            } => write!(f, "store belongs to agent {recorded:?}, not {requested:?}"),
             StoreError::Vfs(e) => write!(f, "store filesystem error: {e}"),
             StoreError::Json(e) => write!(f, "store genesis marker is not valid JSON: {e}"),
             StoreError::RootNotFound { root } => {
@@ -276,10 +337,10 @@ impl fmt::Display for StoreError {
             ),
             StoreError::AlreadyInitialized { root } => write!(
                 f,
-                "cannot initialize a store: {} is already a Shire",
+                "cannot initialize a store: {} is already a store",
                 root.display()
             ),
-            StoreError::EmptyShireId => write!(f, "a Shire identity must not be empty"),
+            StoreError::EmptyStoreId => write!(f, "a store identity must not be empty"),
             StoreError::InvalidBlobReplicaCount { count } => {
                 write!(
                     f,
@@ -328,10 +389,10 @@ impl fmt::Display for StoreError {
                 "no majority names {document} under {node} \
                  ({missing} missing, {rejected} rejected, {disagreeing} disagreeing)"
             ),
-            StoreError::NotAShire { root } => {
+            StoreError::NotAStore { root } => {
                 write!(
                     f,
-                    "{} is not a Shire (no {MARKER_NAME} marker)",
+                    "{} is not a store (no {MARKER_NAME} marker)",
                     root.display()
                 )
             }
@@ -356,6 +417,23 @@ impl fmt::Display for StoreError {
                  with Store::migrate before it is opened",
                 root.display()
             ),
+            StoreError::MigrationInputsDiffer {
+                root,
+                recorded,
+                requested,
+            } => write!(
+                f,
+                "a migration of {} was begun for coordination implementation {recorded} and cannot \
+                 be finished for {requested}",
+                root.display()
+            ),
+            StoreError::RootReserved { root } => write!(
+                f,
+                "the coordination implementation of {} is already recorded for another \
+                 implementation, creation or migration",
+                root.display()
+            ),
+            StoreError::Coordination(e) => write!(f, "store coordination error: {e}"),
             StoreError::MalformedPublicationRecord { root, detail } => write!(
                 f,
                 "store at {} has a publication record this build did not write: {detail}",
@@ -393,7 +471,12 @@ impl fmt::Display for StoreError {
             StoreError::InvalidPointer(e) => write!(f, "refused to write a pointer: {e}"),
             StoreError::RecoveryRequired { root } => write!(
                 f,
-                "store at {} has an unfinished transaction; reopen it to recover",
+                "store at {} needs recovery before it can be written",
+                root.display()
+            ),
+            StoreError::ReadOnly { root } => write!(
+                f,
+                "store at {} was opened only to read and cannot be written",
                 root.display()
             ),
             StoreError::StagedReplicaMismatch { staged } => write!(
@@ -406,7 +489,7 @@ impl fmt::Display for StoreError {
             }
             StoreError::SnapshotContended { attempts } => write!(
                 f,
-                "a snapshot was disturbed by a concurrent modification on all {attempts} attempts"
+                "a snapshot's deadline passed before an undisturbed read after {attempts} attempts"
             ),
             StoreError::NonceCollision { nonce } => {
                 write!(f, "nonce {} is already claimed", nonce.as_str())
@@ -421,6 +504,7 @@ impl std::error::Error for StoreError {
             StoreError::Vfs(e) => Some(e),
             StoreError::Json(e) => Some(e),
             StoreError::CommitLog(e) => Some(e),
+            StoreError::Coordination(e) => Some(e),
             StoreError::InvalidPointer(e) => Some(e),
             _ => None,
         }
@@ -442,5 +526,11 @@ impl From<serde_json::Error> for StoreError {
 impl From<CommitLogError> for StoreError {
     fn from(e: CommitLogError) -> Self {
         StoreError::CommitLog(e)
+    }
+}
+
+impl From<CoordError> for StoreError {
+    fn from(e: CoordError) -> Self {
+        StoreError::Coordination(e)
     }
 }

@@ -601,7 +601,7 @@ fn recovery_rolls_forward_a_prepared_node_removal() {
     // Crash point: prepared, but the directory is still there.
     assert!(node_exists(&vfs, &store, &node));
 
-    let recovered = reopen(&vfs, store).unwrap();
+    let recovered = reopen_settled(&vfs, store);
     assert!(
         !node_exists(&vfs, &recovered, &node),
         "the prepared node removal is rolled forward"

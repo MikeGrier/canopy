@@ -98,7 +98,7 @@ impl FileCoordination {
         }
     }
 
-    fn fence_is_set(&self) -> CoordResult<bool> {
+    pub(super) fn fence_is_set(&self) -> CoordResult<bool> {
         Ok(self.vfs().exists(&self.layout().fence())?)
     }
 

@@ -116,7 +116,7 @@ fn dot_and_dotdot_are_refused_as_relative_rather_than_as_bad_characters() {
     // reported as its own error because a caller who writes `../SIBLING` has assumed
     // traversal exists, and an "invalid character" message would send them hunting a
     // quoting bug instead.
-    match NodePath::parse("TICKETS/../SHIRE") {
+    match NodePath::parse("TICKETS/../STORE") {
         Err(NodePathError::RelativeComponent { index, component }) => {
             assert_eq!(index, 1);
             assert_eq!(component, "..");
@@ -347,7 +347,7 @@ fn contains_is_component_wise_not_a_string_prefix() {
     assert!(!tickets.contains(&path("TICKETSX/AB")));
 
     assert!(!path("TICKETS/AB").contains(&tickets));
-    assert!(!path("SHIRE").contains(&path("TICKETS")));
+    assert!(!path("STORE").contains(&path("TICKETS")));
 }
 
 #[test]
@@ -363,7 +363,7 @@ fn relative_path_is_one_directory_per_component() {
 fn ordering_is_component_wise_so_a_sort_groups_siblings_under_their_parent() {
     let mut paths = [
         path("TICKETS/AB/B"),
-        path("SHIRE"),
+        path("STORE"),
         path("TICKETS"),
         path("TICKETSX"),
         path("TICKETS/AB"),
@@ -375,7 +375,7 @@ fn ordering_is_component_wise_so_a_sort_groups_siblings_under_their_parent() {
     assert_eq!(
         rendered,
         [
-            "SHIRE",
+            "STORE",
             "TICKETS",
             "TICKETS/AA",
             "TICKETS/AB",

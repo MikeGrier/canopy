@@ -22,17 +22,20 @@ use std::sync::Arc;
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
-    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, ShireId, Store,
-    StoreError, StoreOptions, Swap, SwapSet,
+    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, Store,
+    StoreError, StoreId, StoreOptions, Swap, SwapSet,
 };
 
 /// Options drawing nonces `T1`, `T2`, ... in the order transactions run.
 fn options() -> StoreOptions {
     let mut n: u64 = 0;
-    StoreOptions::with_nonce_source(move || {
-        n += 1;
-        Nonce::new(&format!("T{n}")).unwrap()
-    })
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || {
+            n += 1;
+            Nonce::new(&format!("T{n}")).unwrap()
+        },
+    )
 }
 
 /// The document written by a transaction that completes.
@@ -75,12 +78,12 @@ fn store_faulting_log_append(k: u32) -> (Arc<dyn Vfs>, PathBuf, Store, FaultGate
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),
         root.clone(),
-        GenesisConfig::new(ShireId::new("cvs16-shire").unwrap(), 3),
+        GenesisConfig::new(StoreId::new("cvs16-store").unwrap(), 3),
         options(),
     )
     .expect("init");
@@ -131,7 +134,9 @@ fn a_rolled_back_transaction_leaves_no_blob_behind() {
     let (vfs, root, store, gate) = store_faulting_log_append(2);
     store
         .apply_transaction(&swaps(settled(), "v1"))
-        .expect("the first transaction commits");
+        .expect("the first transaction commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     // From here the next transaction's `begin` lands but its `prepare` does not.
     gate.open();
@@ -150,8 +155,12 @@ fn a_rolled_back_transaction_leaves_no_blob_behind() {
 
     gate.close();
     drop(store);
-    let reopened =
-        Store::open(vfs.clone(), root, options()).expect("reopen rolls the transaction back");
+    let (reopened, _) = Store::open(vfs.clone(), root, options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen rolls the transaction back")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert!(
         blobs(&vfs, &reopened, &abandoned()).is_empty(),
@@ -174,7 +183,9 @@ fn a_rollback_keeps_the_blob_the_namespace_still_points_at() {
     let (vfs, root, store, gate) = store_faulting_log_append(2);
     store
         .apply_transaction(&swaps(settled(), "v1"))
-        .expect("the first transaction commits");
+        .expect("the first transaction commits")
+        .agent_stamp
+        .expect("agent version stamp");
     let before = blobs(&vfs, &store, &settled());
 
     gate.open();
@@ -184,8 +195,12 @@ fn a_rollback_keeps_the_blob_the_namespace_still_points_at() {
 
     gate.close();
     drop(store);
-    let reopened =
-        Store::open(vfs.clone(), root, options()).expect("reopen rolls the transaction back");
+    let (reopened, _) = Store::open(vfs.clone(), root, options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen rolls the transaction back")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         resolved(&reopened, &settled()).as_deref(),
@@ -211,7 +226,12 @@ fn a_rolled_back_transaction_leaves_no_staging_in_any_tree() {
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root.clone(), options()).expect("reopen rolls back");
+    let (reopened, _) = Store::open(vfs.clone(), root.clone(), options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen rolls back")
+        .agent_stamp
+        .expect("agent version stamp");
 
     for index in 0..reopened.pointer_replica_count() {
         assert!(
@@ -254,8 +274,12 @@ fn a_transaction_that_dies_before_ingesting_anything_rolls_back_cleanly() {
 
     gate.close();
     drop(store);
-    let reopened =
-        Store::open(vfs.clone(), root, options()).expect("reopen rolls back an empty transaction");
+    let (reopened, _) = Store::open(vfs.clone(), root, options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen rolls back an empty transaction")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert!(blobs(&vfs, &reopened, &abandoned()).is_empty());
     assert_eq!(resolved(&reopened, &abandoned()), None);

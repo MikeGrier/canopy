@@ -26,16 +26,19 @@ use std::sync::Arc;
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
     Artifact, BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash,
-    Pointer, ShireId, Store, StoreOptions, Swap, SwapSet,
+    Pointer, Store, StoreId, StoreOptions, Swap, SwapSet,
 };
 
 /// Options drawing nonces `T1`, `T2`, ... .
 fn options() -> StoreOptions {
     let mut n: u64 = 0;
-    StoreOptions::with_nonce_source(move || {
-        n += 1;
-        Nonce::new(&format!("T{n}")).unwrap()
-    })
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || {
+            n += 1;
+            Nonce::new(&format!("T{n}")).unwrap()
+        },
+    )
 }
 
 /// Renames to interrupt, one per run.
@@ -90,9 +93,9 @@ fn store_faulting_rename(k: u32) -> (Arc<dyn Vfs>, Store, FaultGate) {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
-    let config = GenesisConfig::new(ShireId::new("cvs14-shire").unwrap(), 3);
+    let config = GenesisConfig::new(StoreId::new("cvs14-store").unwrap(), 3);
     let store = Store::init(vfs.clone(), root, config, options()).expect("init");
     (vfs, store, gate)
 }
@@ -189,19 +192,21 @@ fn a_committed_transaction_leaves_each_document_reachable_through_its_pointer() 
     // namespace entry, the entry names a blob, and the blob is the body that was written.
     // Without this, the test above is satisfied by a store that writes no pointers at all.
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs,
         root,
-        GenesisConfig::new(ShireId::new("cvs14-shire").unwrap(), 3),
+        GenesisConfig::new(StoreId::new("cvs14-store").unwrap(), 3),
         options(),
     )
     .expect("init");
 
     store
         .apply_transaction(&swaps())
-        .expect("an uncontended transaction commits");
+        .expect("an uncontended transaction commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     for (node, document, body) in targets() {
         let read = store.read_pointer(&node, &document).expect("a pointer");
@@ -225,12 +230,12 @@ fn a_rejected_transaction_writes_neither_blob_nor_pointer() {
     // never happened. Nothing collects those blobs until `CVS-15`, so the cheap guarantee is
     // that they are never created.
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),
         root,
-        GenesisConfig::new(ShireId::new("cvs14-shire").unwrap(), 3),
+        GenesisConfig::new(StoreId::new("cvs14-store").unwrap(), 3),
         options(),
     )
     .expect("init");

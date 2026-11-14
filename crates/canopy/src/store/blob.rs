@@ -107,7 +107,7 @@ impl Store {
         }
 
         // Phase 3: every replica is staged and durable; commit them by rename.
-        let modifying = self.begin_modification();
+        let modifying = self.begin_modification()?;
         for index in 0..replicas {
             let shard = self.blob_shard_dir(index, path_hash);
             self.create_dir_durably(&shard)?;
@@ -305,7 +305,7 @@ impl Store {
         let owner = path_hash.render();
         let survivors: Vec<String> = keep.iter().map(ContentDigest::to_base32).collect();
         let mut removed = 0;
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
 
         for index in 0..self.genesis.blob_replica_count {
             let shard = self.blob_shard_dir(index, path_hash);

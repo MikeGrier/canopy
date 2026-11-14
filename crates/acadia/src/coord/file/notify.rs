@@ -237,6 +237,11 @@ impl CountNotification for FileCoordination {
         ring: Box<dyn FnOnce() + Send>,
     ) -> CoordResult<Box<dyn Notice>> {
         self.alive()?;
+        #[cfg(windows)]
+        let ring = match super::oplock::register(self, sampled, deadline, ring) {
+            Ok(notice) => return Ok(notice),
+            Err(ring) => ring,
+        };
         let id = poller().register(self.same_participant(), sampled, deadline, ring)?;
         Ok(Box::new(FileNotice { id }))
     }

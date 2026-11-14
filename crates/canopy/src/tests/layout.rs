@@ -48,13 +48,24 @@ fn init_creates_the_marker_and_the_replica_trees() {
 fn init_records_the_configured_parameters() {
     let (vfs, root) = fresh_root();
     let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
-    assert_eq!(store.shire_id(), "test-shire");
+    assert_eq!(store.store_id(), "test-store");
     assert_eq!(store.created_at_unix_ms(), 12_345);
 }
 
 #[test]
+fn the_marker_serializes_the_identity_under_its_key() {
+    let (vfs, root) = fresh_root();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).expect("init");
+    drop(store);
+
+    let marker = String::from_utf8(vfs.read(&root.join(MARKER_NAME)).expect("read")).expect("utf8");
+    assert!(marker.contains("\"store_id\": \"test-store\""), "{marker}");
+    assert!(!marker.contains("shire_id"), "{marker}");
+}
+
+#[test]
 fn genesis_config_accessors_return_the_configured_values() {
-    let config = GenesisConfig::new(ShireId::new("configured").unwrap(), 98_765)
+    let config = GenesisConfig::new(StoreId::new("configured").unwrap(), 98_765)
         .with_blob_replica_count(4)
         .unwrap()
         .with_pointer_replica_count(5)
@@ -63,7 +74,7 @@ fn genesis_config_accessors_return_the_configured_values() {
     assert_eq!(config.blob_replica_count(), 4);
     assert_eq!(config.pointer_replica_count(), 5);
     assert_eq!(config.created_at_unix_ms(), 98_765);
-    assert_eq!(config.shire_id().to_string(), "configured");
+    assert_eq!(config.store_id().to_string(), "configured");
 }
 
 #[test]
@@ -74,8 +85,8 @@ fn store_debug_reports_its_identity_and_layout() {
     for expected in [
         "Store",
         "root",
-        "shire_id",
-        "test-shire",
+        "store_id",
+        "test-store",
         "created_at_unix_ms",
     ] {
         assert!(
@@ -87,8 +98,8 @@ fn store_debug_reports_its_identity_and_layout() {
 
 #[test]
 fn store_errors_report_context_and_preserve_nested_sources() {
-    let plain = StoreError::EmptyShireId;
-    assert_eq!(plain.to_string(), "a Shire identity must not be empty");
+    let plain = StoreError::EmptyStoreId;
+    assert_eq!(plain.to_string(), "a store identity must not be empty");
     assert!(plain.source().is_none());
 
     let vfs = StoreError::Vfs(VfsError::new(
@@ -199,7 +210,7 @@ fn the_layout_parameters_default_without_being_asked_for() {
 }
 
 #[test]
-fn init_refuses_a_root_that_is_already_a_shire() {
+fn init_refuses_a_root_that_is_already_a_store() {
     let (vfs, root) = fresh_root();
     Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("first init");
     let err = Store::init_unsourced(vfs, root, test_config()).expect_err("second init");
@@ -231,16 +242,16 @@ fn init_requires_the_root_to_exist() {
 #[test]
 fn init_refuses_a_root_path_that_is_a_file() {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    vfs.write(PathBuf::from("shire").as_path(), b"not a directory")
+    vfs.write(PathBuf::from("store").as_path(), b"not a directory")
         .unwrap();
 
-    let err = Store::init_unsourced(vfs, "shire", test_config()).expect_err("root is a file");
+    let err = Store::init_unsourced(vfs, "store", test_config()).expect_err("root is a file");
     assert!(matches!(err, StoreError::RootNotADirectory { .. }));
 }
 
 #[test]
 fn init_propagates_root_metadata_errors() {
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let policy =
         FaultPolicy::new().inject(FaultOp::Metadata, &root, Fault::io_error(), When::Always);
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
@@ -258,21 +269,21 @@ fn open_reads_back_the_genesis_parameters() {
     let store = Store::open_unsourced(vfs, root.clone()).expect("open");
     assert_eq!(store.root(), root);
     assert_eq!(store.pointer_replica_count(), DEFAULT_POINTER_REPLICA_COUNT);
-    assert_eq!(store.shire_id(), "test-shire");
+    assert_eq!(store.store_id(), "test-store");
     assert_eq!(store.created_at_unix_ms(), 12_345);
 }
 
 #[test]
-fn open_refuses_a_directory_that_is_not_a_shire() {
+fn open_refuses_a_directory_that_is_not_a_store() {
     let (vfs, root) = fresh_root();
     let err = Store::open_unsourced(vfs, root).expect_err("no marker");
-    assert!(matches!(err, StoreError::NotAShire { .. }));
+    assert!(matches!(err, StoreError::NotAStore { .. }));
 }
 
 #[test]
 fn open_propagates_marker_read_errors() {
     let gate = FaultGate::closed();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::Read,
         PathMatcher::exact(root.join(MARKER_NAME)),
@@ -384,10 +395,13 @@ fn open_refuses_a_marker_with_an_even_pointer_replica_count() {
     let (vfs, root) = fresh_root();
     let marker = format!(
         "{{\"format_version\":{GENESIS_FORMAT_VERSION},\"blob_replica_count\":3,\
-         \"pointer_replica_count\":2,\"shard_width\":2,\"shire_id\":\"x\",\"created_at_unix_ms\":0}}"
+         \"pointer_replica_count\":2,\"shard_width\":2,\"store_id\":\"x\",\"created_at_unix_ms\":0}}"
     );
-    vfs.write(&root.join(MARKER_NAME), marker.as_bytes())
-        .unwrap();
+    vfs.write(
+        &root.join(MARKER_NAME),
+        &marker_with_agent_metadata(marker.as_bytes()),
+    )
+    .unwrap();
     let err = Store::open_unsourced(vfs, root).expect_err("even pointer replica count");
     assert!(matches!(err, StoreError::MalformedMarker { .. }));
 }
@@ -399,14 +413,18 @@ fn open_accepts_a_marker_with_an_even_blob_replica_count() {
     let (vfs, root) = fresh_root();
     let marker = format!(
         "{{\"format_version\":{GENESIS_FORMAT_VERSION},\"blob_replica_count\":2,\
-         \"pointer_replica_count\":3,\"shard_width\":2,\"shire_id\":\"x\",\"created_at_unix_ms\":0}}"
+         \"pointer_replica_count\":3,\"shard_width\":2,\"store_id\":\"x\",\"created_at_unix_ms\":0}}"
     );
-    vfs.write(&root.join(MARKER_NAME), marker.as_bytes())
-        .unwrap();
+    vfs.write(
+        &root.join(MARKER_NAME),
+        &marker_with_agent_metadata(marker.as_bytes()),
+    )
+    .unwrap();
     for index in 0..3 {
         vfs.create_dir_all(&root.join(NAMESPACE_TREE_DIR).join(format!("p{index}")))
             .unwrap();
     }
+    reserve_by_hand(&vfs, &root);
     let store = Store::open_unsourced(vfs, root).expect("an even blob replica count is valid");
     assert_eq!(store.blob_replica_count(), 2);
 }
@@ -417,11 +435,14 @@ fn open_refuses_a_marker_with_a_shard_width_outside_the_supported_range() {
     let marker = format!(
         "{{\"format_version\":{GENESIS_FORMAT_VERSION},\"blob_replica_count\":3,\
          \"pointer_replica_count\":3,\"shard_width\":{},\
-         \"shire_id\":\"x\",\"created_at_unix_ms\":0}}",
+         \"store_id\":\"x\",\"created_at_unix_ms\":0}}",
         crate::MAX_SHARD_WIDTH + 1
     );
-    vfs.write(&root.join(MARKER_NAME), marker.as_bytes())
-        .unwrap();
+    vfs.write(
+        &root.join(MARKER_NAME),
+        &marker_with_agent_metadata(marker.as_bytes()),
+    )
+    .unwrap();
     let err = Store::open_unsourced(vfs, root).expect_err("shard width past the ceiling");
     assert!(matches!(err, StoreError::MalformedMarker { .. }));
 }
@@ -453,7 +474,7 @@ fn open_refuses_a_namespace_replica_path_that_is_a_file() {
 #[test]
 fn open_propagates_namespace_replica_metadata_errors() {
     let gate = FaultGate::closed();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let replica = root.join(NAMESPACE_TREE_DIR).join("p1");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::Metadata,
@@ -482,21 +503,25 @@ fn open_accepts_the_maximum_supported_replica_count() {
     let marker = format!(
         "{{\"format_version\":{GENESIS_FORMAT_VERSION},\
          \"blob_replica_count\":{MAX_REPLICA_COUNT},\"pointer_replica_count\":3,\"shard_width\":2,\
-         \"shire_id\":\"max-shire\",\"created_at_unix_ms\":1}}"
+         \"store_id\":\"max-store\",\"created_at_unix_ms\":1}}"
     );
-    vfs.write(&root.join(MARKER_NAME), marker.as_bytes())
-        .unwrap();
+    vfs.write(
+        &root.join(MARKER_NAME),
+        &marker_with_agent_metadata(marker.as_bytes()),
+    )
+    .unwrap();
     for index in 0..3 {
         vfs.create_dir_all(&root.join(NAMESPACE_TREE_DIR).join(format!("p{index}")))
             .unwrap();
     }
 
+    reserve_by_hand(&vfs, &root);
     let store = Store::open_unsourced(vfs, root).expect("the inclusive maximum is valid");
     assert_eq!(store.blob_replica_count(), MAX_REPLICA_COUNT);
 }
 
 #[test]
-fn shire_id_rejects_the_empty_string() {
-    assert!(matches!(ShireId::new(""), Err(StoreError::EmptyShireId)));
-    assert_eq!(ShireId::new("x").unwrap().as_str(), "x");
+fn store_id_rejects_the_empty_string() {
+    assert!(matches!(StoreId::new(""), Err(StoreError::EmptyStoreId)));
+    assert_eq!(StoreId::new("x").unwrap().as_str(), "x");
 }

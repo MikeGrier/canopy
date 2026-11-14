@@ -64,8 +64,17 @@ fn main() -> ExitCode {
     // Bound to `_store`, never dropped: holding the handle is the entire job, and the
     // parent kills this process rather than letting it unwind. It never writes, so it needs
     // no nonce source.
-    let _store = match Store::open(vfs, root, StoreOptions::without_nonce_source()) {
-        Ok(store) => store,
+    let _store = match Store::open(
+        vfs,
+        root,
+        StoreOptions::without_nonce_source(canopy::Agent::new(
+            "canopy-tests",
+            "test",
+            "Canopy test fixture",
+            1,
+        )),
+    ) {
+        Ok((store, _)) => store,
         Err(e) => return report.fail(format_args!("open failed: {e}")),
     };
 

@@ -6,41 +6,46 @@
 //! actor, so every run draws the same nonces; faults are injected in a fixed order.
 
 use std::sync::Mutex;
-use std::sync::OnceLock;
 
 use super::nonce_source::{TEST_SEED, scripted_source, seeded_nonces, seeded_source};
 use super::*;
 use crate::store::{BLOB_TREE_DIR, QUARANTINE_DIR, STAGING_DIR};
-use crate::{Commit, CommitObserver, SNAPSHOT_ATTEMPTS, StoreOptions};
+use crate::{Commit, CommitObserver, StoreOptions};
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
 
 /// A store on `vfs` at a fresh root, drawing actor 0's stream under [`TEST_SEED`].
 fn seeded_store_on(vfs: Arc<dyn Vfs>, root: &str) -> Store {
     let root = PathBuf::from(root);
     vfs.create_dir_all(&root).unwrap();
-    let options = StoreOptions::with_nonce_source(seeded_source(TEST_SEED, 0));
+    let options = StoreOptions::with_nonce_source(test_agent(), seeded_source(TEST_SEED, 0));
     Store::init(vfs, root, test_config(), options).unwrap()
 }
 
 fn seeded_store() -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let store = seeded_store_on(Arc::clone(&vfs), "shire");
+    let store = seeded_store_on(Arc::clone(&vfs), "store");
     (vfs, store)
 }
 
 /// A store whose source yields exactly `nonces`.
 fn scripted_store(nonces: Vec<Nonce>) -> (Arc<dyn Vfs>, Store) {
     let (vfs, root) = fresh_root();
-    let options = StoreOptions::with_nonce_source(scripted_source(nonces));
+    let options = StoreOptions::with_nonce_source(test_agent(), scripted_source(nonces));
     let store = Store::init(Arc::clone(&vfs), root, test_config(), options).unwrap();
     (vfs, store)
 }
 
-/// Drops `store` and opens its root again with `options`.
+/// Drops `store`, opens its root again with `options` and resolves what it left.
 fn reopen_with(vfs: &Arc<dyn Vfs>, store: Store, options: StoreOptions) -> Store {
     let root = store.root().to_path_buf();
     drop(store);
-    Store::open(Arc::clone(vfs), root, options).unwrap()
+    let (store, _) = Store::open(Arc::clone(vfs), root, options).unwrap();
+    store
+        .resolve()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
+    store
 }
 
 fn text(store: &Store, node: &str, document: &str) -> Option<String> {
@@ -142,12 +147,14 @@ fn each_operation_draws_one_nonce_and_reports_it() {
     let second = store
         .write_document_replicated(name("alpha"), &doc("two"), &body(b"2"))
         .unwrap();
-    let (_, third) = store
+    let crate::WriteOutcome {
+        value: (_, third), ..
+    } = store
         .transform(name("alpha"), &doc("one"), increment)
         .unwrap();
 
     assert_eq!(first.nonce(), &expected[0]);
-    assert_eq!(second, expected[1]);
+    assert_eq!(second.value, expected[1]);
     assert_eq!(third.nonce(), &expected[2]);
 }
 
@@ -180,11 +187,13 @@ fn a_reopened_store_draws_from_the_source_it_was_reopened_with() {
     let (vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let store = reopen_with(
         &vfs,
         store,
-        StoreOptions::with_nonce_source(scripted_source(vec![nonce("after")])),
+        StoreOptions::with_nonce_source(test_agent(), scripted_source(vec![nonce("after")])),
     );
     let commit = store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"2")))
@@ -199,7 +208,9 @@ fn a_compare_and_set_against_a_stale_digest_is_rejected_and_writes_nothing() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"current")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let commit = store
         .update_document(Swap::conditional(
             name("alpha"),
@@ -222,7 +233,9 @@ fn a_compare_and_set_against_the_current_digest_commits() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"current")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let commit = store
         .update_document(Swap::conditional(
             name("alpha"),
@@ -239,7 +252,10 @@ fn a_compare_and_set_against_the_current_digest_commits() {
 fn a_transform_sees_absence_and_then_each_value_it_wrote() {
     let (_vfs, store) = seeded_store();
     for expected in 1..=20u64 {
-        let (written, commit) = store
+        let crate::WriteOutcome {
+            value: (written, commit),
+            ..
+        } = store
             .transform(name("alpha"), &doc("count"), increment)
             .unwrap();
         assert!(commit.is_committed());
@@ -260,7 +276,9 @@ fn transforms_racing_through_clones_lose_no_update() {
                 scope.spawn(move || {
                     (0..each)
                         .map(|_| {
-                            let (_, commit) = store
+                            let crate::WriteOutcome {
+                                value: (_, commit), ..
+                            } = store
                                 .transform(name("alpha"), &doc("count"), increment)
                                 .unwrap();
                             assert!(commit.is_committed(), "exclusion is held read to commit");
@@ -290,13 +308,19 @@ fn a_transform_whose_closure_writes_through_a_captured_clone_is_rejected() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"before")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let captured = store.clone();
-    let (_, commit) = store
+    let crate::WriteOutcome {
+        value: (_, commit), ..
+    } = store
         .transform(name("alpha"), &doc("one"), |_| {
             captured
                 .update_document(Swap::new(name("alpha"), doc("one"), body(b"sneaked")))
-                .unwrap();
+                .unwrap()
+                .agent_stamp
+                .expect("agent version stamp");
             body(b"transformed")
         })
         .unwrap();
@@ -314,8 +338,13 @@ fn a_plan_commits_against_the_state_it_read() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-        .unwrap();
-    let (seen, commit) = store
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
+    let crate::WriteOutcome {
+        value: (seen, commit),
+        ..
+    } = store
         .plan_and_apply(|view| {
             let current = view.body(name("alpha"), &doc("one")).unwrap().unwrap();
             let swaps = SwapSet::new([
@@ -335,7 +364,10 @@ fn a_plan_commits_against_the_state_it_read() {
 #[test]
 fn a_plan_with_nothing_to_write_draws_no_nonce() {
     let (_vfs, store) = scripted_store(vec![nonce("only")]);
-    let (listed, commit) = store
+    let crate::WriteOutcome {
+        value: (listed, commit),
+        ..
+    } = store
         .plan_and_apply(|view| (view.list_documents().unwrap().len(), None))
         .unwrap();
     assert_eq!(listed, 0);
@@ -355,14 +387,20 @@ fn a_plan_whose_closure_writes_through_a_captured_clone_is_rejected() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"before")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let captured = store.clone();
-    let (_, commit) = store
+    let crate::WriteOutcome {
+        value: (_, commit), ..
+    } = store
         .plan_and_apply(|view| {
             let current = view.body(name("alpha"), &doc("one")).unwrap().unwrap();
             captured
                 .write_document_replicated(name("alpha"), &doc("one"), &body(b"sneaked"))
-                .unwrap();
+                .unwrap()
+                .agent_stamp
+                .expect("agent version stamp");
             let swaps = SwapSet::single(Swap::conditional(
                 name("alpha"),
                 doc("one"),
@@ -399,12 +437,14 @@ fn store_failing_after_prepare(root: &str) -> (Arc<dyn Vfs>, Store, FaultGate) {
 // -- Fencing -------------------------------------------------------------------
 
 #[test]
-fn an_ambiguous_failure_fences_the_store_and_keeps_its_claim_until_reopened() {
+fn an_ambiguous_failure_fences_the_store_and_keeps_its_claim_until_recovered() {
     let (vfs, store, gate) = store_failing_after_prepare("fenced");
     let expected = seeded_nonces(TEST_SEED, 0, 2);
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"before")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     gate.open();
     assert!(
         store
@@ -430,10 +470,13 @@ fn an_ambiguous_failure_fences_the_store_and_keeps_its_claim_until_reopened() {
     let store = reopen_with(
         &vfs,
         store,
-        StoreOptions::with_nonce_source(seeded_source(TEST_SEED, 1)),
+        StoreOptions::with_nonce_source(test_agent(), seeded_source(TEST_SEED, 1)),
     );
     assert_eq!(text(&store, "alpha", "one").as_deref(), Some("after"));
-    assert!(!vfs.exists(&claim).unwrap(), "open releases the dead claim");
+    assert!(
+        !vfs.exists(&claim).unwrap(),
+        "resolving releases the dead claim"
+    );
     assert!(
         store
             .update_document(Swap::new(name("alpha"), doc("one"), body(b"later")))
@@ -449,11 +492,15 @@ fn the_outermost_write_leaves_the_commit_log_empty() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(store.commit_log_is_empty().unwrap());
     store
         .transform(name("alpha"), &doc("one"), increment)
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(store.commit_log_is_empty().unwrap());
     store
         .plan_and_apply(|_| {
@@ -466,7 +513,9 @@ fn the_outermost_write_leaves_the_commit_log_empty() {
                 ))),
             )
         })
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(store.commit_log_is_empty().unwrap());
 }
 
@@ -474,11 +523,16 @@ fn the_outermost_write_leaves_the_commit_log_empty() {
 fn a_write_nested_inside_another_leaves_the_reset_to_the_outermost() {
     let (_vfs, store) = seeded_store();
     let inner = store.clone();
-    let (records_inside, _) = store
+    let crate::WriteOutcome {
+        value: (records_inside, _),
+        ..
+    } = store
         .plan_and_apply(|_| {
             inner
                 .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-                .unwrap();
+                .unwrap()
+                .agent_stamp
+                .expect("agent version stamp");
             (inner.commit_log().read().unwrap().len(), None)
         })
         .unwrap();
@@ -507,7 +561,9 @@ fn a_reset_is_refused_while_the_log_holds_a_prepared_transaction_without_its_end
     ));
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let records = log.read().unwrap();
     assert!(
         records.iter().any(|record| record.txn() == &pending),
@@ -527,7 +583,11 @@ fn a_reset_of_a_log_holding_only_finished_work_succeeds() {
     })
     .unwrap();
     log.append(&LogRecord::End { txn: done }).unwrap();
-    store.quiesce().unwrap();
+    store
+        .quiesce()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(store.commit_log_is_empty().unwrap());
 }
 
@@ -547,16 +607,24 @@ fn the_feed_reports_logged_commits_and_unlogged_writes_in_order() {
             ])
             .unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     store
         .write_document_replicated(name("alpha"), &doc("one"), &body(b"3"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     store
         .transform(name("alpha"), &doc("one"), increment)
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     store
         .update_document(Swap::remove(name("beta"), doc("two")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         recorder.events(),
@@ -578,7 +646,9 @@ fn the_feed_reports_writes_made_through_any_clone_and_the_old_verbs() {
     let clone = store.clone();
     clone
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     store
         .apply_transaction_as(
             &SwapSet::single(Swap::new(name("alpha"), doc("one"), body(b"2"))),
@@ -603,7 +673,9 @@ fn the_feed_reports_nothing_for_a_rejection_or_a_failure() {
             body(b"x"),
             body(b"absent").digest(),
         ))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     gate.open();
     assert!(
         store
@@ -619,7 +691,9 @@ fn the_feed_does_not_report_repairs() {
     let (vfs, store) = seeded_store();
     store
         .write_document_replicated(name("alpha"), &doc("one"), &body(b"content"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let reference = store
         .read_pointer(&name("alpha"), &doc("one"))
         .unwrap()
@@ -635,7 +709,7 @@ fn the_feed_does_not_report_repairs() {
 
     let recorder = Arc::new(Recorder::default());
     store.observe(recorder.clone());
-    let (report, nonces) = store.repair_reported_damage().unwrap();
+    let (report, nonces) = store.repair_reported_damage().unwrap().value;
 
     assert_eq!(report.repairs().len(), 1, "{report:?}");
     assert_eq!(nonces.len(), 1, "the repair drew one nonce");
@@ -663,7 +737,7 @@ fn a_nonce_another_operation_holds_is_refused() {
 }
 
 #[test]
-fn a_claim_left_by_a_dead_operation_refuses_its_nonce_until_reopen() {
+fn a_claim_left_by_a_dead_operation_refuses_its_nonce_until_recovery() {
     let orphaned = nonce("orphaned");
     let (vfs, store) = scripted_store(vec![orphaned.clone()]);
     vfs.create_dir_all(&claim_path(&store, &orphaned)).unwrap();
@@ -674,12 +748,18 @@ fn a_claim_left_by_a_dead_operation_refuses_its_nonce_until_reopen() {
     let store = reopen_with(
         &vfs,
         store,
-        StoreOptions::with_nonce_source(scripted_source(vec![orphaned.clone()])),
+        StoreOptions::with_nonce_source(test_agent(), scripted_source(vec![orphaned.clone()])),
     );
+    store
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_eq!(
         store
             .write_document_replicated(name("alpha"), &doc("one"), &body(b"x"))
-            .unwrap(),
+            .unwrap()
+            .value,
         orphaned
     );
 }
@@ -772,7 +852,9 @@ fn a_quarantine_name_already_taken_refuses_the_repair_and_keeps_both_copies() {
     let (vfs, store) = scripted_store(vec![nonce("w1"), nonce("r1")]);
     store
         .write_document_replicated(name("alpha"), &doc("one"), &body(b"content"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     let reference = store
         .read_pointer(&name("alpha"), &doc("one"))
         .unwrap()
@@ -823,7 +905,8 @@ fn a_commit_exposes_its_outcome_and_nonce() {
     let (_vfs, store) = seeded_store();
     let commit: Commit = store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"x")))
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(commit.outcome(), &TransactionOutcome::Committed);
     assert!(commit.is_committed() && !commit.is_rejected());
 }

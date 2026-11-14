@@ -253,7 +253,7 @@ fn an_append_to_a_whole_log_leaves_its_records_alone() {
 fn a_newly_created_log_survives_a_crash() {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let log = CommitLog::new(Arc::clone(&vfs), &root);
 
@@ -267,7 +267,7 @@ fn a_newly_created_log_survives_a_crash() {
 fn a_failed_root_sync_is_retried_by_the_next_append() {
     // A log created with a root sync that failed must not stay losable just because later
     // appends find the file already there: the next append syncs the root again.
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let base = MemFs::new();
     base.create_dir_all(&root).unwrap();
     let policy = FaultPolicy::new().inject(FaultOp::Fsync, &root, Fault::io_error(), When::Once);
@@ -313,7 +313,7 @@ fn resetting_an_empty_log_flushes_once_and_never_truncates() {
     // The first reset cannot know whether an earlier truncation's flush landed, so it
     // flushes; once that succeeds, later resets of the empty log cost nothing.
     let base = MemFs::new();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     base.create_dir_all(&root).unwrap();
     let path = root.join(LOG_NAME);
     base.write(&path, b"").unwrap();
@@ -332,7 +332,7 @@ fn resetting_an_empty_log_flushes_once_and_never_truncates() {
 fn a_truncation_whose_flush_failed_is_flushed_by_the_next_reset() {
     // The failed reset leaves an empty live log that a crash would refill; the next reset
     // sees it empty and must flush it rather than call it done.
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let path = root.join(LOG_NAME);
     let base = MemFs::new();
     base.create_dir_all(&root).unwrap();
@@ -352,7 +352,7 @@ fn a_truncation_whose_flush_failed_is_flushed_by_the_next_reset() {
 
 #[test]
 fn reset_propagates_metadata_errors() {
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let path = root.join(LOG_NAME);
     let policy =
         FaultPolicy::new().inject(FaultOp::Metadata, &path, Fault::io_error(), When::Always);

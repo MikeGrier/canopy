@@ -28,158 +28,10 @@ Each item here names the event it waits on; it joins a milestone once that event
   producers publish, and `compile_fail` doctests show that no handle can be borrowed from what the
   doorbell lends.
 
-## M7 -- Readers in other processes
+## M9 -- Writers in several processes take turns, and schemas are upgraded
 
-The store moves onto the coordination interface while one process still holds the root for a
-handle's lifetime (`D116`); readers in other processes come first, writers taking turns in M9
-([DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store").
-The store on the coordination interface is M7-2 to M7-5 (was `MP-6`).
-
-- [ ] **M7-1** -- Rename "Shire" to "store" in code and live documentation: `ShireId` to `StoreId`,
-  the `shire_id` accessors to `store_id`, `StoreError::EmptyShireId` to `EmptyStoreId` and
-  `StoreError::NotAShire` to `NotAStore` with their messages, the docs and comments that call a
-  store root a Shire, komorebi's `shire` field and `open_shire` phase, the test roots and
-  identities named for it, and the example in
-  [copilot-instructions.md](../../.github/copilot-instructions.md). The marker's file name and its
-  `shire_id` key are on-disk format and stay until M7-2 renames them, so the genesis keeps its
-  serialized key here. Committed design records and archives keep the old name; record the
-  rename as a decision in [DESIGN-NOTES.md](DESIGN-NOTES.md).
-
-- [ ] **M7-2** (was `MP-6.1`) -- FM-2.2 made genesis version 6 the barrier for the publication record and added
-  `Store::migrate`, which advances a version-5 root by replacing its marker alone, refused by
-  `open` with `StoreError::MigrationRequired`. Advance the version again as the barrier that makes
-  an older binary refuse the root, and extend the migration of an existing root to the
-  coordination state's format: stated as requiring the root offline -- no older binary running
-  against it or starting to open it; taking the old root lock and reading the marker again under
-  it; durably recording a migration record of its identity and inputs; writing the implementation
-  record and the root's other new metadata durably; publishing the new marker atomically and
-  syncing it last; creating coordination state untrusted; and resuming an interrupted migration
-  only with identical inputs. Make every current binary read the marker again after taking any
-  lock. Refuse an unmigrated root with a distinct error naming the migration. Test an older binary
-  refusing a migrated root, a migration interrupted at each step and resumed, a resume refused for
-  different inputs, and a current binary paused between reading the marker and taking the lock
-  while a migration runs. In the same version advance, rename the marker's `.shire` file name and
-  its `shire_id` key to names that say store, chosen with the engineer and recorded in the M7-1
-  decision; the migration renames them, and a migrated root has neither old name.
-
-- [ ] **M7-3** (was `MP-6.2`) -- Move the modification count into the coordination state so a reader
-  classifies contention against a writer in another process, including the partial state a dead
-  writer left before anything recovers it. Cross-process tests spawn a real second process, on
-  Windows and on Linux under WSL.
-
-- [ ] **M7-4** (was `MP-6.3`) -- Split `Store::open` into attaching, which changes no store data, and explicit
-  recovery, which runs only under exclusion (in this milestone, the lifetime root lock) and
-  includes directory-sync debt discharge. Recovery's public API: a discovery call that reports
-  whether recovery is required and why, treating work a live holder owns as not requiring it,
-  without mutating anything, and making its observation of the fence, the restart state, the
-  ownership record and the lock consistent -- by trying the writer lock without waiting and
-  reading under it, for example -- so that a live holder's transaction is never reported as
-  abandoned while its holder acquires or releases; an incremental run whose steps each do bounded,
-  idempotent work and report progress (phase, units done of units known, and whether the known
-  total grew); resumption by a later recovery after one is stopped or its process dies; and a
-  convenience that runs to completion. Recovery reads the commit log and never the coordination
-  state; rolls a prepared transaction forward through its swaps and its end record, and one that
-  was begun and not prepared back by sweeping its staging before it resets the log; publishes the
-  even count and the trusted state in one publication that also drops cached samples; and clears
-  the fence last, so that a stop or a death at any step leaves the fence set
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Recovery and its discovery, modelled in
-  `Coordination.tla`"). Tested within one process here; across processes in M9-2.
-
-- [ ] **M7-5** (was `MP-6.4`) -- While recovery is required, apply the permission table in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store": writes, repairs,
-  scrub, resets and upgrades are refused with `StoreError::RecoveryRequired`, and none of them
-  replays anything; callers that relied on `open` recovering move to the explicit calls. A handle
-  opened only to read cannot write.
-
-- [ ] **M7-6** (was `RD-1`) -- A snapshot that finds a write in progress, or is disturbed by one, is notified
-  through the coordination interface when the count changes and tries again, up to a deadline,
-  rather than retrying after a yield a fixed number of times, so that a write overlapping a read
-  delays it instead of failing it ([DESIGN-NOTES.md](DESIGN-NOTES.md) "How long the contract
-  makes a caller wait"). The synchronous snapshot waits on the notification
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the coordination state is delivered as a
-  notification"); the form that holds no thread is a snapshot submitted through a queue pair, in
-  M14-3. The deadline is a store option with a default no shorter than a write's tail hold;
-  `SnapshotContended` reports a deadline that passed. Tests show a snapshot that overlaps a write
-  succeeds once the write ends, and one held off past its deadline failing.
-
-- [ ] **M7-7** (was `RD-2`) -- A Windows implementation of the notification notified by the OS instead of
-  polling -- an opportunistic lock on the published count requested with overlapped I/O, broken
-  when a fresh count is renamed over it, and delivered from an I/O completion -- with the poller
-  kept as the fallback where the lock is not granted, as on file systems that do not support it
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A change to the coordination state is delivered as a
-  notification"). First confirm that a rename over the published count breaks the lock. The
-  conformance suite's notification cases run against both, and a test shows a registration woken
-  by the break with no thread polling or blocked.
-
-## M8 -- Agents, schemas and their upgrade
-
-Record the agent and the schemas a root names, and upgrade them, as
-[DESIGN-NOTES.md](DESIGN-NOTES.md) "Several processes may open one store" specifies (was `MP-7`).
-Upgrades contended between processes are tested in M9-3, once independent writers can coexist.
-
-- [ ] **M8-1** (was `MP-7.1`) -- `init` and `open` take an agent identifier (version-independent part and
-  version), an agent description, and the agent-schema version the agent speaks. Refuse an open
-  whose version-independent part differs from the recorded one, or whose schemas the per-layer
-  admission rules do not admit, checked after attaching. Record the version of the agent whose
-  write succeeded, replaced after a successful write by a handle of a different version under the
-  same hold; an open changes nothing. Each such change is a durable replacement under exclusion,
-  not a transaction, and never changes the write's outcome: a failed write never stamps, and a
-  failed stamp is reported alongside the write's success. Test writers of versions A, B and A again
-  each leaving their version recorded, a failed write leaving it unchanged, and a stamp whose sync
-  fails after its rename.
-
-- [ ] **M8-2** (was `MP-7.2`) -- A schema upgrade's attachment side, following the decision's protocol: every
-  operation on a clone holding a lease on the attachment; the upgrader draining those leases while
-  still holding its tiers, refusing to start from inside an operation, and cancellable while
-  draining with the handle left attached; the refusal decided by the caller's own operation
-  context and not by whether the handle has any lease, so that the leases of other clones are
-  waited for ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Clones, leases and the upgrade drain, modelled
-  in `Coordination.tla`"); then releasing its tiers, taking the admission gate, acquiring its
-  tiers exclusively and checking the schemas again, a cancelled or failed conversion returning
-  promptly with the handle detached, every operation on a detached handle refused until it
-  attaches again, as an ordinary admission, or is dropped once its clones' operations have ended;
-  the gate reopened to readers during a reader-safe upgrade; the per-layer admission rules applied
-  to every layer of every attaching handle; an upgrade stating the oldest reader schema that can
-  read what it leaves, which canopy judges against the layer's oldest admissible reader schema and
-  never against the current one, recording the judgment in the intent with the layer, the floor
-  and the target, so that one that some admissible reader schema cannot read takes the reader tier
-  exclusively, draining every reader before it begins, and sets the layer's oldest admissible
-  reader schema to its target when it completes, while a safe one leaves it alone
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Cumulative reader compatibility, modelled in
-  `Coordination.tla`"). Test a cancellation while draining leaving the handle attached, a
-  cancelled conversion leaving the handle detached, a clone of the upgrader refused during the
-  upgrade, an operation in flight on a clone finishing before the upgrade proceeds, an upgrade
-  started from inside a callback refused while one started beside another clone's operation waits
-  for it, readers of both versions attaching during a reader-safe upgrade, two reader-safe upgrades
-  in a row with a reader of the first source still attached, an upgrade that an older admissible
-  reader schema cannot read waiting for a reader of that schema to leave and refusing it
-  afterwards, and an upgrade of one layer beside handles that speak another.
-
-- [ ] **M8-3** (was `MP-7.3`) -- A schema upgrade's body: taking writer exclusion after its tiers and refused,
-  taking nothing, when it finds recovery required, then inside the count's bracket recording a
-  durable intent naming the layer and its source and target schemas before its first step, making
-  idempotent resumable steps that each take what they need from the intent and the progress
-  durable state shows and that report progress, advancing the schema durably only after the last
-  step and clearing the intent only after that; a failure or a cancellation in the body setting
-  the fence and leaving the intent; and an interrupted upgrade resumed as the store's recovery,
-  before the rest of it, by a handle speaking the target schemas, no handle that speaks only the
-  source schemas writing while the intent stands ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The schema
-  upgrade's body, modelled in `Coordination.tla`"). Test an upgrade interrupted at each step and
-  resumed.
-
-- [ ] **M8-4** (was `MP-7.4`) -- The store-level surface:
-  - a management call that changes the description, the start of a surface for store-level
-    settings;
-  - a call that lists the attached handles from the registry, saying when the list may be
-    incomplete, available both on a handle and through the diagnostic view;
-  - the call that reports store-level properties: the agent identifier and description, the
-    coordination implementation, the canopy-format and agent-schema versions, the oldest
-    admissible reader schema, the identity and creation time, the genesis format version, and
-    the replica counts and shard width;
-  - a diagnostic view, taking no tier and granting no document access, offering the registry
-    listing, store-level properties and recovery discovery.
-
-## M9 -- Writers in several processes take turns
+Writers take turns first (M9-1, M9-2); the schema upgrade follows (M9-3 to M9-5), since its
+upgrader takes writer exclusion only once it holds its tiers, and is then tested across processes.
 
 - [ ] **M9-1** (was `MP-9`) -- Replace the in-process writer gate and the root lock with the contract's
   exclusion, acquired once by the outermost write and by `init`, with callbacks receiving the
@@ -190,7 +42,10 @@ Upgrades contended between processes are tested in M9-3, once independent writer
   knowledge, directory-sync debt state and recorded agent version whenever the generation has
   moved since that handle last held exclusion, including for two handles opened in one process.
   Stop holding the root exclusively for a handle's lifetime, and retire `D116` in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md) once nothing relies on it.
+  [DESIGN-NOTES.md](DESIGN-NOTES.md) once nothing relies on it. `open` then stops acquiring
+  exclusion: what it reports comes from discovery's observation, and it reports the root's work
+  list as left behind only when that observation found exclusion free, since otherwise the list may
+  be a live writer's ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Recovery is a run the caller drives").
 
 - [ ] **M9-2** (was `MP-10.1`, part of `MP-10`) -- Writers, recovery and discovery across processes, on Windows and on Linux
   under WSL: writer processes
@@ -204,7 +59,59 @@ Upgrades contended between processes are tested in M9-3, once independent writer
   opened in one process taking turns; and an open through a different coordination implementation
   refused.
 
-- [ ] **M9-3** (was `MP-10.2`, part of `MP-10`) -- Schema upgrades across processes, on Windows and on Linux under WSL: a schema upgrade waiting for attached
+- [ ] **M9-3** (was `MP-7.2`, part) -- Leases and the upgrade's drain: every operation on a clone holds a lease
+  on the attachment for its duration; an upgrade puts the attachment into a draining state, refusing
+  new operations on every clone and waiting for the outstanding leases to end while it still holds
+  its tiers; an upgrade started from inside an operation is refused, decided by the caller's own
+  operation context and not by whether the handle has any lease, so other clones' leases are waited
+  for; cancelling while draining ends the drain and leaves the handle attached and usable; the
+  registry entry shows the draining state ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Clones, leases and
+  the upgrade drain, modelled in `Coordination.tla`"). Test a cancellation while draining leaving
+  the handle attached, a clone refused while the drain runs, an operation in flight on a clone
+  finishing before the drain ends, and an upgrade started from inside a callback refused while one
+  started beside another clone's operation waits for it.
+
+- [ ] **M9-4** (was `MP-7.2`, part) -- The upgrade's conversion and reader compatibility: after the drain,
+  the upgrader releases its tiers, takes the admission gate, acquires the writer tier exclusively --
+  and the reader tier first when the upgrade is not safe for readers -- and checks the schemas
+  again; a conversion that fails or is cancelled returns promptly with the handle detached, and every
+  operation on a detached handle is refused until it attaches again, as an ordinary admission, or is
+  dropped once its clones' operations have ended; during a reader-safe upgrade the gate reopens to
+  readers; the admission table's rows for an upgrade in progress apply to every layer of every
+  attaching handle. An upgrade states the oldest reader schema that can read what it leaves, which
+  canopy judges against the layer's oldest admissible reader schema and never against the current
+  one; one that some admissible reader schema cannot read takes the reader tier exclusively,
+  draining every reader before it begins, and its completion sets the layer's oldest admissible
+  reader schema to its target, while a safe one leaves it alone ([DESIGN-NOTES.md](DESIGN-NOTES.md)
+  "Cumulative reader compatibility, modelled in `Coordination.tla`"). Until M9-5 an upgrade has no
+  body and completes by advancing the schema. Test a cancelled conversion leaving the handle
+  detached, readers of both versions attaching during a reader-safe upgrade, two reader-safe
+  upgrades in a row with a reader of the first source still attached, an upgrade that an older
+  admissible reader schema cannot read waiting for a reader of that schema to leave and refusing it
+  afterwards, and an upgrade of one layer beside handles that speak another.
+
+- [ ] **M9-5** (was `MP-7.3`) -- The upgrade's body, driven by the caller: holding its tiers, the upgrader
+  takes writer exclusion and finds it free, and is refused, taking nothing, when it finds recovery
+  required. Inside the count's bracket it records a durable intent -- the layer, the source and target
+  schemas, the floor and the reader-safety judgment -- in a root file on resolving's work list before
+  its first step; the caller drives the migration through an upgrade handle, as `Store::recovery` is
+  driven, each step an idempotent, resumable unit the caller supplies and the store applies, which
+  reports progress; the schema advances durably only after the last step, and the intent clears only
+  after that. Exclusion is held across the caller's calls for the whole body, which no other writer
+  can be waiting on because the upgrader holds the writer tier exclusively: record that as a
+  decision, and supersede in part "No caller code runs under exclusion but the commit observer". A
+  failure or a cancellation in the body sets the fence and leaves the intent. An interrupted upgrade
+  is reported by discovery and by `open`'s `RecoveryNeed`, and resumed as a phase of
+  `Store::recovery` by a handle speaking the target schemas, which supplies the remaining steps; the
+  phase's place among resolving's phases is decided and recorded with the item, since an interrupted
+  step's own transaction must be settled before the next step runs. No handle that speaks only the
+  source schemas is admitted to write while the intent stands ([DESIGN-NOTES.md](DESIGN-NOTES.md)
+  "The schema upgrade's body, modelled in `Coordination.tla`"). Test an upgrade interrupted at each
+  step and resumed, a source-only writer refused while the intent stands, an upgrader that finds
+  recovery required refused with nothing taken, and a failure in the body leaving the fence and the
+  intent.
+
+- [ ] **M9-6** (was `MP-10.2`, part of `MP-10`) -- Schema upgrades across processes, on Windows and on Linux under WSL: a schema upgrade waiting for attached
   writers to leave, and one that is unsafe for readers waiting for attached readers of any schema
   to leave, with the registry naming them and never listing a killed process as attached, and new
   handles waiting while it holds the gate; an upgrader killed after its intent, between its steps,
@@ -214,7 +121,7 @@ Upgrades contended between processes are tested in M9-3, once independent writer
   leaving the fence and the intent; and two upgraders in different processes at once, without
   deadlock.
 
-- [ ] **M9-4** (was `CQ-2`) -- Benchmark contended writes and upgrades across processes on Windows and Linux
+- [ ] **M9-7** (was `CQ-2`) -- Benchmark contended writes and upgrades across processes on Windows and Linux
   at the utilisations and with the workloads CQ-1 studied, measuring the wait-time distribution
   and how often a waiter is passed over, and compare them with CQ-1's predictions against the
   same budget on the wait. Record the comparison in

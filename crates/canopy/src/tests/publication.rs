@@ -1,21 +1,19 @@
 // Copyright (c) Michael Grier.
 
-//! The publication record that guards an unlogged write against `STRANDED-VOTE`, and the
-//! genesis migration that admits a root to it.
+//! The publication record that guards an unlogged write against `STRANDED-VOTE`.
 
 use super::*;
-use crate::store::LOCK_NAME;
-use crate::{
-    GENESIS_FORMAT_VERSION, MIGRATABLE_FORMAT_VERSION, Migration, PUBLICATION_RECORD_NAME, Swap,
-};
+use crate::{PUBLICATION_RECORD_NAME, Swap};
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{OnceLock, Weak};
 
 /// A store over a fault-injecting in-memory filesystem, with three pointer replicas so a write
 /// can land on some of them and not the rest.
-fn faulty_store(label: &str, policy: FaultPolicy) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, Store) {
+pub(super) fn faulty_store(
+    label: &str,
+    policy: FaultPolicy,
+) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, Store) {
     let root = PathBuf::from(label);
     let faulty = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let vfs: Arc<dyn Vfs> = faulty.clone();
@@ -26,7 +24,7 @@ fn faulty_store(label: &str, policy: FaultPolicy) -> (Arc<FaultyFs<MemFs>>, Arc<
 }
 
 /// The rename that moves pointer replica `partition` into place for the write under `nonce`.
-fn replica_rename(partition: &'static str, nonce: &'static str) -> PathMatcher {
+pub(super) fn replica_rename(partition: &'static str, nonce: &'static str) -> PathMatcher {
     let nonce = nonce.to_ascii_uppercase();
     PathMatcher::predicate(move |path: &Path| {
         let parts: Vec<String> = path
@@ -62,7 +60,7 @@ fn assert_settled_on(store: &Store, node: &NodePath, document: &DocumentName, ex
 
 /// The write of `v2` under `w2` renames replicas 0 and 1 and fails at replica 2, leaving `v2`
 /// the majority and its record pending.
-fn write_v2_short_of_replica_2(store: &Store, node: &NodePath, document: &DocumentName) {
+pub(super) fn write_v2_short_of_replica_2(store: &Store, node: &NodePath, document: &DocumentName) {
     store
         .update_document_as(Swap::new(node, document.clone(), body(b"v1")), &nonce("w1"))
         .unwrap();
@@ -73,7 +71,7 @@ fn write_v2_short_of_replica_2(store: &Store, node: &NodePath, document: &Docume
     assert!(!store.read_pointer(node, document).unwrap().is_unanimous());
 }
 
-fn v2_fails_at_replica_2() -> FaultPolicy {
+pub(super) fn v2_fails_at_replica_2() -> FaultPolicy {
     FaultPolicy::new().inject_matching(
         FaultOp::Rename,
         replica_rename("p2", "w2"),
@@ -132,7 +130,7 @@ fn a_failed_write_is_finished_after_a_power_loss() {
     drop(store);
     faulty.inner().simulate_crash();
 
-    let reopened = Store::open_unsourced(vfs, root).unwrap();
+    let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v2");
 }
 
@@ -250,7 +248,7 @@ fn a_record_that_did_not_reach_the_disk_moves_no_replica() {
     drop(store);
     faulty.inner().simulate_crash();
 
-    let reopened = Store::open_unsourced(vfs, root).unwrap();
+    let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v1");
 }
 
@@ -309,7 +307,7 @@ fn a_settle_interrupted_by_a_power_loss_is_finished_by_the_reopen() {
     drop(store);
     faulty.inner().simulate_crash();
 
-    let reopened = Store::open_unsourced(vfs, root).unwrap();
+    let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v2");
 }
 
@@ -333,7 +331,7 @@ fn a_clear_that_did_not_reach_the_disk_cannot_roll_a_later_write_back() {
     drop(store);
     faulty.inner().simulate_crash();
 
-    let reopened = Store::open_unsourced(vfs, root).unwrap();
+    let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v3");
 }
 
@@ -416,7 +414,7 @@ fn a_line_this_store_did_not_write_is_refused() {
         );
         let root = store.root().to_path_buf();
         drop(store);
-        let refused = Store::open_unsourced(Arc::clone(&vfs), root).expect_err("nor opened");
+        let refused = open_resolved(Arc::clone(&vfs), root).expect_err("nor opened");
         assert!(matches!(
             refused,
             StoreError::MalformedPublicationRecord { .. }
@@ -445,11 +443,14 @@ fn a_pointer_repair_settles_first() {
 #[test]
 fn a_scrub_settles_first() {
     let (_faulty, _vfs, store) = faulty_store("scrub-settles", v2_fails_at_replica_2());
-    store.install(StoreOptions::with_nonce_source(counting_nonce_source()));
+    store.install(StoreOptions::with_nonce_source(
+        test_agent(),
+        counting_nonce_source(),
+    ));
     let (node, d) = (name("tickets"), doc("record"));
     write_v2_short_of_replica_2(&store, &node, &d);
 
-    let (report, _) = store.scrub_content().unwrap();
+    let (report, _) = store.scrub_content().unwrap().value;
     assert!(report.stale().is_empty(), "{:?}", report.stale());
     assert_settled_on(&store, &node, &d, b"v2");
 }
@@ -468,219 +469,4 @@ fn a_rejected_transaction_still_settles() {
         .unwrap();
     assert!(outcome.is_rejected());
     assert_settled_on(&store, &node, &d, b"v2");
-}
-
-// -- Migration -----------------------------------------------------------------------------------
-
-/// A store at `version`, holding one document, with no handle open on it.
-fn root_at_version(version: u32) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, PathBuf) {
-    let (faulty, vfs, store) = faulty_store("migrating", FaultPolicy::new());
-    store
-        .write_document_replicated_as(name("tickets"), &doc("record"), &body(b"v1"), &nonce("w1"))
-        .unwrap();
-    let root = store.root().to_path_buf();
-    drop(store);
-    set_marker_version(&vfs, &root, version);
-    (faulty, vfs, root)
-}
-
-fn set_marker_version(vfs: &Arc<dyn Vfs>, root: &Path, version: u32) {
-    let marker = root.join(MARKER_NAME);
-    let mut genesis: serde_json::Value =
-        serde_json::from_slice(&vfs.read(&marker).unwrap()).unwrap();
-    genesis["format_version"] = serde_json::Value::from(version);
-    vfs.write(&marker, &serde_json::to_vec_pretty(&genesis).unwrap())
-        .unwrap();
-    vfs.fsync(&marker).unwrap();
-}
-
-fn marker_version(vfs: &Arc<dyn Vfs>, root: &Path) -> u64 {
-    let genesis: serde_json::Value =
-        serde_json::from_slice(&vfs.read(&root.join(MARKER_NAME)).unwrap()).unwrap();
-    genesis["format_version"].as_u64().unwrap()
-}
-
-#[test]
-fn a_root_at_the_migratable_version_must_be_migrated_before_it_opens() {
-    let (_faulty, vfs, root) = root_at_version(MIGRATABLE_FORMAT_VERSION);
-    match Store::open_unsourced(Arc::clone(&vfs), root.clone()) {
-        Err(StoreError::MigrationRequired {
-            root: reported,
-            found,
-            expected,
-        }) => {
-            assert_eq!(reported, root);
-            assert_eq!(found, MIGRATABLE_FORMAT_VERSION);
-            assert_eq!(expected, GENESIS_FORMAT_VERSION);
-        }
-        other => panic!("expected MigrationRequired, got {other:?}"),
-    }
-    assert_eq!(
-        marker_version(&vfs, &root),
-        u64::from(MIGRATABLE_FORMAT_VERSION)
-    );
-}
-
-#[test]
-fn a_migrated_root_opens_with_its_documents() {
-    let (_faulty, vfs, root) = root_at_version(MIGRATABLE_FORMAT_VERSION);
-    assert_eq!(
-        Store::migrate(Arc::clone(&vfs), root.clone()).unwrap(),
-        Migration::Migrated
-    );
-    assert_eq!(
-        marker_version(&vfs, &root),
-        u64::from(GENESIS_FORMAT_VERSION)
-    );
-    let store = Store::open_unsourced(vfs, root).unwrap();
-    assert_settled_on(&store, &name("tickets"), &doc("record"), b"v1");
-}
-
-#[test]
-fn a_migration_survives_a_power_loss() {
-    let (faulty, vfs, root) = root_at_version(MIGRATABLE_FORMAT_VERSION);
-    Store::migrate(Arc::clone(&vfs), root.clone()).unwrap();
-    faulty.inner().simulate_crash();
-    assert_eq!(
-        marker_version(&vfs, &root),
-        u64::from(GENESIS_FORMAT_VERSION)
-    );
-    Store::open_unsourced(vfs, root).unwrap();
-}
-
-#[test]
-fn migrating_a_current_root_changes_nothing() {
-    let (_faulty, vfs, root) = root_at_version(GENESIS_FORMAT_VERSION);
-    let before = vfs.read(&root.join(MARKER_NAME)).unwrap();
-    assert_eq!(
-        Store::migrate(Arc::clone(&vfs), root.clone()).unwrap(),
-        Migration::AlreadyCurrent
-    );
-    assert_eq!(vfs.read(&root.join(MARKER_NAME)).unwrap(), before);
-    assert_eq!(
-        Store::migrate(vfs, root).unwrap(),
-        Migration::AlreadyCurrent,
-        "and again"
-    );
-}
-
-#[test]
-fn a_root_at_any_other_version_is_not_migrated() {
-    for version in [1, 4, GENESIS_FORMAT_VERSION + 1] {
-        let (_faulty, vfs, root) = root_at_version(version);
-        match Store::migrate(Arc::clone(&vfs), root.clone()) {
-            Err(StoreError::UnsupportedFormatVersion { found, expected }) => {
-                assert_eq!(found, version);
-                assert_eq!(expected, GENESIS_FORMAT_VERSION);
-            }
-            other => panic!("expected UnsupportedFormatVersion for {version}, got {other:?}"),
-        }
-        assert_eq!(marker_version(&vfs, &root), u64::from(version));
-    }
-}
-
-#[test]
-fn a_directory_that_is_not_a_store_is_not_migrated() {
-    let (vfs, root) = fresh_root();
-    assert!(matches!(
-        Store::migrate(vfs, root),
-        Err(StoreError::NotAShire { .. })
-    ));
-}
-
-#[test]
-fn a_held_root_is_not_migrated() {
-    let (_faulty, vfs, root) = root_at_version(MIGRATABLE_FORMAT_VERSION);
-    let _held = vfs.lock_exclusive(&root.join(LOCK_NAME)).unwrap();
-    assert!(matches!(
-        Store::migrate(Arc::clone(&vfs), root.clone()),
-        Err(StoreError::RootInUse { .. })
-    ));
-    assert_eq!(
-        marker_version(&vfs, &root),
-        u64::from(MIGRATABLE_FORMAT_VERSION)
-    );
-}
-
-#[test]
-fn an_interrupted_migration_leaves_the_old_version_and_can_be_run_again() {
-    let gate = FaultGate::closed();
-    let tmp = PathBuf::from("migrating").join(format!("{MARKER_NAME}.tmp"));
-    let policy = FaultPolicy::new().inject_gated(
-        FaultOp::Rename,
-        PathMatcher::exact(tmp),
-        Fault::io_error(),
-        When::Once,
-        gate.clone(),
-    );
-    let root = PathBuf::from("migrating");
-    let faulty = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let vfs: Arc<dyn Vfs> = faulty.clone();
-    vfs.create_dir_all(&root).unwrap();
-    drop(Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap());
-    set_marker_version(&vfs, &root, MIGRATABLE_FORMAT_VERSION);
-
-    gate.open();
-    Store::migrate(Arc::clone(&vfs), root.clone()).expect_err("the marker's rename fails");
-    faulty.inner().simulate_crash();
-    assert_eq!(
-        marker_version(&vfs, &root),
-        u64::from(MIGRATABLE_FORMAT_VERSION)
-    );
-
-    assert_eq!(
-        Store::migrate(Arc::clone(&vfs), root.clone()).unwrap(),
-        Migration::Migrated
-    );
-    Store::open_unsourced(vfs, root).unwrap();
-}
-
-/// A filesystem that rewrites the marker to `version` while the root's lock is being taken,
-/// as a concurrent migration would between a reader's first look and its lock.
-fn marker_rewritten_under_the_lock(version: u32) -> (Arc<dyn Vfs>, PathBuf, Arc<AtomicUsize>) {
-    let root = PathBuf::from("raced");
-    let armed = Arc::new(AtomicUsize::new(0));
-    let handle: Arc<OnceLock<Weak<FaultyFs<MemFs>>>> = Arc::default();
-    let (fire, reach, at) = (Arc::clone(&armed), Arc::clone(&handle), root.clone());
-    let policy = FaultPolicy::new().inject_matching(
-        FaultOp::LockExclusive,
-        PathMatcher::file_name(LOCK_NAME),
-        Fault::observe_with(move |_, _| {
-            if fire.swap(0, Ordering::AcqRel) == 1
-                && let Some(fs) = reach.get().and_then(Weak::upgrade)
-            {
-                let vfs: Arc<dyn Vfs> = fs;
-                set_marker_version(&vfs, &at, version);
-            }
-        }),
-        When::Always,
-    );
-    let faulty = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    handle.set(Arc::downgrade(&faulty)).unwrap();
-    let vfs: Arc<dyn Vfs> = faulty;
-    vfs.create_dir_all(&root).unwrap();
-    drop(Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap());
-    (vfs, root, armed)
-}
-
-#[test]
-fn a_migration_reads_the_marker_again_under_the_lock() {
-    let (vfs, root, armed) = marker_rewritten_under_the_lock(GENESIS_FORMAT_VERSION);
-    set_marker_version(&vfs, &root, MIGRATABLE_FORMAT_VERSION);
-    armed.store(1, Ordering::Release);
-    assert_eq!(
-        Store::migrate(vfs, root).unwrap(),
-        Migration::AlreadyCurrent,
-        "another migration finished between the first read and the lock"
-    );
-}
-
-#[test]
-fn an_open_reads_the_marker_again_under_the_lock() {
-    let (vfs, root, armed) = marker_rewritten_under_the_lock(GENESIS_FORMAT_VERSION + 1);
-    armed.store(1, Ordering::Release);
-    assert!(matches!(
-        Store::open_unsourced(vfs, root),
-        Err(StoreError::UnsupportedFormatVersion { .. })
-    ));
 }

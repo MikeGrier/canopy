@@ -31,8 +31,9 @@ struct Holder {
 pub(crate) struct WriterGate {
     holder: Mutex<Holder>,
     released: Condvar,
-    /// Set once a transaction may have passed its commit point without completing. Every
-    /// handle then refuses writes and leaves the journal alone until the store is reopened.
+    /// Set once a transaction may have passed its commit point without completing, or opening
+    /// found the coordination state requiring recovery. Every handle then refuses writes and
+    /// leaves the journal alone until recovery completes.
     unresolved: AtomicBool,
 }
 
@@ -43,6 +44,11 @@ impl WriterGate {
 
     pub(crate) fn is_unresolved(&self) -> bool {
         self.unresolved.load(Ordering::Acquire)
+    }
+
+    /// Lifts the refusal of writes, once recovery has finished what made it.
+    pub(crate) fn clear_unresolved(&self) {
+        self.unresolved.store(false, Ordering::Release);
     }
 
     /// How many nested entries the calling thread holds; zero when another thread, or none,
@@ -76,6 +82,7 @@ impl WriterGate {
         }
         WriterGuard {
             gate: Arc::clone(self),
+            publication_settled: false,
             _not_send: PhantomData,
         }
     }
@@ -86,6 +93,7 @@ impl WriterGate {
 #[derive(Debug)]
 pub(crate) struct WriterGuard {
     gate: Arc<WriterGate>,
+    pub(super) publication_settled: bool,
     _not_send: PhantomData<*const ()>,
 }
 

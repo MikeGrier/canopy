@@ -34,6 +34,47 @@ fn list(participant: &FileCoordination) -> Listing {
     participant.list().expect("list")
 }
 
+#[test]
+fn a_failed_first_registration_marks_missing_membership_without_releasing_attachment() {
+    for implementation in super::implementations() {
+        for access in [Access::Read, Access::Write] {
+            for stage in 0..4 {
+                let mem = Backend::mem();
+                let root = PathBuf::from(Backend::MEM_ROOT);
+                let reader =
+                    participant_on(&implementation, Arc::new(mem.another_process()), &root);
+                let layout = reader.layout();
+                let failures = [
+                    (FaultOp::CreateDirAll, layout.registry_dir(), When::Once),
+                    (FaultOp::TryLock, layout.registry_lock(), When::OnCall(1)),
+                    (FaultOp::TryLock, layout.registry_lock(), When::OnCall(2)),
+                    (FaultOp::Write, layout.registry_entry(0), When::Once),
+                ];
+                let (op, path, when) = &failures[stage];
+                let policy = FaultPolicy::new().inject(*op, path, Fault::io_error(), *when);
+                let writer = participant_on(
+                    &implementation,
+                    Arc::new(FaultyFs::new(mem.another_process(), policy)),
+                    &root,
+                );
+                let mut attachment = attach(&writer, access);
+                assert!(attachment.register(b"missing").is_err());
+                let found = list(&reader);
+                assert!(found.live.is_empty());
+                assert!(found.may_be_incomplete);
+                let probe = attach(&reader, Access::Read);
+                assert!(matches!(
+                    probe.upgrade(ReaderSafety::Unsafe, Waiting::Never),
+                    Err(CoordError::WouldWait)
+                ));
+                drop(attachment);
+                let probe = attach(&reader, Access::Read);
+                drop(probe.upgrade(ReaderSafety::Unsafe, Waiting::Never).unwrap());
+            }
+        }
+    }
+}
+
 fn live_tokens(listing: &Listing) -> HashSet<RegistryToken> {
     listing.live.iter().map(|entry| entry.token).collect()
 }

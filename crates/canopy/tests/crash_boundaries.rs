@@ -56,17 +56,20 @@ use std::sync::Arc;
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
-    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, ShireId, Store,
-    StoreError, StoreOptions, Swap, SwapSet, TransactionOutcome,
+    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, Store,
+    StoreError, StoreId, StoreOptions, Swap, SwapSet, TransactionOutcome,
 };
 
 /// Options drawing nonces `N1`, `N2`, ... .
 fn options() -> StoreOptions {
     let mut n: u64 = 0;
-    StoreOptions::with_nonce_source(move || {
-        n += 1;
-        Nonce::new(&format!("N{n}")).unwrap()
-    })
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || {
+            n += 1;
+            Nonce::new(&format!("N{n}")).unwrap()
+        },
+    )
 }
 
 /// Points at which to cut, per operation.
@@ -123,12 +126,12 @@ fn store_faulting(op: FaultOp, k: u32) -> (Arc<FaultyFs<MemFs>>, PathBuf, Store,
         ),
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),
         root.clone(),
-        GenesisConfig::new(ShireId::new("cvs17-shire").unwrap(), 3),
+        GenesisConfig::new(StoreId::new("cvs17-store").unwrap(), 3),
         options(),
     )
     .expect("init");
@@ -267,7 +270,9 @@ fn sweep_through(op: FaultOp, label: &str, crash: bool, cut_points: u32) {
 
         store
             .apply_transaction(&swaps(1))
-            .unwrap_or_else(|e| panic!("{at}: the unfaulted seed transaction must commit: {e:?}"));
+            .unwrap_or_else(|e| panic!("{at}: the unfaulted seed transaction must commit: {e:?}"))
+            .agent_stamp
+            .expect("agent version stamp");
 
         gate.open();
         let outcome = store.apply_transaction(&swaps(2));
@@ -290,14 +295,24 @@ fn sweep_through(op: FaultOp, label: &str, crash: bool, cut_points: u32) {
             faulty.inner().simulate_crash();
         }
 
-        let recovered = Store::open(vfs.clone(), root.clone(), options())
-            .unwrap_or_else(|e| panic!("{at}: recovery refused to open the store: {e:?}"));
+        let (recovered, _) = Store::open(vfs.clone(), root.clone(), options())
+            .unwrap_or_else(|e| panic!("{at}: the store refused to open: {e:?}"));
+        recovered
+            .recover()
+            .unwrap_or_else(|e| panic!("{at}: recovery failed: {e:?}"))
+            .agent_stamp
+            .expect("agent version stamp");
         let first = assert_invariants(&vfs, &recovered, committed, &at);
 
         // Recovery is idempotent: a second pass must not move the store again.
         drop(recovered);
-        let again = Store::open(vfs.clone(), root, options())
-            .unwrap_or_else(|e| panic!("{at}: the second recovery refused to open: {e:?}"));
+        let (again, _) = Store::open(vfs.clone(), root, options())
+            .unwrap_or_else(|e| panic!("{at}: the store refused to open again: {e:?}"));
+        again
+            .recover()
+            .unwrap_or_else(|e| panic!("{at}: the second recovery failed: {e:?}"))
+            .agent_stamp
+            .expect("agent version stamp");
         let second = assert_invariants(&vfs, &again, committed, &format!("{at} (second recovery)"));
         assert_eq!(
             first, second,

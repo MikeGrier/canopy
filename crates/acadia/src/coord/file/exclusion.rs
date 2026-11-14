@@ -31,6 +31,7 @@ impl FileCoordination {
             vfs: Arc::clone(&self.vfs),
             layout: self.layout.clone(),
             holds: Arc::clone(&self.holds),
+            polled: self.polled,
         }
     }
 

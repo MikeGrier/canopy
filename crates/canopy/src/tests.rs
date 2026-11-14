@@ -10,12 +10,15 @@ use crate::{
 };
 
 mod apply;
+mod attachment;
 mod blob;
 mod commit_log;
 mod digest;
 mod hierarchy;
 mod layout;
 mod lock;
+mod management;
+mod migration;
 mod modification;
 mod names;
 mod namespace;
@@ -27,12 +30,14 @@ mod pointer;
 mod publication;
 mod quiescence;
 mod recovery;
+mod recovery_run;
 mod removal;
 // Under `--cfg canopy_loom` the doorbell's atomics are loom's, which work only inside a loom model.
 #[cfg(not(canopy_loom))]
 mod ring;
 #[cfg(canopy_loom)]
 mod ring_loom;
+mod shared_count;
 mod surface;
 mod transaction;
 mod verbs;
@@ -79,7 +84,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::store::NAMESPACE_TREE_DIR;
-use crate::{GenesisConfig, MARKER_NAME, ShireId, Store, StoreError};
+use crate::{GenesisConfig, MARKER_NAME, Store, StoreError, StoreId};
 
 /// The root of namespace replica `index`.
 fn namespace_root(store: &Store, index: usize) -> PathBuf {
@@ -90,19 +95,51 @@ fn namespace_root(store: &Store, index: usize) -> PathBuf {
 }
 use acadia::{MemFs, Vfs};
 
-/// A fresh in-memory filesystem with an existing (empty) Shire root directory.
+/// A fresh in-memory filesystem with an existing (empty) store root directory.
 ///
 /// Store tests run disk-free and deterministically against the `acadia`
 /// `MemFs` backend (D55).
 fn fresh_root() -> (Arc<dyn Vfs>, PathBuf) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).expect("create root");
     (vfs, root)
 }
 
 fn test_config() -> GenesisConfig {
-    GenesisConfig::new(ShireId::new("test-shire").expect("non-empty id"), 12_345)
+    GenesisConfig::new(StoreId::new("test-store").expect("non-empty id"), 12_345)
+}
+
+pub(crate) fn test_agent() -> crate::Agent {
+    crate::Agent::new("canopy-tests", "test", "Canopy test fixture", 1)
+}
+
+fn marker_with_agent_metadata(bytes: &[u8]) -> Vec<u8> {
+    let agent = test_agent();
+    let mut marker: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    marker["metadata"] = serde_json::json!({
+        "agent_identifier": agent.identifier(),
+        "agent_version": agent.version(),
+        "agent_description": agent.description(),
+        "canopy_schema": {
+            "current": crate::CANOPY_SCHEMA_VERSION,
+            "oldest_reader": crate::CANOPY_SCHEMA_VERSION,
+        },
+        "agent_schema": { "current": agent.schema_version(), "oldest_reader": agent.schema_version() },
+    });
+    serde_json::to_vec(&marker).unwrap()
+}
+
+/// Records the default coordination implementation on a root whose marker a test wrote by hand,
+/// as creating the root would have, so that opening it is not refused as a root no creation made.
+fn reserve_by_hand(vfs: &Arc<dyn Vfs>, root: &std::path::Path) {
+    use acadia::coord::file::FileFactory;
+    use acadia::coord::{CoordinationFactory, CreationNonce};
+    FileFactory::new()
+        .open(Arc::clone(vfs), root)
+        .expect("a participant")
+        .reserve(b"made by hand", CreationNonce::from_bytes([0; 16]))
+        .expect("record the implementation");
 }
 
 use crate::{DocumentName, DocumentNameError};
@@ -119,7 +156,8 @@ fn fresh_store() -> (Arc<dyn Vfs>, Store) {
     (vfs, store)
 }
 
-/// Drops `store` and opens its root again -- the restart these recovery tests mean.
+/// Drops `store` and opens its root again, resolving what it left -- the restart of a writer
+/// these recovery tests mean.
 ///
 /// Since `D116` a root has one writer, so reopening while the first handle is alive is
 /// refused. That is worth honouring rather than working around: a "reopen" that kept the
@@ -128,7 +166,31 @@ fn fresh_store() -> (Arc<dyn Vfs>, Store) {
 fn reopen(vfs: &Arc<dyn Vfs>, store: Store) -> Result<Store, StoreError> {
     let root = store.root().to_path_buf();
     drop(store);
-    Store::open_unsourced(Arc::clone(vfs), root)
+    open_resolved(Arc::clone(vfs), root)
+}
+
+/// Drops `store`, opens its root again and recovers through the settling of every transaction,
+/// stopping before collection, while the log still shows how each was closed: resolving and a
+/// finished recovery leave it empty.
+fn reopen_settled(vfs: &Arc<dyn Vfs>, store: Store) -> Store {
+    let root = store.root().to_path_buf();
+    drop(store);
+    let reopened = Store::open_unsourced(Arc::clone(vfs), root).unwrap();
+    let mut run = reopened.recovery().unwrap();
+    while run.progress().phase() != crate::RecoveryPhase::Collection {
+        run.step()
+            .unwrap()
+            .agent_stamp
+            .expect("agent version stamp");
+    }
+    reopened
+}
+
+/// Opens `root` and resolves what writers left, as a writer that means to write does.
+fn open_resolved(vfs: Arc<dyn Vfs>, root: impl Into<PathBuf>) -> Result<Store, StoreError> {
+    let store = Store::open_unsourced(vfs, root)?;
+    store.resolve()?.agent_stamp.expect("agent version stamp");
+    Ok(store)
 }
 
 use crate::{Nonce, NonceError};
@@ -171,7 +233,7 @@ fn counting_nonce_source() -> impl FnMut() -> Nonce + Send + 'static {
 /// A fresh store drawing from [`counting_nonce_source`], for tests of the public write verbs.
 fn sourced_store() -> (Arc<dyn Vfs>, Store) {
     let (vfs, root) = fresh_root();
-    let options = StoreOptions::with_nonce_source(counting_nonce_source());
+    let options = StoreOptions::with_nonce_source(test_agent(), counting_nonce_source());
     let store = Store::init(vfs.clone(), root, test_config(), options).expect("init store");
     (vfs, store)
 }

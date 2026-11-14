@@ -138,6 +138,7 @@ impl FileCoordination {
     /// Registers with `tiers` and `payload`, rewriting `entry`'s record if it holds one and taking
     /// the first entry it can claim whose liveness lock is free otherwise. Finding none, it records
     /// the overflow and attaches unregistered.
+    /// A failed first registration also attempts to record overflow, since its attachment may remain.
     pub(crate) fn register_entry(
         &self,
         entry: &mut Option<Entry>,
@@ -145,6 +146,19 @@ impl FileCoordination {
         payload: &[u8],
     ) -> CoordResult<Registration> {
         self.alive()?;
+        let result = self.try_register_entry(entry, tiers, payload);
+        if result.is_err() && entry.is_none() {
+            let _ = self.record_overflow();
+        }
+        result
+    }
+
+    fn try_register_entry(
+        &self,
+        entry: &mut Option<Entry>,
+        tiers: HeldTiers,
+        payload: &[u8],
+    ) -> CoordResult<Registration> {
         let layout = self.layout();
         if let Some(held) = entry {
             let claim = self.try_claim(held.index)?.ok_or(CoordError::WouldWait)?;

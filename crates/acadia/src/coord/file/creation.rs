@@ -99,14 +99,60 @@ impl FileCoordination {
         match found {
             Found::Marker => Err(CoordError::AlreadyCreated),
             Found::Occupied(name) => Err(CoordError::Occupied { name }),
-            Found::Reserved(reservation)
-                if reservation.implementation == self.id && reservation.inputs == plan.inputs =>
-            {
-                Ok(Course::Resume(reservation.nonce))
-            }
-            Found::Reserved(_) => Err(CoordError::Reserved),
+            Found::Reserved(reservation) => self.decide_reserved(reservation, plan.inputs),
             Found::Empty => Ok(Course::Create),
         }
+    }
+
+    /// What to do about a reservation read: resume it if it is this implementation's with these
+    /// inputs, refuse it otherwise.
+    fn decide_reserved(&self, reservation: Reservation, inputs: &[u8]) -> CoordResult<Course> {
+        if reservation.implementation == self.id && reservation.inputs == inputs {
+            Ok(Course::Resume(reservation.nonce))
+        } else {
+            Err(CoordError::Reserved)
+        }
+    }
+
+    fn decide_reservation(&self, inputs: &[u8]) -> CoordResult<Course> {
+        match self.read_reservation()? {
+            Some(reservation) => self.decide_reserved(reservation, inputs),
+            None => Ok(Course::Create),
+        }
+    }
+
+    /// Publishes the reservation, or makes the one being resumed durable, and makes the root's
+    /// directory entry for it durable.
+    fn settle_reservation(
+        &self,
+        course: Course,
+        inputs: &[u8],
+        nonce: CreationNonce,
+    ) -> CoordResult<Created> {
+        let reservation = self.layout().reservation();
+        let created = match course {
+            Course::Create => {
+                let bytes = Reservation {
+                    implementation: self.id.clone(),
+                    nonce,
+                    inputs: inputs.to_vec(),
+                }
+                .encode();
+                match self.vfs().publish_new(&reservation, &bytes) {
+                    Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {
+                        return Err(CoordError::Reserved);
+                    }
+                    published => published?,
+                }
+                Created::Created
+            }
+            Course::Resume(_) => {
+                self.vfs().fsync(&reservation)?;
+                Created::Resumed
+            }
+        };
+        self.vfs().fsync(self.layout().root())?;
+        Ok(created)
     }
 }
 
@@ -127,34 +173,25 @@ impl Creation for FileCoordination {
             return Err(CoordError::Reserved);
         }
         let root = self.layout().root();
-        let reservation = self.layout().reservation();
-        let created = match course {
-            Course::Create => {
-                let bytes = Reservation {
-                    implementation: self.id.clone(),
-                    nonce: plan.nonce,
-                    inputs: plan.inputs.to_vec(),
-                }
-                .encode();
-                match self.vfs().publish_new(&reservation, &bytes) {
-                    Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {
-                        return Err(CoordError::Reserved);
-                    }
-                    published => published?,
-                }
-                Created::Created
-            }
-            Course::Resume(_) => {
-                self.vfs().fsync(&reservation)?;
-                Created::Resumed
-            }
-        };
-        self.vfs().fsync(root)?;
+        let created = self.settle_reservation(course, plan.inputs, plan.nonce)?;
         for artifact in plan.artifacts {
             maker.make(artifact, plan.inputs)?;
             self.vfs().fsync(root)?;
         }
         Ok(created)
+    }
+
+    fn reserve(&self, inputs: &[u8], nonce: CreationNonce) -> CoordResult<Created> {
+        self.alive()?;
+        let first = self.decide_reservation(inputs)?;
+        let _exclusion = self.keep(&self.layout().creation_lock(), LockMode::Exclusive)?;
+        let course = self.decide_reservation(inputs)?;
+        if let (Course::Resume(read), Course::Resume(now)) = (first, course)
+            && read != now
+        {
+            return Err(CoordError::Reserved);
+        }
+        self.settle_reservation(course, inputs, nonce)
     }
 
     fn confirm_created(&self, marker: &OsStr) -> CoordResult<()> {

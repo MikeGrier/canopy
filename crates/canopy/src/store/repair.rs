@@ -230,18 +230,19 @@ impl Store {
     /// property of this function instead of an obligation on every caller.
     ///
     /// The repair is made under a nonce drawn from the store's source and claimed for it, and
-    /// the nonce is returned with the outcome.
+    /// the nonce and repair outcome are returned in [`WriteOutcome`] beside the agent-stamp result.
     pub fn repair_blob(
         &self,
         reference: &BlobRef,
         source: &[u8],
         missing: &[usize],
         corrupt: &[usize],
-    ) -> Result<(RepairOutcome, Nonce), StoreError> {
+    ) -> Result<WriteOutcome<(RepairOutcome, Nonce)>, StoreError> {
         let _writer = self.writable()?;
         let claim = self.claim_fresh_nonce()?;
         let outcome = self.repair_blob_as(reference, source, missing, corrupt, claim.nonce())?;
-        Ok((outcome, claim.nonce().clone()))
+        let changed = !outcome.is_noop() || _writer.publication_settled;
+        Ok(self.stamped((outcome, claim.nonce().clone()), changed))
     }
 
     /// [`repair_blob`](Store::repair_blob) under `nonce`, which the caller has claimed or, in a
@@ -275,7 +276,7 @@ impl Store {
 
         let path_hash = reference.name().path_hash();
         let mut outcome = RepairOutcome::default();
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
 
         for &index in corrupt {
             let entry = blob_partition_root(&self.root, index).join(reference.relative_path());
@@ -318,17 +319,18 @@ impl Store {
     /// superseded pointer back over a current replica.
     ///
     /// The repair is made under a nonce drawn from the store's source and claimed for it, and
-    /// the nonce is returned with the outcome.
+    /// the nonce and repair outcome are returned in [`WriteOutcome`] beside the agent-stamp result.
     pub fn repair_pointer(
         &self,
         node: &NodePath,
         document: &DocumentName,
         read: &PointerRead,
-    ) -> Result<(RepairOutcome, Nonce), StoreError> {
+    ) -> Result<WriteOutcome<(RepairOutcome, Nonce)>, StoreError> {
         let _writer = self.writable()?;
         let claim = self.claim_fresh_nonce()?;
         let outcome = self.repair_pointer_as(node, document, read, claim.nonce())?;
-        Ok((outcome, claim.nonce().clone()))
+        let changed = !outcome.is_noop() || _writer.publication_settled;
+        Ok(self.stamped((outcome, claim.nonce().clone()), changed))
     }
 
     /// [`repair_pointer`](Store::repair_pointer) under `nonce`, which the caller has claimed
@@ -348,7 +350,7 @@ impl Store {
         let read = &current;
         let bytes = read.pointer().render();
         let mut outcome = RepairOutcome::default();
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
 
         for &index in read.rejected() {
             let entry = self.pointer_entry_path(index, node, document);

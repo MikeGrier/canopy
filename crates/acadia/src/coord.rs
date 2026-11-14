@@ -15,6 +15,7 @@
 //!
 //! - [`Creation`] -- creation exclusion and the creation reservation;
 //! - [`RestartRecognition`] -- whether the state can be vouched for;
+//! - [`RecoveryDiscovery`] -- whether recovery is required, and why;
 //! - [`ModificationCount`] -- sampling the count, which only an [`ExclusionHold`] raises;
 //! - [`WriterExclusion`] -- exclusion, its ownership record, the fence and the generation;
 //! - [`Admission`] -- the admission gate and the attachment tiers;
@@ -44,6 +45,7 @@ use crate::Vfs;
 mod admission;
 mod count;
 mod creation;
+mod discovery;
 mod error;
 mod exclusion;
 pub mod file;
@@ -54,14 +56,15 @@ mod types;
 pub use admission::{Admission, Attachment, Registrant, Upgrade};
 pub use count::{CountNotification, ModificationCount, Notice};
 pub use creation::{ArtifactMaker, Creation, CreationPlan};
+pub use discovery::RecoveryDiscovery;
 pub use error::{CoordError, CoordResult};
 pub use exclusion::{ExclusionHold, WriterExclusion};
 pub use registry::Registry;
 pub use restart::RestartRecognition;
 pub use types::{
     Access, Acquired, Created, CreationNonce, Generation, HeldTiers, ImplementationId, ListedEntry,
-    Listing, ModCount, ModificationEnd, Purpose, ReaderSafety, Registration, RegistryToken,
-    TierHold, Trust, Untrusted, Waiting,
+    Listing, ModCount, ModificationEnd, Purpose, ReaderSafety, RecoveryNeed, Registration,
+    RegistryToken, TierHold, Trust, Untrusted, Waiting,
 };
 
 /// The prefix of every name directly beneath a root that belongs to the coordination, in every
@@ -73,6 +76,7 @@ pub const RESERVED_PREFIX: &str = ".coord";
 pub trait Coordination:
     Creation
     + RestartRecognition
+    + RecoveryDiscovery
     + ModificationCount
     + CountNotification
     + WriterExclusion

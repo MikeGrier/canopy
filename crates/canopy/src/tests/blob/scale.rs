@@ -26,7 +26,7 @@ use acadia::{MemFs, Vfs};
 
 use crate::{
     Artifact, BlobName, BlobRef, ContentDigest, DocumentName, GenesisConfig, NodePath, Nonce,
-    ShireId, Store, StoreError,
+    Store, StoreError, StoreId,
 };
 
 /// Documents driven through the store.
@@ -36,13 +36,13 @@ const DOCUMENTS: usize = 400;
 const VERSIONS: usize = 3;
 
 /// Where every store here is rooted.
-const ROOT: &str = "shire";
+const ROOT: &str = "store";
 
 /// A new store with `replicas` replicas on `vfs`.
 fn init(vfs: Arc<dyn Vfs>, replicas: usize) -> Store {
     let root = PathBuf::from(ROOT);
     vfs.create_dir_all(&root).unwrap();
-    let config = GenesisConfig::new(ShireId::new("cvs9-shire").unwrap(), 11)
+    let config = GenesisConfig::new(StoreId::new("cvs9-store").unwrap(), 11)
         .with_blob_replica_count(replicas)
         .unwrap();
     Store::init_unsourced(vfs, root, config).unwrap()

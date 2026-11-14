@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::{LockMode, LockSpan, Vfs, VfsErrorKind, VfsLock};
 
@@ -28,10 +28,13 @@ use super::{
 pub(crate) mod admission;
 pub(crate) mod count;
 mod creation;
+mod discovery;
 pub(crate) mod exclusion;
 pub(crate) mod hold;
 pub(crate) mod layout;
 mod notify;
+#[cfg(windows)]
+mod oplock;
 pub(crate) mod registry;
 pub(crate) mod reservation;
 pub(crate) mod restart;
@@ -43,6 +46,7 @@ use layout::Layout;
 pub struct FileFactory {
     id: ImplementationId,
     layout: fn(&Path) -> Layout,
+    polled: bool,
 }
 
 impl FileFactory {
@@ -55,7 +59,23 @@ impl FileFactory {
         FileFactory {
             id: Self::IMPLEMENTATION,
             layout: Layout::new,
+            polled: false,
         }
+    }
+
+    /// This factory's participants take every [`CountNotification`](super::CountNotification)
+    /// from the process's poller, never from the operating system.
+    ///
+    /// On Windows over the operating system's own filesystem a participant is otherwise notified by
+    /// a lock the system breaks when a writer renames a fresh count over it, and the writer waits
+    /// until the participant's process answers the break or the system's break timeout passes. A
+    /// process whose thread pool cannot run, such as one stopped in a debugger, then delays the
+    /// writer's publication. The poller never delays a writer, and costs a sample of the count at
+    /// each of its intervals while a registration is outstanding.
+    #[must_use]
+    pub fn polled(mut self) -> Self {
+        self.polled = true;
+        self
     }
 
     /// The second implementation the conformance suite uses: the file-based one with another
@@ -65,6 +85,7 @@ impl FileFactory {
         FileFactory {
             id: ImplementationId::from_static("acadia-file-alternate-1"),
             layout: Layout::alternate,
+            polled: false,
         }
     }
 
@@ -75,6 +96,7 @@ impl FileFactory {
             vfs,
             layout: (self.layout)(root),
             holds: Arc::default(),
+            polled: self.polled,
         }
     }
 }
@@ -102,6 +124,8 @@ pub struct FileCoordination {
     layout: Layout,
     /// Shared by every handle on this participant, such as a hold it gives out.
     holds: Arc<Holds>,
+    /// Whether count notifications are the poller's alone; see [`FileFactory::polled`].
+    polled: bool,
 }
 
 impl fmt::Debug for FileCoordination {
@@ -119,12 +143,18 @@ impl Coordination for FileCoordination {
     }
 
     fn abandon(&self) {
-        let released = {
+        let (released, watchers) = {
             let mut table = self.holds.table();
             table.abandoned = true;
-            std::mem::take(&mut table.locks)
+            (
+                std::mem::take(&mut table.locks),
+                std::mem::take(&mut table.watchers),
+            )
         };
         drop(released);
+        for watcher in watchers.iter().filter_map(Weak::upgrade) {
+            watcher.abandoned();
+        }
     }
 }
 
@@ -153,11 +183,28 @@ struct HoldTable {
     abandoned: bool,
     next: u64,
     locks: HashMap<u64, Box<dyn VfsLock>>,
+    /// Registrations notified by the operating system, which an abandonment rings: nothing
+    /// breaks for a participant whose own operations are refused.
+    watchers: Vec<Weak<dyn Watcher>>,
+}
+
+/// Something outstanding on a participant that its abandonment must be told of.
+trait Watcher: Send + Sync {
+    fn abandoned(&self);
 }
 
 impl Holds {
     fn table(&self) -> MutexGuard<'_, HoldTable> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Has `watcher` told when the participant is abandoned; reports whether it already is.
+    #[cfg(windows)]
+    fn watch(&self, watcher: Weak<dyn Watcher>) -> bool {
+        let mut table = self.table();
+        table.watchers.retain(|held| held.strong_count() > 0);
+        table.watchers.push(watcher);
+        table.abandoned
     }
 }
 

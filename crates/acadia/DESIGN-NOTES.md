@@ -939,3 +939,115 @@ poller and failed the panicking ring's case.
 
 [^m6-9]: `M6-9` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-9)
     [completed 2026-11-13; `d7daade`]
+
+## A root that already holds artifacts is reserved without creating any, 2026-11-13
+
+`Creation::reserve` records an implementation's reservation for a root that already exists and holds
+what the caller's own format put there[^m7-2]. A store migrated from before the coordination layer is
+the case: it has a marker and trees, and the root has to name the implementation that coordinates it
+from then on.
+
+- **It is the reservation step of `create`, and no more.** It reads the root, takes the creation
+  exclusion, reads again, and publishes the reservation or resumes the one that is there, and it makes
+  no artifact and does not look at what the root holds. The code is shared with `create`, so the two
+  cannot disagree about what a reservation is or when one is refused.
+- **What it answers.** `Created::Created` when it made the reservation, `Created::Resumed` when this
+  implementation's reservation for the same inputs is already there, `CoordError::Reserved` for any
+  other implementation or other inputs. A retry with the same inputs is therefore idempotent, which is
+  what lets a caller whose migration was cut short finish it.
+- **The model is not extended.** `reserve` is the reservation publish step of `Creation.tla` and
+  nothing else of it, so the properties the model checks for that step cover it. What a caller must
+  establish for the artifacts it adds around the reservation is the caller's design, not the model's.
+
+Revert-probes: reserving without the second reading under the exclusion, without the sync of the
+root, without comparing the inputs, and with an overwriting publish each failed the cases built for
+them; the first needed the case where a reserver that waited resumes the reservation the holder made.
+
+[^m7-2]: `M7-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-2)
+
+## Whether recovery is required is observed with the writer lock tried, 2026-11-14
+
+`RecoveryDiscovery::discover_recovery` reports whether recovery is required and why, for any
+participant, as canopy's recovery design states it ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Recovery and its discovery, modelled in
+`Coordination.tla`")[^m7-4].
+
+- **The observation is made consistent by the lock.** The participant tries writer exclusion without
+  waiting. A lock it gets means no holder is alive, so the fence, the ownership record and the boot
+  record are read while it holds the lock, with no acquirer able to come between the readings, and a
+  record found is a dead holder's. A lock that is held means a holder is alive, whose record is its
+  transaction, so only the fence and the boot record are read; a holder that finishes a recovery
+  while they are read can make the answer stale in the direction of reporting work that has just been
+  finished, never of missing work that is there.
+- **It is a probe, not a hold.** It drops the lock without the bookkeeping of a release: it sets no
+  fence, replaces no record and advances no generation, so the next acquirer is told exactly what it
+  would have been told had nobody asked. Asking leaves the lock file as the one thing it may create,
+  and a root with no state directory has had no holder, so it is not probed at all.
+- **A participant that holds exclusion is a live holder to itself.** Its own try fails as another's
+  would, so its record is not reported and its fence and restart state are.
+- **What is reported.** The fence, why the state cannot be vouched for, and whether a holder died; the
+  fence is set by an acquirer that finds a record or by an unresolved ending, never by a discovery.
+
+Revert-probes: reporting a record whatever the lock says, not reading the fence, clearing the fence it
+finds and not reading the restart state each failed the cases built for them.
+
+[^m7-4]: `M7-4` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-4)
+
+## A count notification on Windows is a lock the system breaks, 2026-11-14
+
+On Windows over the operating system's own filesystem, the file-based implementation's
+`CountNotification` is a lock the system breaks when a writer renames a fresh count over the one
+published, as canopy's design states it (canopy's DESIGN-NOTES.md, "A change to the coordination state
+is delivered as a notification")[^m7-7]. A registration holds no thread and samples nothing while it
+waits: the break is an I/O completion and the deadline a timer, both on the thread pool.
+
+- **The lock is a read-and-handle-caching oplock**, requested with `FSCTL_REQUEST_OPLOCK` on a handle
+  opened for overlapped I/O that shares read, write and delete, and bound to the pool's I/O. A read
+  oplock alone is not broken by a rename over the file, which was measured; the handle-caching one is,
+  from read-and-handle to read.
+- **The break holds the renaming writer until it is answered.** The holder answers it in the
+  completion, with the same control acknowledging at level none, which completes at once and lets the
+  rename go on. A holder that does not answer -- a process whose pool cannot run callbacks, such as one
+  stopped in a debugger -- delays the writer's publication until it closes the handle or the system's
+  break timeout passes. This is the price of being notified and not polling, and it contradicts the
+  property that a reader never stands between a writer and its publication, so
+  `FileFactory::polled` makes a factory's participants take the poller alone.
+- **The break comes before the rename finishes**, so a registration whose lock broke samples again on
+  pool timers, from 250 microseconds and doubling, up to six samples and no later than its deadline,
+  and rings once the count differs or the samples are spent.
+- **The lock must be on the published file.** After it is granted the file it is held on is compared
+  with the one now at the count's path, and the count is sampled again; if either differs, the
+  registration goes to the poller, because a rename between the open and the grant would leave a lock
+  nothing breaks.
+- **The poller takes the registration, unchanged, wherever this form cannot be made**: the factory
+  polls, the filesystem is not the system's, the count has no file yet (the first publication renames
+  into a name nothing holds, which breaks nothing), the lock is not granted, the deadline has passed,
+  or the count has moved.
+- **An abandonment rings the registrations it leaves**, since nothing breaks for a participant whose
+  own operations are refused and the caller must meet the refusal; the participant keeps a weak list of
+  them for it.
+- **A notice dropped from inside its own ring releases its lock and timer on a thread of its own**,
+  because releasing them waits for their callbacks, and the ring is one.
+- **The lock is outside the seam.** It is made on the system's own file, as `Vfs::open_output` is, so a
+  `FaultyFs` rule does not reach it; the seam says whether it applies with `Vfs::is_os_filesystem`.
+
+Which form a store uses is the caller's, by the factory it gives canopy's `StoreOptions`; nothing
+further is scheduled.
+
+[^m7-7]: `M7-7` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-7)
+
+## A failed first registration records possible incompleteness, 2026-11-14
+
+Registration is best-effort, so a failure before an entry is obtained can leave an attached
+participant absent from the registry. The file implementation attempts to record overflow for
+that failure as it does for a full registry, and returns the original registration error. A
+failed update of an existing entry leaves that entry's payload and membership intact and does not
+mark overflow merely because the update failed. The marker remains until the host restarts.
+
+Recording overflow is itself fallible: a filesystem that refuses both writes cannot communicate
+the missing membership to an independent listing. The attachment remains valid and the original
+error remains available to its caller. Tests inject failures during directory creation, claim
+and liveness locking, and payload writing while checking both retained tiers and incompleteness.
+This behavior supports store attachment[^m8-2]; it changes neither admission nor registry lock order.
+
+[^m8-2]: `M8-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14]

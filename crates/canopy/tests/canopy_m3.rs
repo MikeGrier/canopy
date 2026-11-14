@@ -29,12 +29,12 @@ use std::sync::Arc;
 
 use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, MemFs, Vfs, VfsErrorKind, When};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreOptions, Swap,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreId, StoreOptions, Swap,
     SwapSet, read_once,
 };
 
 /// The store root, created before init like the LAY-8 harness.
-const ROOT: &str = "shire";
+const ROOT: &str = "store";
 /// The single document name every node in these tests carries.
 const DOC: &str = "d.json";
 /// The commit log's on-disk name at the store root (D53), read directly to prove the
@@ -58,7 +58,7 @@ fn body_of(s: &str) -> DocumentBody {
 
 /// The genesis for a store replicated `count` ways.
 fn genesis(count: usize) -> GenesisConfig {
-    GenesisConfig::new(ShireId::new("it-shire").unwrap(), 7)
+    GenesisConfig::new(StoreId::new("it-store").unwrap(), 7)
         .with_pointer_replica_count(count)
         .unwrap()
         .with_blob_replica_count(count)
@@ -68,10 +68,13 @@ fn genesis(count: usize) -> GenesisConfig {
 /// Options drawing nonces `N1`, `N2`, ... .
 fn options() -> StoreOptions {
     let mut n: u64 = 0;
-    StoreOptions::with_nonce_source(move || {
-        n += 1;
-        Nonce::new(&format!("N{n}")).unwrap()
-    })
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || {
+            n += 1;
+            Nonce::new(&format!("N{n}")).unwrap()
+        },
+    )
 }
 
 /// A fresh `count`-partition store on a plain in-memory filesystem, plus the shared
@@ -124,12 +127,19 @@ fn blob_staging_dir(index: usize) -> PathBuf {
         .join(".staging")
 }
 
-/// Reopens the store at [`ROOT`] over `vfs`, running the recovery replay.
+/// Reopens the store at [`ROOT`] over `vfs` and resolves what the last writer left, replaying the
+/// log.
 ///
 /// The caller must have dropped the previous handle: since `D116` a root has one writer, and
 /// a "reopen" that kept the old handle alive was never a restart.
 fn reopen(vfs: Arc<dyn Vfs>) -> Store {
-    Store::open(vfs, PathBuf::from(ROOT), options()).unwrap()
+    let (store, _) = Store::open(vfs, PathBuf::from(ROOT), options()).unwrap();
+    store
+        .resolve()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
+    store
 }
 
 #[test]
@@ -260,7 +270,9 @@ fn a_cleanly_quiesced_restart_reads_an_empty_log() {
                 doc.clone(),
                 body_of(&format!("body-{i}")),
             ))
-            .unwrap();
+            .unwrap()
+            .agent_stamp
+            .expect("agent version stamp");
     }
 
     // Each write empties the log before releasing the writer gate, so once the last write

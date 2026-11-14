@@ -88,13 +88,17 @@ pub use pointer::{Pointer, PointerError};
 #[cfg(feature = "random-nonce")]
 pub use random::{random_nonce, random_nonce_source};
 pub use read::{Contended, Contention, Read, read_once, read_settled, read_within};
+pub use store::SchemaLayer;
 pub use store::{
-    BacklogRepairReport, BlobRead, BlobVerification, Children, Commit, ContentScrubReport,
+    Agent, AttachedHandle, AttachedHandles, BacklogRepairReport, BlobRead, BlobVerification,
+    CANOPY_SCHEMA_VERSION, COORDINATED_FORMAT_VERSION, Children, Commit, ContentScrubReport,
     DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT, DEFAULT_SHARD_WIDTH,
-    GENESIS_FORMAT_VERSION, GenesisConfig, LOCK_NAME, MARKER_NAME, MAX_REPLICA_COUNT,
-    MAX_SHARD_WIDTH, MIGRATABLE_FORMAT_VERSION, Migration, PUBLICATION_RECORD_NAME, PointerRead,
-    QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RejectedPrecondition, RepairOutcome, SNAPSHOT_ATTEMPTS,
-    ShireId, Store, StoreError, StoreOptions, StoreView, TransactionOutcome,
+    DEFAULT_SNAPSHOT_TIMEOUT, DiagnosticView, GENESIS_FORMAT_VERSION, GenesisConfig, LOCK_NAME,
+    MARKER_NAME, MAX_REPLICA_COUNT, MAX_SHARD_WIDTH, MIGRATABLE_FORMAT_VERSION,
+    MIGRATION_RECORD_NAME, Migration, PUBLICATION_RECORD_NAME, PointerRead, QUARANTINE_LIMIT,
+    REPAIR_BACKLOG_LIMIT, Recovery, RecoveryNeed, RecoveryPhase, RecoveryProgress,
+    RejectedPrecondition, RepairOutcome, SchemaVersions, Store, StoreError, StoreId, StoreOptions,
+    StoreProperties, StoreView, TransactionOutcome, WriteOutcome,
 };
 pub use transaction::{Effect, Precondition, Swap, SwapSet, SwapSetError};
 

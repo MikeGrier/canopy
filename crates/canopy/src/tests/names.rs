@@ -53,7 +53,7 @@ fn document_name_rejects_the_empty_string() {
 #[test]
 fn document_name_rejects_a_leading_dot() {
     assert_eq!(
-        DocumentName::new(".shire"),
+        DocumentName::new(".store"),
         Err(DocumentNameError::LeadingDot)
     );
 }

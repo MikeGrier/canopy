@@ -653,7 +653,7 @@ fn first_replica_per_read(rounds: usize) -> Vec<usize> {
     );
 
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).expect("create root");
     let store = Store::init_unsourced(vfs.clone(), root, test_config()).expect("init");
     let node = node_of("TICKETS/A");
@@ -732,13 +732,13 @@ fn rotating_the_visit_order_does_not_move_the_majority() {
 fn a_write_raises_the_modification_count_and_a_read_does_not() {
     let (_vfs, _root, store, node, document, _pointer) = seeded(b"body");
 
-    let after_seed = store.modifications();
+    let after_seed = store.modifications().unwrap();
     assert!(after_seed > 0, "seeding the store modified nothing");
 
     store.read_pointer(&node, &document).expect("read");
     store.read_pointer(&node, &document).expect("read again");
     assert_eq!(
-        store.modifications(),
+        store.modifications().unwrap(),
         after_seed,
         "reading moved the count, so a reader cannot use it to detect writers"
     );
@@ -752,7 +752,7 @@ fn a_write_raises_the_modification_count_and_a_read_does_not() {
         )
         .expect("write");
     assert!(
-        store.modifications() > after_seed,
+        store.modifications().unwrap() > after_seed,
         "a durable write did not raise the count"
     );
 }
@@ -773,11 +773,11 @@ fn a_disagreement_with_a_still_count_is_damage_rather_than_a_race() {
         .expect("scatter a replica");
     }
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     let error = store
         .read_pointer(&node, &document)
         .expect_err("three distinct pointers form no majority");
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     assert!(
         matches!(
@@ -813,7 +813,10 @@ fn a_writer_paused_between_replicas_is_never_mistaken_for_no_writer() {
             PathMatcher::has_component(NAMESPACE_TREE_DIR),
             Fault::observe_with(move |_, _| {
                 if let Some(store) = store_for_probe.get() {
-                    recorded.lock().unwrap().push(store.modifications());
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(store.modifications().unwrap());
                 }
             }),
             When::Always,
@@ -827,7 +830,7 @@ fn a_writer_paused_between_replicas_is_never_mistaken_for_no_writer() {
     let document = doc("record");
     let _ = handle.set(store.clone());
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     gate.open();
     store
         .write_pointer(
@@ -838,7 +841,7 @@ fn a_writer_paused_between_replicas_is_never_mistaken_for_no_writer() {
         )
         .unwrap();
     gate.close();
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     let samples = samples.lock().unwrap().clone();
     assert_eq!(
@@ -864,7 +867,7 @@ fn a_write_between_two_reads_is_visible_as_a_moved_count() {
     // pair of values either way.
     let (_vfs, _root, store, node, document, _pointer) = seeded(b"body");
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     store.read_pointer(&node, &document).expect("first read");
     store
         .write_pointer(
@@ -877,7 +880,7 @@ fn a_write_between_two_reads_is_visible_as_a_moved_count() {
     store.read_pointer(&node, &document).expect("second read");
 
     assert!(
-        store.modifications() > before,
+        store.modifications().unwrap() > before,
         "a writer ran between the two reads and the count did not say so"
     );
 }
@@ -968,7 +971,7 @@ fn replicas_that_all_disagree_under_a_modification_are_contended_rather_than_an_
     // Nothing here is decidable yet, so the read says so in the one shape a caller's loop can
     // wait out (`D336`).
     let (_vfs, store, node, document) = scattered();
-    let _modifying = store.begin_modification();
+    let _modifying = store.begin_modification().unwrap();
 
     match store.read_document(&node, &document).expect("read") {
         Read::Contended(contended) => assert_eq!(
@@ -1096,7 +1099,7 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    let config = GenesisConfig::new(ShireId::new("removal-sync").unwrap(), 0)
+    let config = GenesisConfig::new(StoreId::new("removal-sync").unwrap(), 0)
         .with_pointer_replica_count(1)
         .unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), config).unwrap();
@@ -1114,12 +1117,11 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
     assert!(store.recovery_required());
     drop(store);
 
-    let reopened =
-        Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect("recovery completes");
+    let reopened = open_resolved(Arc::clone(&vfs), root.clone()).expect("recovery completes");
     drop(reopened);
     faulty.inner().simulate_crash();
 
-    let after = Store::open_unsourced(vfs, root).expect("reopen after the crash");
+    let after = open_resolved(vfs, root).expect("reopen after the crash");
     assert_eq!(after.read_body(&node, &d).unwrap(), None);
 }
 
@@ -1135,11 +1137,11 @@ fn a_pointer_repair_is_visible_to_the_modification_count() {
         .unwrap();
     let report = store.read_pointer(&node, &d).unwrap();
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     let outcome = store
         .repair_pointer_as(&node, &d, &report, &nonce("r1"))
         .unwrap();
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     assert_eq!(outcome.replaced(), [2]);
     assert!(
@@ -1165,11 +1167,11 @@ fn an_obsolete_pointer_repair_leaves_the_count_alone() {
         .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .unwrap();
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     store
         .repair_pointer_as(&node, &d, &obsolete, &nonce("r1"))
         .unwrap();
-    assert!(Store::undisturbed(before, store.modifications()));
+    assert!(Store::undisturbed(before, store.modifications().unwrap()));
 }
 
 #[test]
@@ -1197,7 +1199,7 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
-    let config = GenesisConfig::new(ShireId::new("collect-durable").unwrap(), 0)
+    let config = GenesisConfig::new(StoreId::new("collect-durable").unwrap(), 0)
         .with_pointer_replica_count(1)
         .unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), config).unwrap();
@@ -1218,10 +1220,10 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
     gate.close();
     drop(store);
 
-    drop(Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect("recovery re-collects w1"));
+    drop(open_resolved(Arc::clone(&vfs), root.clone()).expect("recovery re-collects w1"));
     faulty.inner().simulate_crash();
 
-    let after = Store::open_unsourced(vfs, root).expect("reopen after the crash");
+    let after = open_resolved(vfs, root).expect("reopen after the crash");
     let read = after
         .read_body(&node, &d)
         .expect("the durable pointer's blob survived");

@@ -1,10 +1,10 @@
 // Copyright (c) Michael Grier.
 
-//! The on-disk store layout: the `.shire` marker over the content and namespace
+//! The on-disk store layout: the `.store` marker over the content and namespace
 //! trees (`D314`, LAY-1).
 //!
-//! A Canopy store lives under a *Shire root* directory whose top level is a
-//! [`.shire`](MARKER_NAME) marker file plus `files/` (content-verified blobs, replicated
+//! A Canopy store lives under a *store root* directory whose top level is a
+//! [`.store`](MARKER_NAME) marker file plus `files/` (content-verified blobs, replicated
 //! `blob_replica_count` ways) and `namespace/` (self-validating pointers, replicated an
 //! odd `pointer_replica_count` ways). canopy stores opaque documents keyed by
 //! caller-supplied node names; it has no ticket tables and no `tickets/` subtree (D54) --
@@ -14,7 +14,7 @@
 //! The marker carries the store's own *genesis* configuration -- the physical
 //! layout parameters canopy needs to reopen the store deterministically (format
 //! version, the two replica counts, shard width) plus a caller-supplied identity and
-//! creation time. Its presence is the authoritative "this is a Shire" signal:
+//! creation time. Its presence is the authoritative "this is a store" signal:
 //! [`Store::init`] creates the layout and [`Store::open`] refuses a root
 //! whose marker is absent or malformed, so the two stay distinct and Canopy
 //! never scribbles documents into a directory pointed at by mistake.
@@ -38,21 +38,32 @@ use crate::naming::BlobRef;
 use crate::pointer::PointerError;
 use crate::transaction::{Precondition, Swap, SwapSet};
 
+mod agent;
 mod apply;
 mod blob;
+mod coordinated;
 mod document;
 mod errors;
 mod genesis;
+mod management;
+mod migration;
 mod namespace;
 mod publication;
+mod recovery;
 mod repair;
 mod scrub;
 mod surface;
 mod writer;
 
+pub use agent::{
+    Agent, AttachedHandle, AttachedHandles, CANOPY_SCHEMA_VERSION, SchemaLayer, SchemaVersions,
+};
+use coordinated::{Coordinated, ModificationGuard};
 pub use genesis::Migration;
+pub use management::{DiagnosticView, StoreProperties};
 pub use publication::PUBLICATION_RECORD_NAME;
 use publication::PublicationDurability;
+pub use recovery::{Recovery, RecoveryNeed, RecoveryPhase, RecoveryProgress};
 use repair::RepairBacklog;
 pub use repair::{BlobVerification, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RepairOutcome};
 pub use scrub::BacklogRepairReport;
@@ -67,14 +78,31 @@ pub use self::errors::*;
 pub use self::namespace::PointerRead;
 #[cfg(test)]
 pub(crate) use self::surface::CLAIMS_DIR;
-pub use self::surface::{Commit, SNAPSHOT_ATTEMPTS, StoreOptions, StoreView};
+pub use self::surface::WriteOutcome;
+pub use self::surface::{Commit, DEFAULT_SNAPSHOT_TIMEOUT, StoreOptions, StoreView};
 
-/// The marker file name at the Shire root (D40).
+/// The marker file name at the store root (D40).
 ///
-/// Its presence is the authoritative "this is a Shire" signal. The leading dot
+/// Its presence is the authoritative "this is a store" signal. The leading dot
 /// keeps it out of the node namespace: a node name never begins with `.`, so the
 /// marker can never collide with a shard directory.
-pub const MARKER_NAME: &str = ".shire";
+pub const MARKER_NAME: &str = ".store";
+
+/// The marker's file name before genesis version 7, which a root migrated by [`Store::migrate`]
+/// no longer has.
+///
+/// Read only to recognise a root that has not been migrated and to migrate it. Changing this
+/// value changes which roots are recognised as migratable, so it is a compatibility-affecting
+/// constant.
+pub(crate) const LEGACY_MARKER_NAME: &str = ".shire";
+
+/// The record of a migration in progress, at the store root.
+///
+/// It exists from before the migration changes anything until the migration is complete, and
+/// names everything the migration writes, so an interrupted migration is finished from it alone.
+/// A dotfile for the reason [`MARKER_NAME`] is. Changing this value is a breaking change to the
+/// on-disk layout.
+pub const MIGRATION_RECORD_NAME: &str = ".migration";
 
 /// The name of the root's exclusive-writer lock file (`D116`).
 ///
@@ -87,48 +115,14 @@ pub const MARKER_NAME: &str = ".shire";
 /// that treats this file as evidence of a running process is wrong.
 pub const LOCK_NAME: &str = ".lock";
 
-/// The genesis schema version.
-///
-/// Bump on any breaking change to the on-disk genesis shape. Per the repo's
-/// no-magic-constants rule, changing this assigned value is itself a breaking
-/// change. It is independent of any format version the caller keeps inside its opaque
-/// document bodies.
-///
-/// v2 (`D222`) made the namespace hierarchical and dropped the `shard_depth` field: a
-/// v1 store's directory layout carries a shard tier this build would misread as an
-/// ordinary path component, so a v1 store is refused rather than reinterpreted.
-///
-/// v3 (`D314`..`D322`, `D324`) records the content-verified layout's parameters: separate
-/// replica counts for blobs and pointers, and a shard width. A v2 store is refused for the
-/// reason `D318` gives -- nothing is migrated, because nothing yet stored is worth
-/// migrating. Refusal is decided from the version alone, before the rest of the marker is
-/// interpreted (`D325`).
-///
-/// v4 (`D327`) changed the commit log's `prepare` record from carrying document bodies to
-/// carrying their digests. The marker does not describe the log, so this bump may look
-/// misplaced -- it is not. The version is the store's *one* refusal gate, and it is read
-/// before anything else (`D325`); the log has no version of its own, and giving it one
-/// would mean a second gate that can disagree with the first. A v3 `prepare` would
-/// otherwise deserialize into a write with no digest -- structurally valid, silently
-/// wrong -- so the store carrying it is refused instead.
-///
-/// v5 (`CVS-19.4`) retired the partition tree and dropped the `partition_count` field. A v4
-/// marker's natural reading would be a lie: it names a replication width for a tree this
-/// build does not create, read, or repair, so a v4 store would open and then behave as if
-/// its `p{i}` copies were still part of the store's truth. Refusing it is the honest answer,
-/// and is decided from the version alone (`D325`).
-///
-/// v6 added the publication record ([`PUBLICATION_RECORD_NAME`]) that guards an unlogged write
-/// against `STRANDED-VOTE`. A v5 binary would ignore a pending record and could strand the very
-/// vote it guards, so the version is the barrier that keeps one out of a v6 root. A v5 root holds
-/// nothing a v6 build reads differently, so it is not refused but migrated: `open` reports
-/// [`StoreError::MigrationRequired`] and [`Store::migrate`] advances it.
-pub const GENESIS_FORMAT_VERSION: u32 = 6;
+/// The marker encoding version; changing it breaks compatibility, checked before decoding (`D325`).
+pub const GENESIS_FORMAT_VERSION: u32 = 8;
 
-/// The genesis version [`Store::migrate`] advances to [`GENESIS_FORMAT_VERSION`]. Changing this
-/// value changes which roots are migrated rather than refused, so it is a
-/// compatibility-affecting constant.
-pub const MIGRATABLE_FORMAT_VERSION: u32 = 5;
+/// The oldest migratable genesis version; changing this changes migration support.
+pub const MIGRATABLE_FORMAT_VERSION: u32 = 6;
+
+/// The coordinated genesis format before agent metadata; changing this changes migration support.
+pub const COORDINATED_FORMAT_VERSION: u32 = 7;
 
 /// The largest replica count canopy accepts -- a safety ceiling (`D79`).
 ///
@@ -167,7 +161,7 @@ const PARTITION_PREFIX: &str = "p";
 
 /// The blob tree: `<root>/files/p{k}/<shard>/<name>` (`D314`).
 ///
-/// One of the three parts a Shire root holds, each with its own replication partitions and
+/// One of the three parts a store root holds, each with its own replication partitions and
 /// its own lifecycle. Not a dotfile, because it is a peer of the namespace rather than
 /// something hidden from it. Changing this value is a breaking change to the on-disk layout.
 pub(crate) const BLOB_TREE_DIR: &str = "files";
@@ -196,38 +190,6 @@ pub(crate) const QUARANTINE_DIR: &str = ".quarantine";
 /// path per line, so a reopen syncs the name of any whose creation was not made durable.
 /// Changing this value is a breaking change to the on-disk layout.
 pub(crate) const DIR_SYNC_DEBT_NAME: &str = ".dir-sync-debt";
-
-/// The modification count (`D335`) and how deeply the current writer has nested
-/// modifications inside one another.
-///
-/// Only the outermost modification moves the count, so a logical operation built from several
-/// -- a transaction's swaps, a write's ingest, publication and collection -- reads as one odd
-/// span to a sampler rather than as a run of settled moments between its steps. The depth is
-/// touched only by the holder of the writer gate, one thread at a time.
-#[derive(Debug, Default)]
-pub(crate) struct ModificationCount {
-    count: std::sync::atomic::AtomicU64,
-    depth: std::sync::atomic::AtomicUsize,
-}
-
-/// Ends a modification begun by `Store::begin_modification`, however the modification ends.
-#[must_use]
-pub(crate) struct ModificationGuard {
-    modifications: Arc<ModificationCount>,
-    writer: Arc<WriterGate>,
-}
-
-impl Drop for ModificationGuard {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering;
-        let outermost = self.modifications.depth.fetch_sub(1, Ordering::AcqRel) == 1;
-        // A store whose transaction ended unresolved keeps the count odd, so no reader treats
-        // the partial state it left as settled before recovery has finished it.
-        if outermost && !self.writer.is_unresolved() {
-            self.modifications.count.fetch_add(1, Ordering::Release);
-        }
-    }
-}
 
 /// Whether a failure to reach a path means only that nothing is there.
 ///
@@ -282,7 +244,7 @@ pub(crate) const POINTER_EPOCH_READS: u64 = 4096;
 /// atomically renames it into the committed node path, so a committed copy is
 /// never overwritten in place. The leading `.` keeps staging out of the node
 /// namespace (a path component never begins with `.`), so a namespace traversal
-/// skips it like the `.shire` marker, and its distinctive name lets crash-recovery
+/// skips it like the `.store` marker, and its distinctive name lets crash-recovery
 /// sweep the orphaned staging of an interrupted write. Changing this value is a
 /// breaking change to the on-disk staging convention.
 pub(crate) const STAGING_DIR: &str = ".staging";
@@ -300,7 +262,7 @@ fn temp_name(document: &DocumentName, nonce: &Nonce) -> String {
     format!("{}{TEMP_INFIX}{}", document.as_str(), nonce.as_str())
 }
 
-/// Whether a directory entry name is one of canopy's own dotfiles (the `.shire` marker
+/// Whether a directory entry name is one of canopy's own dotfiles (the `.store` marker
 /// mirror or the `.staging` directory), which a namespace traversal skips.
 ///
 /// A [`NodePath`] component never begins with `.`, so a leading dot unambiguously
@@ -378,16 +340,16 @@ fn group_by_transaction(records: &[LogRecord]) -> Vec<RecoveringTxn<'_>> {
 /// elsewhere. canopy only requires it be non-empty; its structure and uniqueness
 /// are the caller's concern.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShireId(String);
+pub struct StoreId(String);
 
-impl ShireId {
+impl StoreId {
     /// Builds an identity from `raw`, rejecting the empty string.
     pub fn new(raw: impl Into<String>) -> Result<Self, StoreError> {
         let raw = raw.into();
         if raw.is_empty() {
-            return Err(StoreError::EmptyShireId);
+            return Err(StoreError::EmptyStoreId);
         }
-        Ok(ShireId(raw))
+        Ok(StoreId(raw))
     }
 
     /// The identity as a string slice.
@@ -400,7 +362,7 @@ impl ShireId {
     }
 }
 
-impl fmt::Display for ShireId {
+impl fmt::Display for StoreId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -409,7 +371,7 @@ impl fmt::Display for ShireId {
 /// The configuration [`Store::init`] writes into a new store's genesis marker.
 ///
 /// [`GenesisConfig::new`] takes the two runtime-variable values canopy will not
-/// invent -- the [`ShireId`] and the creation time -- and defaults every physical
+/// invent -- the [`StoreId`] and the creation time -- and defaults every physical
 /// layout parameter. Each `with_*` setter keeps its value valid by construction.
 ///
 /// **There is no digest-algorithm parameter.** SHA-256 is fixed in code (`D322`): SHA-512
@@ -428,20 +390,20 @@ pub struct GenesisConfig {
     blob_replica_count: usize,
     pointer_replica_count: usize,
     shard_width: usize,
-    shire_id: ShireId,
+    store_id: StoreId,
     created_at_unix_ms: u64,
 }
 
 impl GenesisConfig {
-    /// A configuration for a store identified by `shire_id`, created at
+    /// A configuration for a store identified by `store_id`, created at
     /// `created_at_unix_ms` (a caller-supplied Unix-epoch millisecond stamp),
     /// with every layout parameter at its default.
-    pub fn new(shire_id: ShireId, created_at_unix_ms: u64) -> Self {
+    pub fn new(store_id: StoreId, created_at_unix_ms: u64) -> Self {
         GenesisConfig {
             blob_replica_count: DEFAULT_BLOB_REPLICA_COUNT,
             pointer_replica_count: DEFAULT_POINTER_REPLICA_COUNT,
             shard_width: DEFAULT_SHARD_WIDTH,
-            shire_id,
+            store_id,
             created_at_unix_ms,
         }
     }
@@ -513,8 +475,8 @@ impl GenesisConfig {
     }
 
     /// The configured store identity.
-    pub fn shire_id(&self) -> &ShireId {
-        &self.shire_id
+    pub fn store_id(&self) -> &StoreId {
+        &self.store_id
     }
 
     /// The configured creation timestamp (Unix-epoch milliseconds).
@@ -530,19 +492,21 @@ struct Genesis {
     blob_replica_count: usize,
     pointer_replica_count: usize,
     shard_width: usize,
-    shire_id: String,
+    store_id: String,
     created_at_unix_ms: u64,
+    metadata: agent::AgentMetadata,
 }
 
 impl Genesis {
-    fn from_config(config: GenesisConfig) -> Self {
+    fn from_config(config: GenesisConfig, agent: &Agent) -> Self {
         Genesis {
             format_version: GENESIS_FORMAT_VERSION,
             blob_replica_count: config.blob_replica_count,
             pointer_replica_count: config.pointer_replica_count,
             shard_width: config.shard_width,
-            shire_id: config.shire_id.into_string(),
+            store_id: config.store_id.into_string(),
             created_at_unix_ms: config.created_at_unix_ms,
+            metadata: agent::AgentMetadata::new(agent),
         }
     }
 }
@@ -602,7 +566,7 @@ impl Children {
     }
 }
 
-/// A handle to a Canopy document store rooted at a Shire directory (D40/D54).
+/// A handle to a Canopy document store rooted at a store directory (D40/D54).
 ///
 /// Obtained from [`Store::init`] (create a new store) or [`Store::open`] (attach
 /// to an existing one). The handle holds the [`Vfs`] seam (D55) through which all
@@ -634,13 +598,12 @@ pub struct Store {
     ///
     /// `Arc` for the same reason `blob_reads` is.
     pointer_reads: Arc<std::sync::atomic::AtomicU64>,
-    /// Durable modifications made through this store, which is what lets a reader tell a
-    /// raced read from a damaged one (`D335`).
+    /// The coordination state the count is read from and, for a handle that may write, raised
+    /// through (`D335`).
     ///
-    /// `Arc` for the same reason `blob_reads` is: clones of a `Store` are one store, and a
-    /// counter that each clone kept privately would report "nothing changed" while a sibling
-    /// handle was writing.
-    modifications: Arc<ModificationCount>,
+    /// `Arc` for the same reason `blob_reads` is: clones of a `Store` are one store, and share the
+    /// one hold of writer exclusion that raises the count.
+    coordination: Arc<Coordinated>,
     /// Blobs a read found a damaged replica of, waiting for a writer to repair them
     /// (`D339`).
     ///
@@ -664,8 +627,9 @@ pub struct Store {
     /// `Arc` because `Store` is `Clone` and the clones are one writer, not
     /// several: re-acquiring per clone would deadlock against ourselves, so the
     /// lock is released only when the **last** handle drops. There is no `Drop`
-    /// impl -- dropping the `Arc` is the release.
-    _lock: Arc<dyn VfsLock>,
+    /// There is no `Drop` impl -- dropping the `Arc` is the release. A store opened only to read
+    /// holds none.
+    _lock: Option<Arc<dyn VfsLock>>,
     /// The nonce source and commit observer the public write surface uses, shared by every
     /// clone because the clones are one writer.
     surface: Arc<surface::Surface>,
@@ -677,13 +641,13 @@ impl Store {
         &self.root
     }
 
-    /// How many durable modifications this store has made since it was opened (`D335`).
+    /// The modification count of the root (`D335`), as the coordination state publishes it.
     ///
-    /// Monotonic, in memory, and meaningful **only because `D116` gives a root exactly one
-    /// writer**: there is no other process to miss. It counts modifications rather than
-    /// transactions, so the non-transactional write path is visible here even though it
-    /// journals nothing (`D332`) -- which is the whole point, since that path is the one a
-    /// log-based answer cannot see.
+    /// It is one count for the root, raised by whichever process holds writer exclusion, so a
+    /// handle opened only to read in another process samples the same count as the writer does.
+    /// It counts modifications rather than transactions, so the non-transactional write path is
+    /// visible here even though it journals nothing (`D332`) -- which is the whole point, since
+    /// that path is the one a log-based answer cannot see.
     ///
     /// # What it is for: telling a raced read from a damaged one
     ///
@@ -707,14 +671,22 @@ impl Store {
     /// Raising it only at the end would make that reader see an unmoved count and conclude
     /// "damage" about a store that was merely busy.
     ///
-    /// It may rise more than once for one logical change; only *movement* and parity are
-    /// meaningful.
-    /// It resets on reopen, which is why it is only ever compared against itself within a
-    /// single caller's read.
-    pub fn modifications(&self) -> u64 {
-        self.modifications
-            .count
-            .load(std::sync::atomic::Ordering::Acquire)
+    /// # What leaves it odd
+    ///
+    /// A writer that died part-way through a modification leaves the count odd, and so does a
+    /// root whose coordination state cannot be vouched for -- one never opened by a writer, or
+    /// one a host restart may have rolled back. It stays odd until a writer opens the store and
+    /// finishes recovery, so a reader never classifies the partial state it left as settled.
+    ///
+    /// It may rise more than once for one logical change, and it keeps its value across opens;
+    /// only *movement* and parity are meaningful, and only between samples one caller compares.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Coordination`] if the coordination state cannot be sampled. A failed sample is
+    /// an error and never a count, so it cannot be mistaken for a settled store.
+    pub fn modifications(&self) -> Result<u64, StoreError> {
+        self.coordination.sample()
     }
 
     /// Whether two [`modifications`](Store::modifications) samples bracket a span in which
@@ -821,24 +793,29 @@ impl Store {
         Ok(())
     }
 
-    /// Syncs the parent of every directory an earlier open may have created without making
-    /// its name durable, then empties the record. Run by `open` before recovery.
-    pub(crate) fn discharge_recorded_dirs(&self) -> Result<(), StoreError> {
+    /// Every directory an earlier open may have created without making its name durable: those
+    /// the durable record names and those this process remembers, and whether the record holds
+    /// anything to empty. The in-memory list is taken, since the record, which names everything it
+    /// held, stays until [`empty_dir_record`](Store::empty_dir_record).
+    pub(crate) fn unsynced_dirs_to_discharge(&self) -> Result<(Vec<PathBuf>, bool), StoreError> {
         let path = self.root.join(DIR_SYNC_DEBT_NAME);
         let bytes = match self.vfs.read(&path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == VfsErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == VfsErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(StoreError::Vfs(error)),
         };
-        let mut debt = self
-            .unsynced_dirs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         // Only newline-terminated records count: an unterminated tail is an append that never
         // completed, so nothing it named was created. A record that is not a plain relative
         // path below the root is not one this store wrote, and is not followed out of it.
         let text = String::from_utf8_lossy(&bytes);
         let complete = text.rfind('\n').map_or("", |at| &text[..at]);
+        let mut dirs = std::mem::take(
+            &mut self
+                .unsynced_dirs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .dirs,
+        );
         for line in complete.split('\n') {
             let relative = Path::new(line);
             if !line.is_empty()
@@ -846,13 +823,33 @@ impl Store {
                     .components()
                     .all(|part| matches!(part, std::path::Component::Normal(_)))
             {
-                debt.dirs.push(self.root.join(relative));
+                dirs.push(self.root.join(relative));
             }
         }
-        self.discharge_unsynced_dirs(&mut debt)?;
-        if !bytes.is_empty() {
-            self.vfs.truncate(&path, 0)?;
-            self.vfs.fsync(&path)?;
+        Ok((dirs, !bytes.is_empty()))
+    }
+
+    /// Empties the durable record of directories to sync, once every one it named is synced.
+    pub(crate) fn empty_dir_record(&self) -> Result<(), StoreError> {
+        let path = self.root.join(DIR_SYNC_DEBT_NAME);
+        self.vfs.truncate(&path, 0)?;
+        self.vfs.fsync(&path)?;
+        Ok(())
+    }
+
+    /// Syncs the parent of `dir`, if `dir` still exists.
+    pub(crate) fn sync_parent_of(&self, dir: &Path) -> Result<(), StoreError> {
+        match self.vfs.metadata(dir) {
+            // An ancestor that is now a file means the directory, and the intent that
+            // named it, are gone for good: a later write replaced the subtree.
+            Err(error) if is_absent(error.kind()) => {}
+            Err(error) => return Err(StoreError::Vfs(error)),
+            Ok(_) => {
+                let parent = dir
+                    .parent()
+                    .expect("a directory below the root has a parent");
+                self.vfs.fsync(parent)?;
+            }
         }
         Ok(())
     }
@@ -860,18 +857,7 @@ impl Store {
     /// Syncs the parent of each directory in `debt` that still exists.
     fn discharge_unsynced_dirs(&self, debt: &mut DirSyncDebt) -> Result<(), StoreError> {
         while let Some(dir) = debt.dirs.last() {
-            match self.vfs.metadata(dir) {
-                // An ancestor that is now a file means the directory, and the intent that
-                // named it, are gone for good: a later write replaced the subtree.
-                Err(error) if is_absent(error.kind()) => {}
-                Err(error) => return Err(StoreError::Vfs(error)),
-                Ok(_) => {
-                    let parent = dir
-                        .parent()
-                        .expect("a directory below the root has a parent");
-                    self.vfs.fsync(parent)?;
-                }
-            }
+            self.sync_parent_of(dir)?;
             debt.dirs.pop();
         }
         Ok(())
@@ -892,16 +878,28 @@ impl Store {
     /// store -- a write of either kind, a check, a collection, a repair, a scrub -- starts from
     /// a store with no publication pending, and none needs to remember to settle.
     pub(crate) fn writable(&self) -> Result<WriterGuard, StoreError> {
-        let guard = self.writer.enter();
+        self.refuse_if_read_only()?;
+        let mut guard = self.writer.enter();
         self.refuse_if_unresolved()?;
         if self.writer.held_depth() == 1 {
-            self.settle_publication()?;
+            guard.publication_settled = self.settle_publication()?;
         }
         Ok(guard)
     }
 
+    pub(crate) fn refuse_if_read_only(&self) -> Result<(), StoreError> {
+        if !self.coordination.may_write() {
+            return Err(StoreError::ReadOnly {
+                root: self.root.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuses while this handle needs recovery, except to recovery's own steps, which hold the
+    /// writer gate and reach the write paths they replay through.
     pub(crate) fn refuse_if_unresolved(&self) -> Result<(), StoreError> {
-        if self.writer.is_unresolved() {
+        if self.writer.is_unresolved() && !self.coordination.is_recovering() {
             return Err(StoreError::RecoveryRequired {
                 root: self.root.clone(),
             });
@@ -909,8 +907,10 @@ impl Store {
         Ok(())
     }
 
-    /// Whether a transaction through any handle to this store failed after it may have
-    /// reached its commit point. Writes are refused until the store is reopened.
+    /// Whether this handle needs recovery before it may write: opening found the coordination
+    /// state requiring it, or a transaction through any handle to this store failed after it
+    /// may have reached its commit point. Writes are refused until [`recover`](Store::recover)
+    /// completes.
     pub fn recovery_required(&self) -> bool {
         self.writer.is_unresolved()
     }
@@ -918,24 +918,23 @@ impl Store {
     /// Marks a modification in progress until the guard drops, which also marks it ended:
     /// the count is odd in between (`D335`). Take it before the first visible change.
     ///
-    /// Nested calls extend the outermost modification rather than starting their own. A count
-    /// already odd at the outermost start was left so by an unresolved transaction, and stays
-    /// odd.
-    pub(crate) fn begin_modification(&self) -> ModificationGuard {
-        use std::sync::atomic::Ordering;
-        if self.modifications.depth.fetch_add(1, Ordering::AcqRel) == 0
-            && self
-                .modifications
-                .count
-                .load(Ordering::Acquire)
-                .is_multiple_of(2)
-        {
-            self.modifications.count.fetch_add(1, Ordering::AcqRel);
-        }
-        ModificationGuard {
-            modifications: Arc::clone(&self.modifications),
-            writer: Arc::clone(&self.writer),
-        }
+    /// Nested calls extend the outermost modification rather than starting their own, so a
+    /// logical operation built from several -- a transaction's swaps, a write's ingest,
+    /// publication and collection -- reads as one odd span to a sampler rather than as a run of
+    /// settled moments between its steps. A count already odd at the outermost start was left so
+    /// by an unresolved transaction or by state that cannot be vouched for, and stays odd.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::RecoveryRequired`] while the coordination state requires recovery, and
+    /// [`StoreError::Coordination`] if the opening raise cannot be published, in which case no
+    /// effect may be made and the count is unchanged.
+    pub(crate) fn begin_modification(&self) -> Result<ModificationGuard, StoreError> {
+        self.coordination.begin(&self.root)?;
+        Ok(ModificationGuard::new(
+            Arc::clone(&self.coordination),
+            Arc::clone(&self.writer),
+        ))
     }
 
     /// Records that a read found `reference` short of its full replication (`D339`).
@@ -993,8 +992,8 @@ impl Store {
     }
 
     /// The store's identity, as recorded in the genesis marker.
-    pub fn shire_id(&self) -> &str {
-        &self.genesis.shire_id
+    pub fn store_id(&self) -> &str {
+        &self.genesis.store_id
     }
 
     /// The store's creation timestamp (Unix-epoch milliseconds), as recorded in
@@ -1003,15 +1002,11 @@ impl Store {
         self.genesis.created_at_unix_ms
     }
 
-    /// Replays the commit log at open so the store is consistent (D46/D53/D54, TXN-4).
-    ///
-    /// An empty or absent log is the O(1) clean-quiesced fast path: nothing was in
-    /// flight, so replay is skipped. Otherwise each transaction is resolved by its
-    /// records -- D41 serializes transactions, so at most the log's tail is incomplete:
+    /// Resolves one transaction of the commit log by its records (D46/D53/D54, TXN-4) -- D41
+    /// serializes transactions, so at most the log's tail is incomplete:
     ///
     /// - `prepare` + `end`: **applied** -- the swaps landed; residual staging (a crash
-    ///   between the `end` append and the sweep) is discarded, and the supersession
-    ///   collection is re-run (`D328`), since a crash can also land between `end` and it.
+    ///   between the `end` append and the sweep) is discarded.
     /// - `prepare` without `end`: **roll forward** -- the commit point was reached, so
     ///   re-run the idempotent renames from the `prepare` swap set, record `end`, then
     ///   sweep.
@@ -1024,49 +1019,39 @@ impl Store {
     /// re-applies without re-checking its precondition, which already passed before the
     /// `prepare` was written. The log is left as written (roll-forward appends its
     /// `end`); TXN-3's quiescence reset, not recovery, is what empties it.
-    fn recover(&self) -> Result<(), StoreError> {
-        let records = self.commit_log().read()?;
-        if records.is_empty() {
-            return Ok(());
+    fn settle_transaction(&self, txn: &RecoveringTxn<'_>) -> Result<(), StoreError> {
+        if txn.ended {
+            self.sweep_transaction_staging(&txn.id)
+        } else if let Some(prepared) = txn.prepared {
+            self.roll_forward(&txn.id, prepared)
+        } else {
+            self.sweep_transaction_staging(&txn.id)
         }
-        let txns = group_by_transaction(&records);
+    }
 
-        // Pass 1 settles every transaction, moving the namespace to its final state.
-        for txn in &txns {
-            if txn.ended {
-                self.sweep_transaction_staging(&txn.id)?;
-            } else if let Some(prepared) = txn.prepared {
-                self.roll_forward(&txn.id, prepared)?;
-            } else {
-                self.sweep_transaction_staging(&txn.id)?;
-            }
-        }
-
-        // Pass 2 collects, and must not start until pass 1 has finished (`D330`).
-        //
-        // The collection keeps what the namespace points at (`D328`), which is the right
-        // question only once the namespace has stopped moving. Interleaving the two passes
-        // asks it while a later transaction's roll-forward is still pending: an earlier
-        // transaction's collection sees the old pointer, discards the content the pending
-        // roll-forward is about to point at, and the roll-forward then installs a pointer to
-        // a blob that recovery itself deleted.
-        //
-        // Re-run even for transactions that completed, because completing is not evidence the
-        // collection ran -- `end` is appended before it. The pass is idempotent, so a second
-        // run over an already-collected transaction removes nothing.
-        for txn in &txns {
-            match txn.prepared {
-                Some(prepared) => self.collect_superseded(prepared)?,
-                // Never prepared, so the only content it can have left is what its `begin`
-                // announced it was about to ingest (`D329`).
-                None => {
-                    for (node, document) in txn.targets {
-                        self.collect_document_blobs(node, document)?;
-                    }
+    /// Collects what one transaction superseded, once every transaction is settled (`D330`).
+    ///
+    /// The collection keeps what the namespace points at (`D328`), which is the right question
+    /// only once the namespace has stopped moving. Asked while a later transaction's
+    /// roll-forward is still pending, an earlier transaction's collection sees the old
+    /// pointer, discards the content the pending roll-forward is about to point at, and the
+    /// roll-forward then installs a pointer to a blob that recovery itself deleted.
+    ///
+    /// Run for transactions that completed too, because completing is not evidence the
+    /// collection ran -- `end` is appended before it. It is idempotent: a second run over an
+    /// already-collected transaction removes nothing.
+    fn collect_transaction(&self, txn: &RecoveringTxn<'_>) -> Result<(), StoreError> {
+        match txn.prepared {
+            Some(prepared) => self.collect_superseded(prepared),
+            // Never prepared, so the only content it can have left is what its `begin`
+            // announced it was about to ingest (`D329`).
+            None => {
+                for (node, document) in txn.targets {
+                    self.collect_document_blobs(node, document)?;
                 }
+                Ok(())
             }
         }
-        Ok(())
     }
 
     /// Completes a rolled-forward transaction (TXN-4): re-runs the idempotent pointer
@@ -1212,7 +1197,7 @@ impl fmt::Debug for Store {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store")
             .field("root", &self.root)
-            .field("shire_id", &self.genesis.shire_id)
+            .field("store_id", &self.genesis.store_id)
             .field("created_at_unix_ms", &self.genesis.created_at_unix_ms)
             .finish_non_exhaustive()
     }

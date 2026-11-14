@@ -64,7 +64,7 @@ fn recovery_rolls_forward_a_prepared_transaction() {
     // Crash point: prepared (past the commit point) but nothing renamed yet.
     assert_eq!(store.read_body(&node, &d).unwrap(), None);
     // Reopen: recovery rolls the prepared transaction forward into the namespace.
-    let recovered = reopen(&vfs, store).unwrap();
+    let recovered = reopen_settled(&vfs, store);
     assert_eq!(recovered.read_body(&node, &d).unwrap(), Some(body(b"v1")));
     // The transaction is now closed with an end record and its staging is swept.
     assert!(
@@ -255,7 +255,7 @@ fn recovery_surfaces_a_corrupt_log_as_a_typed_error() {
 fn a_committed_write_into_new_directories_survives_a_crash() {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
 
@@ -271,6 +271,12 @@ fn a_committed_write_into_new_directories_survives_a_crash() {
 
     mem.simulate_crash();
     let reopened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
+    assert!(reopened.recovery_required());
+    reopened
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_eq!(
         reopened.read_document(&node, &doc("record.json")).unwrap(),
         crate::Read::Found(body(b"durable"))

@@ -2,7 +2,7 @@
 
 //! The append-only NDJSON commit log for the canopy store's two-phase commit (D53).
 //!
-//! A single file at the **store root** -- beside the [`.shire`](crate::MARKER_NAME)
+//! A single file at the **store root** -- beside the [`.store`](crate::MARKER_NAME)
 //! marker and above the `p{i}/` partitions, because it is the cross-partition
 //! coordinator's journal, not the property of any one partition. The log is **one
 //! JSON object per line** (NDJSON): each [`append`](CommitLog::append) writes one
@@ -47,7 +47,7 @@ use crate::name::{DocumentName, NodePath, Nonce};
 use crate::transaction::{Precondition, Swap};
 
 /// The commit log's file name at the store root, beside the
-/// [`.shire`](crate::MARKER_NAME) marker and above the `p{i}/` partitions (D53).
+/// [`.store`](crate::MARKER_NAME) marker and above the `p{i}/` partitions (D53).
 pub(crate) const LOG_NAME: &str = ".commit-log";
 
 /// One record in the D53 commit log: a phase transition tagged with its transaction.

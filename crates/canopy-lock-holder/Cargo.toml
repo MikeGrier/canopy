@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "vfs-lock-holder"
 path = "src/bin/vfs_lock_holder.rs"
 
+[[bin]]
+name = "canopy-store-writer"
+path = "src/bin/store_writer.rs"
+
 [dependencies]
 acadia.workspace = true
 canopy = { path = "../canopy" }

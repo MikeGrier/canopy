@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use test_timers::mpsc::recv_timeout;
 use test_timers::thread::sleep;
 
-use super::{Backend, LONG, on_every_implementation, participant, participant_on};
-use crate::coord::file::FileCoordination;
+use super::{Backend, LONG, participant, participant_on};
 use crate::coord::file::restart::Standing;
+use crate::coord::file::{FileCoordination, FileFactory};
 use crate::coord::{
     CoordError, Coordination, CoordinationFactory, CountNotification, ModCount, ModificationCount,
     Notice,
@@ -23,6 +23,16 @@ use crate::{Fault, FaultOp, FaultPolicy, FaultyFs, Vfs, When};
 /// A deadline no case reaches.
 fn far() -> Instant {
     Instant::now() + LONG * 4
+}
+
+/// Runs `case` for every implementation both as the platform notifies it and as the poller alone
+/// does, over a fresh root on every backend.
+fn on_every_implementation(tag: &str, case: &dyn Fn(&FileFactory, &Backend)) {
+    for implementation in super::implementations() {
+        for factory in [implementation.clone(), implementation.polled()] {
+            super::on_every_backend(tag, &|backend| case(&factory, backend));
+        }
+    }
 }
 
 /// Publishes `value` as a vouched count of this boot, so it samples as itself.
@@ -282,4 +292,188 @@ fn notification_is_reached_through_the_interface() {
         writer.publish_count(4, Standing::Vouched).expect("publish");
         assert!(rings_within(&rings, LONG), "{}", backend.name());
     });
+}
+
+/// The notification the operating system gives on Windows: a lock broken by the rename of a fresh
+/// count over the one published.
+#[cfg(windows)]
+mod os {
+    use std::sync::Mutex;
+    use std::thread;
+
+    use super::*;
+    use crate::OsFs;
+    use crate::tests::TempDir;
+
+    /// A deadline the cases reach only when the notification was lost.
+    const LOST: Duration = Duration::from_secs(2);
+
+    fn on_the_os(tag: &str) -> (TempDir, FileFactory) {
+        (TempDir::new(tag), FileFactory::new())
+    }
+
+    fn os_participant(implementation: &FileFactory, dir: &TempDir) -> FileCoordination {
+        participant_on(implementation, Arc::new(OsFs::new()), dir.path())
+    }
+
+    /// A participant over the operating system's filesystem that counts the reads of the count.
+    fn counting(
+        implementation: &FileFactory,
+        dir: &TempDir,
+        writer: &FileCoordination,
+    ) -> (FileCoordination, Arc<AtomicUsize>) {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let policy = {
+            let reads = Arc::clone(&reads);
+            FaultPolicy::new().inject(
+                FaultOp::Read,
+                writer.layout().count(),
+                Fault::observe_with(move |_, _| {
+                    reads.fetch_add(1, Ordering::Relaxed);
+                }),
+                When::Always,
+            )
+        };
+        let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(OsFs::new(), policy));
+        (participant_on(implementation, vfs, dir.path()), reads)
+    }
+
+    #[test]
+    fn a_break_rings_a_registration_that_nothing_polls_and_no_thread_of_ours_runs() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-break");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 4);
+        let (waiter, reads) = counting(&implementation, &dir, &writer);
+        let sampled = waiter.sample().expect("sample");
+        let (rang, rings) = mpsc::channel();
+        let _notice = waiter
+            .notify(
+                sampled,
+                far(),
+                Box::new(move || {
+                    let _ = rang.send((Instant::now(), thread::current().name().map(String::from)));
+                }),
+            )
+            .expect("notify");
+        let registered = reads.load(Ordering::Relaxed);
+        sleep(Duration::from_millis(300));
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            registered,
+            "a registration the system notifies samples nothing while it waits"
+        );
+        assert!(rings.try_recv().is_err(), "nothing moved");
+
+        let published = Instant::now();
+        writer.publish_count(5, Standing::Vouched).expect("publish");
+        let (at, name) = recv_timeout(&rings, LONG).expect("the break rings it");
+        assert!(at.duration_since(published) < LOST, "rung by the break");
+        assert_ne!(
+            name.as_deref(),
+            Some("acadia-coord-poller"),
+            "not rung by the poller"
+        );
+        assert_ne!(name, thread::current().name().map(String::from));
+    }
+
+    #[test]
+    fn a_registration_before_any_count_is_published_is_rung_by_the_poller() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-fallback");
+        let writer = os_participant(&implementation, &dir);
+        let waiter = os_participant(&implementation, &dir);
+        let sampled = waiter.sample().expect("sample");
+        let (_notice, rings) = registered(&waiter, sampled, far());
+        sleep(Duration::from_millis(20));
+        assert!(!rings_within(&rings, Duration::ZERO), "nothing moved");
+        publish(&writer, 2);
+        assert!(rings_within(&rings, LONG), "the poller notices it");
+    }
+
+    #[test]
+    fn a_writer_is_not_held_up_by_registrations_the_system_notifies() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-writer");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let waiters: Vec<_> = (0..6)
+            .map(|_| os_participant(&implementation, &dir))
+            .collect();
+        for value in (4..44).step_by(2) {
+            let held: Vec<_> = waiters
+                .iter()
+                .map(|waiter| registered(waiter, waiter.sample().expect("sample"), far()))
+                .collect();
+            let started = Instant::now();
+            writer
+                .publish_count(value, Standing::Vouched)
+                .expect("publish");
+            assert!(
+                started.elapsed() < LOST,
+                "{value}: a publication waited for a registration to answer its break"
+            );
+            for (_notice, rings) in &held {
+                assert!(rings_within(rings, LONG), "{value}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_wake_is_lost_while_a_writer_publishes_without_pause() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-race");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let waiter = os_participant(&implementation, &dir);
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let publisher = {
+            let running = Arc::clone(&running);
+            thread::spawn(move || {
+                let mut value = 4;
+                while running.load(Ordering::Acquire) {
+                    writer
+                        .publish_count(value, Standing::Vouched)
+                        .expect("publish");
+                    value += 2;
+                }
+            })
+        };
+        let mut slowest = Duration::ZERO;
+        for _ in 0..40 {
+            let sampled = waiter.sample().expect("sample");
+            let started = Instant::now();
+            let (_notice, rings) = registered(&waiter, sampled, started + LOST);
+            recv_timeout(&rings, LONG).expect("every registration rings");
+            slowest = slowest.max(started.elapsed());
+        }
+        running.store(false, Ordering::Release);
+        publisher.join().expect("the publisher ran");
+        assert!(
+            slowest < LOST,
+            "a registration waited for its deadline although the count kept moving: {slowest:?}"
+        );
+    }
+
+    #[test]
+    fn a_notice_dropped_by_its_own_ring_does_not_wait_for_itself() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-self");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let waiter = os_participant(&implementation, &dir);
+        let slot: Arc<Mutex<Option<Box<dyn Notice>>>> = Arc::default();
+        let (done, finished) = mpsc::channel();
+        let notice = {
+            let slot = Arc::clone(&slot);
+            waiter
+                .notify(
+                    waiter.sample().expect("sample"),
+                    far(),
+                    Box::new(move || {
+                        drop(slot.lock().unwrap().take());
+                        let _ = done.send(Instant::now());
+                    }),
+                )
+                .expect("notify")
+        };
+        *slot.lock().unwrap() = Some(notice);
+        writer.publish_count(4, Standing::Vouched).expect("publish");
+        assert!(rings_within(&finished, LONG), "the ring returned");
+    }
 }

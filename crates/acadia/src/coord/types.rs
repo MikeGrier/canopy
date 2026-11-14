@@ -205,6 +205,51 @@ pub enum Untrusted {
     CannotTell,
 }
 
+/// What a [`RecoveryDiscovery`](super::RecoveryDiscovery) found: whether recovery is required, and
+/// each reason it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RecoveryNeed {
+    fenced: bool,
+    untrusted: Option<Untrusted>,
+    holder_died: bool,
+}
+
+impl RecoveryNeed {
+    #[must_use]
+    pub(crate) const fn new(fenced: bool, untrusted: Option<Untrusted>, holder_died: bool) -> Self {
+        RecoveryNeed {
+            fenced,
+            untrusted,
+            holder_died,
+        }
+    }
+
+    /// Whether recovery is required, for any reason.
+    #[must_use]
+    pub const fn required(&self) -> bool {
+        self.fenced || self.untrusted.is_some() || self.holder_died
+    }
+
+    /// Whether the fence is set: an unresolved failure, a holder's death or a recovery that has
+    /// not finished left it.
+    #[must_use]
+    pub const fn fenced(&self) -> bool {
+        self.fenced
+    }
+
+    /// Why the state cannot be vouched for, if it cannot.
+    #[must_use]
+    pub const fn untrusted(&self) -> Option<Untrusted> {
+        self.untrusted
+    }
+
+    /// Whether an ownership record names a holder while exclusion is free, so the holder died.
+    #[must_use]
+    pub const fn holder_died(&self) -> bool {
+        self.holder_died
+    }
+}
+
 /// The ending of a modification, given to
 /// [`ExclusionHold::end_modification`](super::ExclusionHold::end_modification).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

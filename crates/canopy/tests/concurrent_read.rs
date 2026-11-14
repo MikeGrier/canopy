@@ -45,12 +45,12 @@ use std::time::Duration;
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
-    Contention, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store,
-    StoreError, StoreOptions, Swap, SwapSet, read_settled,
+    Contention, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, Store,
+    StoreError, StoreId, StoreOptions, Swap, SwapSet, read_settled,
 };
 
 /// The store root these tests build under.
-const ROOT: &str = "shire";
+const ROOT: &str = "store";
 
 /// How long a test waits for the parked applier before calling the matcher broken.
 ///
@@ -92,11 +92,14 @@ fn fresh_store(vfs: Arc<dyn Vfs>) -> Store {
     Store::init(
         vfs,
         ROOT,
-        GenesisConfig::new(ShireId::new("cvs22-shire").expect("valid shire id"), 0),
-        StoreOptions::with_nonce_source({
-            let next = AtomicUsize::new(0);
-            move || nonce(next.fetch_add(1, Ordering::Relaxed))
-        }),
+        GenesisConfig::new(StoreId::new("cvs22-store").expect("valid store id"), 0),
+        StoreOptions::with_nonce_source(
+            canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+            {
+                let next = AtomicUsize::new(0);
+                move || nonce(next.fetch_add(1, Ordering::Relaxed))
+            },
+        ),
     )
     .expect("init store")
 }
@@ -105,7 +108,9 @@ fn fresh_store(vfs: Arc<dyn Vfs>) -> Store {
 fn commit(store: &Store, n: usize) {
     store
         .apply_transaction(&SwapSet::single(Swap::new(node(), document(), body(n))))
-        .expect("a transaction over an uncontended writer path commits");
+        .expect("a transaction over an uncontended writer path commits")
+        .agent_stamp
+        .expect("agent version stamp");
 }
 
 /// Parks a real apply at the moment it is committing the namespace's **second** replica.

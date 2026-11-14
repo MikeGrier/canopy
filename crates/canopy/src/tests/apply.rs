@@ -36,7 +36,7 @@ fn a_non_not_found_staged_rename_error_is_propagated() {
         gate.clone(),
     );
     let fault: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     fault.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(fault, root, test_config()).unwrap();
     gate.open();
@@ -51,7 +51,7 @@ fn a_non_not_found_staged_rename_error_is_propagated() {
 #[test]
 fn transaction_propagates_staging_tree_cleanup_errors() {
     let gate = FaultGate::closed();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let staging = root
         .join(crate::store::NAMESPACE_TREE_DIR)
         .join("p0")
@@ -87,7 +87,7 @@ fn recovery_does_not_tolerate_non_not_found_rename_errors() {
         gate.clone(),
     );
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).unwrap();
     let txn = nonce("recover-rename");
@@ -108,7 +108,7 @@ fn recovery_does_not_tolerate_non_not_found_rename_errors() {
     drop(store);
     gate.open();
 
-    match Store::open_unsourced(vfs, root) {
+    match open_resolved(vfs, root) {
         Err(StoreError::Vfs(error)) => assert_eq!(error.kind(), VfsErrorKind::Other),
         other => panic!("expected rename Vfs(Other), got {other:?}"),
     }

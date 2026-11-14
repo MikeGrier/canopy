@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use acadia::{OsFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreOptions, Swap,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreId, StoreOptions, Swap,
 };
 
 /// Payload sizes (bytes) swept per partition count.
@@ -105,14 +105,17 @@ fn measure_transaction_throughput() {
             let _ = vfs.remove_dir_all(&store_dir);
             vfs.create_dir_all(&store_dir).expect("create store dir");
 
-            let config = GenesisConfig::new(ShireId::new("bench").expect("shire id"), 0)
+            let config = GenesisConfig::new(StoreId::new("bench").expect("store id"), 0)
                 .with_pointer_replica_count(n)
                 .expect("odd pointer replica count");
             let mut issued: u64 = 0;
-            let options = StoreOptions::with_nonce_source(move || {
-                issued += 1;
-                Nonce::new(&format!("T{issued}")).expect("valid nonce")
-            });
+            let options = StoreOptions::with_nonce_source(
+                canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+                move || {
+                    issued += 1;
+                    Nonce::new(&format!("T{issued}")).expect("valid nonce")
+                },
+            );
             let store = Store::init(vfs.clone(), &store_dir, config, options).expect("init store");
 
             let body = DocumentBody::new(vec![0xABu8; payload]);

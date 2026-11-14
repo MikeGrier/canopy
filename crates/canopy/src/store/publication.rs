@@ -105,22 +105,23 @@ impl Store {
     /// replica of each recorded document forward to the recorded version, clears the record,
     /// and collects what the roll-forward superseded.
     ///
-    /// Run before every operation by [`writable`](Store::writable), and by `open`. A settle
+    /// Run before mutations by [`writable`](Store::writable), and by explicit recovery. A settle
     /// that fails fails its operation with the record still pending, for the next one to settle.
     /// An unterminated last line is an append that never completed, and so a write that moved
     /// no pointer; it names nothing and is cleared with the rest.
-    pub(crate) fn settle_publication(&self) -> Result<(), StoreError> {
+    /// Returns whether a nonempty record was settled, for successful mutation bookkeeping.
+    pub(crate) fn settle_publication(&self) -> Result<bool, StoreError> {
         let path = self.publication_path();
         match self.vfs.metadata(&path) {
             Ok(_) => {}
-            Err(error) if error.kind() == VfsErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == VfsErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(StoreError::Vfs(error)),
         }
         self.vfs.fsync(&path)?;
         self.sync_publication_name()?;
         let bytes = self.vfs.read(&path)?;
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let complete = match bytes.iter().rposition(|&b| b == b'\n') {
             Some(last_newline) => &bytes[..=last_newline],
@@ -144,7 +145,7 @@ impl Store {
         for publication in &settled {
             self.collect_document_blobs(&publication.node, &publication.document)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Makes the record file's name durable in the store root, once per open.

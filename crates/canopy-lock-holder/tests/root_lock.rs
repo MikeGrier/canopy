@@ -19,14 +19,17 @@ use std::time::{Duration, Instant};
 
 use acadia::{OsFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store, StoreError,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, Store, StoreError, StoreId,
     StoreOptions, Swap,
 };
 
 /// Options with a single nonce, for the one write these tests make per open.
 fn options() -> StoreOptions {
     let mut nonce = Some(Nonce::new("after-kill").unwrap());
-    StoreOptions::with_nonce_source(move || nonce.take().expect("one write per open"))
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || nonce.take().expect("one write per open"),
+    )
 }
 
 /// How long to wait for the OS to release a killed holder's lock before failing.
@@ -71,7 +74,7 @@ fn vfs() -> Arc<dyn Vfs> {
 }
 
 fn config() -> GenesisConfig {
-    GenesisConfig::new(ShireId::new("lock-tests").unwrap(), 0)
+    GenesisConfig::new(StoreId::new("lock-tests").unwrap(), 0)
         .with_pointer_replica_count(1)
         .unwrap()
 }
@@ -171,7 +174,7 @@ fn open_within_deadline(root: &Path) -> Result<Store, StoreError> {
     let deadline = Instant::now() + RELEASE_DEADLINE;
     loop {
         match Store::open(vfs(), root.to_path_buf(), options()) {
-            Ok(store) => return Ok(store),
+            Ok((store, _)) => return Ok(store),
             Err(e) if Instant::now() >= deadline => return Err(e),
             Err(_) => test_timers::thread::sleep(Duration::from_millis(25)),
         }
@@ -263,8 +266,8 @@ fn holders_of_different_roots_do_not_exclude_each_other() {
     holder.kill();
 }
 
-/// Once the holder is gone the root is fully usable, not merely openable: recovery runs and
-/// writes land. A lock that were somehow still half-held would surface here rather than in
+/// Once the holder is gone the root is fully usable, not merely openable: resolving what it left
+/// lifts the fence its death set, and writes land. A lock that were somehow still half-held would surface here rather than in
 /// production.
 #[test]
 fn the_root_is_writable_again_after_the_holder_dies() {
@@ -274,6 +277,11 @@ fn the_root_is_writable_again_after_the_holder_dies() {
     holder.kill();
 
     let store = open_within_deadline(root.path()).expect("reopen after the holder died");
+    store
+        .resolve()
+        .expect("resolve what the holder left")
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(
         store.commit_log_is_empty().expect("read the log"),
         "a store reopened after a kill starts from a clean log"

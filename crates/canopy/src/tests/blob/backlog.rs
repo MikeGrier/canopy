@@ -90,7 +90,7 @@ fn a_drain_that_fails_part_way_puts_its_suspects_back() {
         gate.clone(),
     );
     let vfs: Arc<dyn Vfs> = Arc::new(acadia::FaultyFs::new(acadia::MemFs::new(), policy));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs, root, test_config()).expect("init");
 

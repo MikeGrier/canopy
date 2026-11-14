@@ -4,15 +4,45 @@
 //! The `init` / `open` paths: writing the genesis marker replicas over an empty
 //! root, and reading them back into a live store (LAY-1).
 //!
-//! The genesis types themselves (`ShireId`, `GenesisConfig`, `Genesis`) stay in
+//! The genesis types themselves (`StoreId`, `GenesisConfig`, `Genesis`) stay in
 //! the parent module: `Store` holds a `Genesis` field, so the cluster is bound to
 //! the struct definition.
 
 use super::*;
 use crate::store::blob::blob_partition_root;
+use crate::store::migration::Found;
 use crate::store::namespace::namespace_partition_root;
+use acadia::coord::{Access, CoordinationFactory, Waiting};
+use std::ffi::OsStr;
+
+use super::coordinated::Coordinated;
 
 impl Store {
+    /// Rechecks admission under the tiers before registering or taking writer exclusion.
+    fn attach_store(
+        vfs: &Arc<dyn Vfs>,
+        root: &Path,
+        factory: &dyn CoordinationFactory,
+        agent: &Agent,
+        access: Access,
+    ) -> Result<(Genesis, Coordinated), StoreError> {
+        let participant = factory.open(Arc::clone(vfs), root)?;
+        participant.confirm_created(OsStr::new(MARKER_NAME))?;
+        let mut attachment = participant.attach(access, Waiting::Wait)?;
+        let genesis = Self::read_genesis(vfs, root)?;
+        genesis.metadata.check_admission(agent, access)?;
+        let payload = super::agent::registration_payload(agent, attachment.tiers())?;
+        let _ = attachment.register(&payload);
+        let coordinated = match access {
+            Access::Read => Coordinated::reader(participant, attachment),
+            Access::Write => {
+                let hold = participant.acquire(Waiting::Wait)?;
+                Coordinated::writer(participant, attachment, hold)
+            }
+        };
+        Ok((genesis, coordinated))
+    }
+
     /// Takes the root's exclusive-writer lock (`D116`), naming contention as
     /// [`StoreError::RootInUse`] rather than letting it fold into a bare
     /// [`StoreError::Vfs`].
@@ -31,7 +61,7 @@ impl Store {
     ///
     /// `root` must already exist as a directory and hold no store: it must be
     /// empty apart from ignorable dotfiles, and in particular must not already
-    /// contain a [`.shire`](MARKER_NAME) marker. The genesis is serialized once
+    /// contain a [`.store`](MARKER_NAME) marker. The genesis is serialized once
     /// and mirrored into every partition; the root marker is written **last**
     /// (atomically, via a temp sibling and rename) so a crash mid-init leaves no
     /// marker and [`open`](Store::open) cleanly refuses the partial store rather
@@ -41,26 +71,48 @@ impl Store {
     /// returned store's life; a root another process already holds is refused
     /// with [`StoreError::RootInUse`].
     ///
+    /// Before it makes anything else it records, durably, the coordination implementation
+    /// `options` names as the one that owns the root, so a root with a marker always has the
+    /// record; a root already recorded for another implementation is refused with
+    /// [`StoreError::RootReserved`].
+    ///
     /// `root` must be on a local filesystem; a networked root is unsupported and not
     /// detected (see [`Store`]).
     ///
-    /// `options` supplies the nonce source the write verbs draw from; see [`StoreOptions`].
+    /// `options` supplies the agent, its schema and the nonce source; see [`StoreOptions`].
     pub fn init(
         vfs: Arc<dyn Vfs>,
         root: impl Into<PathBuf>,
         config: GenesisConfig,
         options: StoreOptions,
     ) -> Result<Self, StoreError> {
-        let store = Self::init_unsourced(vfs, root, config)?;
+        let factory = options.coordination();
+        let store = Self::init_through(vfs, root, config, &*factory, options.agent())?;
         store.install(options);
         Ok(store)
     }
 
     /// [`init`](Store::init) with no nonce source, for tests that name every nonce themselves.
+    #[cfg(test)]
     pub(crate) fn init_unsourced(
         vfs: Arc<dyn Vfs>,
         root: impl Into<PathBuf>,
         config: GenesisConfig,
+    ) -> Result<Self, StoreError> {
+        Self::init(
+            vfs,
+            root,
+            config,
+            StoreOptions::without_nonce_source(crate::tests::test_agent()),
+        )
+    }
+
+    fn init_through(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
+        config: GenesisConfig,
+        factory: &dyn CoordinationFactory,
+        agent: &Agent,
     ) -> Result<Self, StoreError> {
         let root = root.into();
 
@@ -76,7 +128,7 @@ impl Store {
         let refuse_occupied = |root: &PathBuf| -> Result<(), StoreError> {
             for entry in vfs.read_dir(root)? {
                 let name = entry.file_name;
-                if name == MARKER_NAME {
+                if name == MARKER_NAME || name == LEGACY_MARKER_NAME {
                     return Err(StoreError::AlreadyInitialized { root: root.clone() });
                 }
                 if !name.to_string_lossy().starts_with('.') {
@@ -97,8 +149,12 @@ impl Store {
         let lock = Self::lock_root(&vfs, &root)?;
         refuse_occupied(&root)?;
 
-        let genesis = Genesis::from_config(config);
+        let genesis = Genesis::from_config(config, agent);
         let bytes = serde_json::to_vec_pretty(&genesis)?;
+
+        // The implementation record comes before any artifact, as a creation's reservation does:
+        // a root that gets as far as a marker is a root whose implementation is on record.
+        Self::reserve_implementation(&vfs, &root, factory, &bytes)?;
 
         // Additive first: build both trees before the root marker exists.
         //
@@ -124,12 +180,13 @@ impl Store {
         vfs.fsync(&root.join(NAMESPACE_TREE_DIR))?;
 
         // Commit: the root marker appears atomically and last (D40).
-        let marker = root.join(MARKER_NAME);
-        let tmp = root.join(format!("{MARKER_NAME}.tmp"));
-        vfs.write(&tmp, &bytes)?;
-        vfs.fsync(&tmp)?;
-        vfs.rename(&tmp, &marker)?;
-        vfs.fsync(&root)?;
+        Self::publish_durably(&vfs, &root, MARKER_NAME, &bytes)?;
+
+        // A root made now has nothing to recover, and its coordination state, which no one has
+        // vouched for yet, is vouched for by the first hold of writer exclusion.
+        let (genesis, coordination) =
+            Self::attach_store(&vfs, &root, factory, agent, Access::Write)?;
+        coordination.complete_recovery()?;
 
         Ok(Store {
             vfs,
@@ -137,46 +194,126 @@ impl Store {
             genesis,
             blob_reads: Arc::default(),
             pointer_reads: Arc::default(),
-            modifications: Arc::default(),
+            coordination: Arc::new(coordination),
             repair_backlog: Arc::default(),
             writer: Arc::default(),
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             publication: Arc::default(),
-            _lock: lock,
+            _lock: Some(lock),
             surface: Arc::default(),
         })
     }
 
     /// Opens the existing store under `root` (D40/LAY-1).
     ///
-    /// Reads and validates the [`.shire`](MARKER_NAME) marker: an absent marker
-    /// is [`StoreError::NotAShire`], marker bytes that are not the expected JSON
+    /// Reads and validates the [`.store`](MARKER_NAME) marker: an absent marker
+    /// is [`StoreError::NotAStore`], marker bytes that are not the expected JSON
     /// are [`StoreError::Json`], a marker written by an unknown genesis version is
     /// [`StoreError::UnsupportedFormatVersion`], and a marker whose recorded
     /// layout is inconsistent with what is on disk (a bad shard width or replica
     /// count, a missing or non-directory partition) is
     /// [`StoreError::MalformedMarker`] / [`StoreError::MissingPartition`]. Only a
-    /// fully valid Shire yields a handle.
+    /// fully valid store yields a handle.
     ///
     /// `root` must be on a local filesystem; a networked root is unsupported and not
     /// detected (see [`Store`]).
     ///
-    /// `options` supplies the nonce source the write verbs draw from; see [`StoreOptions`].
+    /// `options` supplies the nonce source the write verbs draw from and the coordination
+    /// implementation the root must record; see [`StoreOptions`].
+    ///
+    /// The store holds the root's lock and writer exclusion for as long as any handle to it lives
+    /// (`D116`). Opening changes only volatile attachment/registry state, not store data or recovery state.
+    /// It returns, beside the handle, what acquiring exclusion found -- a fence, state that cannot
+    /// be vouched for, a holder that died -- and whether writers left work to resolve. What to do
+    /// about it is the caller's: [`resolve`](Store::resolve) finishes what writers left, and when
+    /// the state was vouched for that is all a fence needs; [`recover`](Store::recover), or a
+    /// step-at-a-time [`recovery`](Store::recovery), is the general case. Until one of them has
+    /// lifted it, a handle that [needs recovery](Store::recovery_required) refuses writes and
+    /// still reads.
+    ///
+    /// A root whose recorded coordination implementation is not the one `options` names is refused
+    /// with [`StoreError::Coordination`].
     pub fn open(
         vfs: Arc<dyn Vfs>,
         root: impl Into<PathBuf>,
         options: StoreOptions,
+    ) -> Result<(Self, RecoveryNeed), StoreError> {
+        let factory = options.coordination();
+        let store = Self::open_through(vfs, root, &*factory, options.agent())?;
+        store.install(options);
+        let found = store.found_on_opening()?;
+        Ok((store, found))
+    }
+
+    /// [`open`](Store::open) with no nonce source, returning the handle alone, for tests that name
+    /// every nonce themselves.
+    #[cfg(test)]
+    pub(crate) fn open_unsourced(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
     ) -> Result<Self, StoreError> {
-        let store = Self::open_unsourced(vfs, root)?;
+        Self::open(
+            vfs,
+            root,
+            StoreOptions::without_nonce_source(crate::tests::test_agent()),
+        )
+        .map(|(store, _)| store)
+    }
+
+    /// Opens the existing store under `root` to read it only, taking neither the root's lock nor
+    /// writer exclusion, so any number of processes may read a store another process writes.
+    /// It holds the reader tier shared until the last clone is dropped.
+    ///
+    /// It validates the marker as [`open`](Store::open) does, and recovers nothing: what a writer
+    /// that died left stays as it is, and reads classify it as contention through the
+    /// [modification count](Store::modifications), which stays odd until a writer opens the store
+    /// and finishes recovery. Every write verb is refused with [`StoreError::ReadOnly`].
+    ///
+    /// `options` names the coordination implementation the root must record, as it does for
+    /// [`open`](Store::open); its nonce source is never drawn from.
+    pub fn open_read_only(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
+        options: StoreOptions,
+    ) -> Result<Self, StoreError> {
+        let root = root.into();
+        // Validation first, so a directory that is not a store is refused as one rather than as
+        // an implementation mismatch.
+        Self::read_genesis(&vfs, &root)?
+            .metadata
+            .check_identity(options.agent())?;
+        let (genesis, coordination) = Self::attach_store(
+            &vfs,
+            &root,
+            &*options.coordination(),
+            options.agent(),
+            Access::Read,
+        )?;
+        let store = Store {
+            vfs,
+            root,
+            genesis,
+            blob_reads: Arc::default(),
+            pointer_reads: Arc::default(),
+            coordination: Arc::new(coordination),
+            repair_backlog: Arc::default(),
+            writer: Arc::default(),
+            log_durability: Arc::default(),
+            unsynced_dirs: Arc::default(),
+            publication: Arc::default(),
+            _lock: None,
+            surface: Arc::default(),
+        };
         store.install(options);
         Ok(store)
     }
 
-    /// [`open`](Store::open) with no nonce source, for tests that name every nonce themselves.
-    pub(crate) fn open_unsourced(
+    fn open_through(
         vfs: Arc<dyn Vfs>,
         root: impl Into<PathBuf>,
+        factory: &dyn CoordinationFactory,
+        agent: &Agent,
     ) -> Result<Self, StoreError> {
         let root = root.into();
 
@@ -184,11 +321,12 @@ impl Store {
         // not to be a store never gets a lock file dropped into it. Acquisition
         // is still the serialization point -- two concurrent opens can both pass
         // validation, and exactly one gets the lock.
-        Self::read_genesis(&vfs, &root)?;
+        Self::read_genesis(&vfs, &root)?
+            .metadata
+            .check_identity(agent)?;
         let lock = Self::lock_root(&vfs, &root)?;
-        // Read again under the lock: a migration may have replaced the marker between the first
-        // read and the lock, and the genesis this handle runs by must be the one the lock guards.
-        let genesis = Self::read_genesis(&vfs, &root)?;
+        let (genesis, coordination) =
+            Self::attach_store(&vfs, &root, factory, agent, Access::Write)?;
 
         let store = Store {
             vfs,
@@ -196,31 +334,25 @@ impl Store {
             genesis,
             blob_reads: Arc::default(),
             pointer_reads: Arc::default(),
-            modifications: Arc::default(),
+            coordination: Arc::new(coordination),
             repair_backlog: Arc::default(),
             writer: Arc::default(),
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             publication: Arc::default(),
-            _lock: lock,
+            _lock: Some(lock),
             surface: Arc::default(),
         };
-        // Recovery replays the D53 log and writes, so it must happen under the
-        // lock rather than before it. A pending publication is settled before the log is
-        // replayed, as every operation settles before it acts; the writer gate is held so the
-        // roll-forward's own writes do not settle again.
-        store.discharge_recorded_dirs()?;
-        {
-            let _writer = store.writer.enter();
-            store.settle_publication()?;
+        // Every handle refuses writes while its state requires recovery, which replays the D53
+        // log and writes, and so runs under the lock and the exclusion this handle now holds.
+        if store.coordination.recovery_was_required() {
+            store.writer.mark_unresolved();
         }
-        store.recover()?;
-        store.release_stale_claims()?;
+
         Ok(store)
     }
 
-    /// Migrates the store under `root` from [`MIGRATABLE_FORMAT_VERSION`] to
-    /// [`GENESIS_FORMAT_VERSION`], which a root must be before this build opens it.
+    /// Migrates genesis versions 6 and 7 to version 8, recording the explicit agent in `options`.
     ///
     /// # The root must be offline
     ///
@@ -230,80 +362,82 @@ impl Store {
     /// lock after it, which would go on as if the root were still at the older version.
     /// Stopping every older binary first is the caller's part.
     ///
-    /// # It is one atomic step
+    /// # It is crash-consistent and resumable
     ///
-    /// The marker is written at the new version to a temp sibling, synced, renamed over the
-    /// marker, and the rename made durable, so an interrupted migration leaves the root at one
-    /// version or the other and running it again finishes it. Nothing else in the root changes:
-    /// a root at the older version has no publication record, which reads as none pending. The
-    /// marker is read again under the lock, so two migrations at once both succeed and change
-    /// it once.
-    pub fn migrate(vfs: Arc<dyn Vfs>, root: impl Into<PathBuf>) -> Result<Migration, StoreError> {
+    /// Under the root's lock, with the root read again under it, the migration durably records a
+    /// migration record ([`MIGRATION_RECORD_NAME`]) naming itself, its inputs and the marker it will
+    /// publish; records the coordination implementation; and only then publishes the new marker
+    /// atomically and makes it durable, which commits the migration. It then removes the old marker
+    /// -- so an older binary finds no marker at all and refuses the root -- and the record. A
+    /// migration interrupted at any point leaves a root that is not opened and that running
+    /// `migrate` again finishes; one that finds a migration record resumes it if it is for the same
+    /// implementation and identical agent inputs, or reports [`StoreError::MigrationInputsDiffer`].
+    /// A version-7 root keeps its existing coordination reservation; a version-6 root creates one.
+    ///
+    /// Returns [`Migration::AlreadyCurrent`] for a root that is migrated and has nothing left to
+    /// finish, and [`Migration::Migrated`] when this call did work, a resumed migration included.
+    pub fn migrate(
+        vfs: Arc<dyn Vfs>,
+        root: impl Into<PathBuf>,
+        options: &StoreOptions,
+    ) -> Result<Migration, StoreError> {
         let root = root.into();
-        if Self::marker_version(&vfs, &root)?.1 == GENESIS_FORMAT_VERSION {
+        let factory = options.coordination();
+        if let Found::Current(bytes) = Self::find(&vfs, &root)? {
+            Self::parse_genesis(&vfs, &root, &bytes)?
+                .metadata
+                .check_identity(options.agent())?;
+            let participant = factory.open(Arc::clone(&vfs), &root)?;
+            participant.confirm_created(OsStr::new(MARKER_NAME))?;
             return Ok(Migration::AlreadyCurrent);
         }
         let _lock = Self::lock_root(&vfs, &root)?;
-        let (bytes, version) = Self::marker_version(&vfs, &root)?;
-        match version {
-            GENESIS_FORMAT_VERSION => return Ok(Migration::AlreadyCurrent),
-            MIGRATABLE_FORMAT_VERSION => {}
-            found => {
-                return Err(StoreError::UnsupportedFormatVersion {
-                    found,
-                    expected: GENESIS_FORMAT_VERSION,
-                });
+        let record = match Self::find(&vfs, &root)? {
+            Found::Current(bytes) => {
+                Self::parse_genesis(&vfs, &root, &bytes)?
+                    .metadata
+                    .check_identity(options.agent())?;
+                factory
+                    .open(Arc::clone(&vfs), &root)?
+                    .confirm_created(OsStr::new(MARKER_NAME))?;
+                return Ok(Migration::AlreadyCurrent);
             }
-        }
-        let mut genesis = Self::parse_genesis(&vfs, &root, &bytes)?;
-        genesis.format_version = GENESIS_FORMAT_VERSION;
-        let migrated = serde_json::to_vec_pretty(&genesis)?;
-        let marker = root.join(MARKER_NAME);
-        let tmp = root.join(format!("{MARKER_NAME}.tmp"));
-        vfs.write(&tmp, &migrated)?;
-        vfs.fsync(&tmp)?;
-        vfs.rename(&tmp, &marker)?;
-        vfs.fsync(&root)?;
-        Ok(Migration::Migrated)
-    }
-
-    /// The marker's bytes and the genesis version they carry.
-    ///
-    /// The version decides refusal before the marker is read as this build's shape (`D325`):
-    /// a foreign version must never be reported as malformed JSON just because its field set
-    /// differs from the current one.
-    fn marker_version(vfs: &Arc<dyn Vfs>, root: &Path) -> Result<(Vec<u8>, u32), StoreError> {
-        let bytes = match vfs.read(&root.join(MARKER_NAME)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == VfsErrorKind::NotFound => {
-                return Err(StoreError::NotAShire {
-                    root: root.to_path_buf(),
-                });
+            Found::Interrupted(record) => {
+                record.check(&root, &*factory, options.agent())?;
+                Self::validate_genesis(&vfs, &root, &record.genesis)?;
+                *record
             }
-            Err(e) => return Err(StoreError::Vfs(e)),
+            Found::Legacy(bytes) => {
+                let record =
+                    Self::begin_migration(&vfs, &root, &bytes, &*factory, options.agent())?;
+                let bytes = serde_json::to_vec_pretty(&record)?;
+                Self::publish_durably(&vfs, &root, MIGRATION_RECORD_NAME, &bytes)?;
+                record
+            }
         };
-        let probe: GenesisVersion = serde_json::from_slice(&bytes)?;
-        Ok((bytes, probe.format_version))
+        Self::finish_migration(&vfs, &root, &*factory, &record)?;
+        Ok(Migration::Migrated)
     }
 
     /// Reads and validates the marker of a root this build may open.
     ///
-    /// An absent marker is [`StoreError::NotAShire`], marker bytes that are not the expected
-    /// JSON are [`StoreError::Json`], a root at [`MIGRATABLE_FORMAT_VERSION`] is
-    /// [`StoreError::MigrationRequired`], any other version this build does not write is
-    /// [`StoreError::UnsupportedFormatVersion`], and a layout inconsistent with what is on disk
-    /// is [`StoreError::MalformedMarker`] or [`StoreError::MissingPartition`].
-    fn read_genesis(vfs: &Arc<dyn Vfs>, root: &Path) -> Result<Genesis, StoreError> {
-        let (bytes, version) = Self::marker_version(vfs, root)?;
-        match version {
-            GENESIS_FORMAT_VERSION => Self::parse_genesis(vfs, root, &bytes),
-            MIGRATABLE_FORMAT_VERSION => Err(StoreError::MigrationRequired {
+    /// An absent marker is [`StoreError::NotAStore`], marker bytes that are not the expected
+    /// JSON are [`StoreError::Json`], a root at [`MIGRATABLE_FORMAT_VERSION`] or one whose
+    /// migration was begun and not finished is [`StoreError::MigrationRequired`], any other
+    /// version this build does not write is [`StoreError::UnsupportedFormatVersion`], and a layout
+    /// inconsistent with what is on disk is [`StoreError::MalformedMarker`] or
+    /// [`StoreError::MissingPartition`].
+    pub(super) fn read_genesis(vfs: &Arc<dyn Vfs>, root: &Path) -> Result<Genesis, StoreError> {
+        match Self::find(vfs, root)? {
+            Found::Current(bytes) => Self::parse_genesis(vfs, root, &bytes),
+            Found::Legacy(bytes) => Err(StoreError::MigrationRequired {
                 root: root.to_path_buf(),
-                found: version,
+                found: Self::probe_version(&bytes)?,
                 expected: GENESIS_FORMAT_VERSION,
             }),
-            found => Err(StoreError::UnsupportedFormatVersion {
-                found,
+            Found::Interrupted(record) => Err(StoreError::MigrationRequired {
+                root: root.to_path_buf(),
+                found: record.inputs.from_version,
                 expected: GENESIS_FORMAT_VERSION,
             }),
         }
@@ -311,8 +445,28 @@ impl Store {
 
     /// The marker's genesis, checked against what is on disk.
     fn parse_genesis(vfs: &Arc<dyn Vfs>, root: &Path, bytes: &[u8]) -> Result<Genesis, StoreError> {
-        let root = root.to_path_buf();
         let genesis: Genesis = serde_json::from_slice(bytes)?;
+        Self::validate_genesis(vfs, root, &genesis)?;
+        Ok(genesis)
+    }
+
+    /// Checks `genesis` against what is on disk: its counts and shard width are in range and the
+    /// namespace partitions it names are directories.
+    pub(super) fn validate_genesis(
+        vfs: &Arc<dyn Vfs>,
+        root: &Path,
+        genesis: &Genesis,
+    ) -> Result<(), StoreError> {
+        let root = root.to_path_buf();
+
+        if genesis.metadata.canopy_schema.oldest_reader > genesis.metadata.canopy_schema.current
+            || genesis.metadata.agent_schema.oldest_reader > genesis.metadata.agent_schema.current
+        {
+            return Err(StoreError::MalformedMarker {
+                root,
+                reason: "an oldest reader schema exceeds its layer's current schema",
+            });
+        }
 
         if genesis.blob_replica_count == 0 || genesis.blob_replica_count > MAX_REPLICA_COUNT {
             return Err(StoreError::MalformedMarker {
@@ -352,14 +506,14 @@ impl Store {
                 Err(e) => return Err(StoreError::Vfs(e)),
             }
         }
-        Ok(genesis)
+        Ok(())
     }
 }
 
 /// What [`Store::migrate`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Migration {
-    /// The root was at [`MIGRATABLE_FORMAT_VERSION`] and is now at [`GENESIS_FORMAT_VERSION`].
+    /// A supported older root reached [`GENESIS_FORMAT_VERSION`], including a resumed migration.
     Migrated,
     /// The root was already at [`GENESIS_FORMAT_VERSION`], and nothing was changed.
     AlreadyCurrent,

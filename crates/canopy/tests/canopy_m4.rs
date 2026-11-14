@@ -29,8 +29,8 @@ mod common;
 
 use acadia::{Fault, Vfs, VfsErrorKind, When};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, MAX_REPLICA_COUNT, NodePath, Nonce, ShireId,
-    StoreError, Swap, SwapSet, read_once,
+    DocumentBody, DocumentName, GenesisConfig, MAX_REPLICA_COUNT, NodePath, Nonce, StoreError,
+    StoreId, Swap, SwapSet, read_once,
 };
 use common::{Chaos, Script};
 
@@ -313,7 +313,7 @@ fn recovery_is_idempotent_across_repeated_reopens() {
 
 /// A genesis config for the arithmetic-boundary tests.
 fn config() -> GenesisConfig {
-    GenesisConfig::new(ShireId::new("chaos5-shire").unwrap(), 1)
+    GenesisConfig::new(StoreId::new("chaos5-store").unwrap(), 1)
 }
 
 #[test]

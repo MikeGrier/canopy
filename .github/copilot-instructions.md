@@ -921,7 +921,7 @@ private item the subset references, then check the direction of each reference:
 The reference that is easiest to miss, and the most expensive, is a private *type* named in a
 parent-owned struct's field, because it drags its whole cluster back with it. In `canopy`'s
 store, `Store` holds a private `Genesis`, whose impl reads `GenesisConfig`'s private fields,
-which read `ShireId`'s — so all three types had to stay with `Store` even though the `init` /
+which read `StoreId`'s — so all three types had to stay with `Store` even though the `init` /
 `open` paths moved out cleanly. The same applies to private *methods*: a `fn` on the shared
 type that two parts both call must live in the parent, not in whichever part happened to
 define it first.

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use acadia::{MemFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, QUARANTINE_LIMIT, ShireId, Store,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, QUARANTINE_LIMIT, Store, StoreId,
     StoreOptions, Swap, SwapSet,
 };
 
@@ -43,13 +43,16 @@ fn counting_nonces() -> impl FnMut() -> Nonce + Send + 'static {
 /// A store holding one committed document, plus the backend for raw corruption.
 fn seeded(text: &str) -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),
         root,
-        GenesisConfig::new(ShireId::new("cvs18-shire").unwrap(), 3),
-        StoreOptions::with_nonce_source(counting_nonces()),
+        GenesisConfig::new(StoreId::new("cvs18-store").unwrap(), 3),
+        StoreOptions::with_nonce_source(
+            canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+            counting_nonces(),
+        ),
     )
     .expect("init");
     store
@@ -58,7 +61,9 @@ fn seeded(text: &str) -> (Arc<dyn Vfs>, Store) {
             doc(),
             DocumentBody::new(text.as_bytes().to_vec()),
         )))
-        .expect("the seed commits");
+        .expect("the seed commits")
+        .agent_stamp
+        .expect("agent version stamp");
     (vfs, store)
 }
 
@@ -126,7 +131,7 @@ fn a_repair_rebuilds_from_the_one_intact_copy_even_when_the_majority_is_corrupt(
             .unwrap();
     }
 
-    let (report, _) = store.scrub_content().expect("the scrub completes");
+    let (report, _) = store.scrub_content().expect("the scrub completes").value;
 
     assert_eq!(report.documents(), 1);
     assert_eq!(
@@ -160,7 +165,7 @@ fn a_repair_keeps_the_corrupt_bytes_before_replacing_them() {
     let corrupt = b"garbage that must be kept".to_vec();
     vfs.write(&blob_path(&store, 1), &corrupt).unwrap();
 
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
 
     let (_, outcome) = &report.blob_repairs()[0];
     assert_eq!(outcome.replaced(), &[1]);
@@ -185,7 +190,7 @@ fn a_missing_replica_is_rebuilt_and_nothing_is_sequestered() {
     let (vfs, store) = seeded("the real body");
     vfs.remove_file(&blob_path(&store, 2)).unwrap();
 
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
     let (_, outcome) = &report.blob_repairs()[0];
 
     assert_eq!(outcome.replaced(), &[2]);
@@ -201,7 +206,7 @@ fn a_blob_whose_every_copy_is_corrupt_is_reported_rather_than_guessed() {
         vfs.write(&blob_path(&store, index), b"all gone").unwrap();
     }
 
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
 
     assert!(report.blob_repairs().is_empty());
     assert_eq!(
@@ -223,7 +228,7 @@ fn an_unparseable_pointer_replica_is_rebuilt_and_kept() {
     let garbage = b"this is not a pointer".to_vec();
     vfs.write(&pointer_path(&store, 2), &garbage).unwrap();
 
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
 
     let (subject, outcome) = &report.pointer_repairs()[0];
     assert!(subject.contains("RECORD.JSON"));
@@ -257,14 +262,16 @@ fn a_stale_pointer_replica_is_left_exactly_as_it_is() {
             doc(),
             DocumentBody::new(b"v2".to_vec()),
         )))
-        .expect("the second write commits");
+        .expect("the second write commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     // Put the old, still-valid pointer back on one replica.
     vfs.write(&pointer_path(&store, 2), &stale).unwrap();
     let read = store.read_pointer(&node(), &doc()).expect("a pointer");
     assert_eq!(read.stale(), &[2], "the fixture did not create staleness");
 
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
 
     assert!(
         report.pointer_repairs().is_empty(),
@@ -288,7 +295,10 @@ fn a_stale_pointer_replica_is_left_exactly_as_it_is() {
     // else wrong, the scrub never calls the repair at all, so the assertions above would pass
     // against a repair that happily rewrites stale replicas. Drive it directly to pin the
     // rule where it actually is.
-    let (outcome, _) = store
+    let canopy::WriteOutcome {
+        value: (outcome, _),
+        ..
+    } = store
         .repair_pointer(&node(), &doc(), &read)
         .expect("repair");
     assert!(
@@ -349,7 +359,10 @@ fn a_read_reports_damage_and_the_drain_repairs_more_than_the_read_examined() {
         "the read reported the blob it found damaged"
     );
 
-    let (report, _) = store.repair_reported_damage().expect("the drain repairs");
+    let (report, _) = store
+        .repair_reported_damage()
+        .expect("the drain repairs")
+        .value;
     assert_eq!(store.repair_backlog(), (0, 0), "the drain emptied it");
     assert_eq!(report.examined(), 1);
 
@@ -396,7 +409,7 @@ fn a_full_quarantine_still_repairs_and_says_what_it_dropped() {
     }
 
     vfs.write(&blob_path(&store, 1), b"garbage").unwrap();
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
     let (_, outcome) = &report.blob_repairs()[0];
 
     assert_eq!(outcome.replaced(), &[1], "the repair must still happen");
@@ -424,7 +437,7 @@ fn a_healthy_store_scrubs_clean_and_changes_nothing() {
         .map(|i| vfs.read(&blob_path(&store, i)).unwrap())
         .collect();
 
-    let (report, _) = store.scrub_content().expect("scrub");
+    let (report, _) = store.scrub_content().expect("scrub").value;
 
     assert!(report.is_clean(), "a healthy store reported work to do");
     assert_eq!(report.documents(), 1);
@@ -468,7 +481,10 @@ fn the_store_repairs_reported_damage_when_asked() {
         "and repaired nothing itself -- a read never writes"
     );
 
-    let (report, nonces) = store.repair_reported_damage().expect("the drain repairs");
+    let (report, nonces) = store
+        .repair_reported_damage()
+        .expect("the drain repairs")
+        .value;
     assert_eq!(nonces.len(), 1, "one repair, under one nonce");
 
     assert_eq!(report.examined(), 1);

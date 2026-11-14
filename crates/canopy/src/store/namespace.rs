@@ -61,7 +61,7 @@ impl Store {
             self.vfs.fsync(&temp)?;
         }
 
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
         for index in 0..replicas {
             let entry = self.pointer_entry_path(index, node, document);
             let parent = entry
@@ -143,7 +143,7 @@ impl Store {
         node: &NodePath,
         document: &DocumentName,
     ) -> Result<(), StoreError> {
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
         for index in 0..self.genesis.pointer_replica_count {
             let entry = self.pointer_entry_path(index, node, document);
             // Already absent still syncs the parent: a replayed removal cannot tell an entry

@@ -25,14 +25,27 @@ starts no threads.
   `Store::scrub_content` walks every document and rebuilds bad replicas from a
   verified copy.
 - **Single writer.** A store root is guarded by an OS-level exclusive lock, so a
-  second process cannot open it while the first holds it, and the lock is released
+  second writer cannot open it while the first holds it, and the lock is released
   by the OS if the holder dies. Within a process, every write through any clone of a
   `Store` is serialized, which is what makes the read-modify-write `Store::transform`
   and `Store::plan_and_apply` lose no update; reads never take the lock, and
   `Store::snapshot` reads a state no write disturbed without excluding writers.
+- **Schema admission.** Read-only handles may coexist with the writer. Every handle holds
+  shared reader attachment; a writer also holds shared writer attachment. After attaching,
+  each schema layer admits readers from its oldest reader schema through its current schema,
+  and writers only at current. A mismatch reports `StoreError::SchemaMismatch`. Clones share
+  the attachment and its best-effort registry entry until the last clone is dropped.
 - **Pluggable filesystem.** All I/O goes through the [`acadia`](https://crates.io/crates/acadia)
   `Vfs` trait, so the same store runs on the real filesystem (`OsFs`) or fully in
   memory with scripted fault injection (`MemFs`, `FaultyFs`) for tests.
+
+## Management
+
+`Store::properties` reads fresh metadata, and `Store::attached_handles` reports live registrations
+plus unknown entries and possible incompleteness. A writable handle can durably update its
+description with `set_agent_description`; read-only and recovery-fenced handles cannot.
+`DiagnosticView::open` offers properties, attached handles and `recovery_need` without an agent or
+attachment tier, so it works while the admission gate is held. It offers no document reads or writes.
 
 ## Local filesystems only
 
@@ -45,12 +58,25 @@ losing writes or corrupting the store.
 
 ## Example
 
+Every `StoreOptions` constructor requires an explicit `Agent`: its version-independent identity,
+software version, description and document-schema version. Opens compare the identity exactly and
+do not rewrite the recorded version or description. Genesis version 8 records that metadata and
+each layer's current schema and oldest reader schema. Version-6 and version-7 roots require
+`Store::migrate` with the intended agent while the root is offline; a retry must supply identical
+agent inputs. Migration changes the marker, not the document bodies or their layout.
+
+Mutation APIs return `WriteOutcome<T>` inside their usual `Result`: `value` contains the
+successful operation's result and `agent_stamp` reports the separate update of the recorded
+agent version. A stamp failure is not a failed write and must not trigger replay of the operation.
+Rejected transactions and no-ops do not stamp. Repairs and maintenance stamp successful work,
+with scrub retaining per-document exclusion; a batch reports its first stamp failure separately.
+
 ```rust,no_run
 use std::sync::Arc;
 
 use acadia::{OsFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, StoreId, Store,
     StoreOptions, Swap,
 };
 
@@ -62,24 +88,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `random-nonce` feature provides `canopy::random_nonce_source()`; any source whose
     // nonces are unique per operation will do.
     let mut next = 0u64;
-    let options = StoreOptions::with_nonce_source(move || {
+    let agent = canopy::Agent::new("example-app", "1", "Example application", 1);
+    let options = StoreOptions::with_nonce_source(agent, move || {
         next += 1;
         Nonce::new(&format!("op-{next}")).expect("valid nonce")
     });
 
-    // Create the store once; afterwards reopen it with `Store::open(vfs, root, options)`.
+    // Create the store once; afterwards reopen it with `Store::open(vfs, root, options)`, which
+    // returns what it found beside the handle -- call `resolve()` or `recover()` if it needs either.
     let created_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as u64;
-    let config = GenesisConfig::new(ShireId::new("example")?, created_at_unix_ms);
+    let config = GenesisConfig::new(StoreId::new("example")?, created_at_unix_ms);
     let store = Store::init(Arc::clone(&vfs), root.clone(), config, options)?;
 
     // Write a document atomically.
     let node = NodePath::parse("projects/alpha")?;
     let name = DocumentName::new("settings.json")?;
     let body = DocumentBody::new(br#"{"theme":"dark"}"#.to_vec());
-    let commit = store.update_document(Swap::new(&node, name.clone(), body))?;
-    assert!(commit.is_committed());
+    let receipt = store.update_document(Swap::new(&node, name.clone(), body))?;
+    assert!(receipt.value.is_committed());
+    receipt.agent_stamp.expect("document committed, but its agent stamp failed");
 
     // Read it back, verified against its content digest.
     match store.read_document(&node, &name)? {
@@ -89,7 +118,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Scrub regularly: it is the only pass that finds and repairs unread bad replicas.
-    let (report, _nonces) = store.scrub_content()?;
+    let receipt = store.scrub_content()?;
+    receipt.agent_stamp.expect("scrub completed, but an agent stamp failed");
+    let (report, _nonces) = receipt.value;
     println!("scrub clean: {}", report.is_clean());
     Ok(())
 }

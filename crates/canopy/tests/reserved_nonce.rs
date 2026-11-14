@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use acadia::{OsFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, ShireId, Store, StoreOptions,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Read, Store, StoreId, StoreOptions,
     Swap, SwapSet, TransactionOutcome,
 };
 
@@ -42,14 +42,17 @@ impl Drop for TempRoot {
 fn transactions_named_by_reserved_device_names_commit_and_leave_no_staging() {
     let root = TempRoot::new("commit");
     let vfs: Arc<dyn Vfs> = Arc::new(OsFs::new());
-    let config = GenesisConfig::new(ShireId::new("reserved-nonce").unwrap(), 0);
+    let config = GenesisConfig::new(StoreId::new("reserved-nonce").unwrap(), 0);
     let mut nonces = RESERVED
         .iter()
         .chain(&["con"])
         .map(|raw| Nonce::new(raw).unwrap())
         .collect::<Vec<_>>()
         .into_iter();
-    let options = StoreOptions::with_nonce_source(move || nonces.next().unwrap());
+    let options = StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || nonces.next().unwrap(),
+    );
     let store = Store::init(Arc::clone(&vfs), root.0.clone(), config, options).expect("init");
     let node = NodePath::parse("tickets").unwrap();
 
@@ -78,7 +81,11 @@ fn transactions_named_by_reserved_device_names_commit_and_leave_no_staging() {
     let document = DocumentName::new("doc0").unwrap();
     let body = DocumentBody::new(b"rewritten under con".to_vec());
     let swaps = SwapSet::single(Swap::new(&node, document.clone(), body.clone()));
-    store.apply_transaction(&swaps).expect("lowercase con");
+    store
+        .apply_transaction(&swaps)
+        .expect("lowercase con")
+        .agent_stamp
+        .expect("agent version stamp");
     assert_eq!(
         store.read_document(&node, &document).unwrap(),
         Read::Found(body)

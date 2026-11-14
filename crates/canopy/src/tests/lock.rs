@@ -29,7 +29,7 @@ fn a_second_open_of_a_held_root_is_refused() {
 #[test]
 fn open_propagates_non_locking_errors_from_lock_acquisition() {
     let gate = acadia::FaultGate::closed();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::LockExclusive,
         acadia::PathMatcher::exact(root.join(LOCK_NAME)),
@@ -159,7 +159,7 @@ fn cloning_a_store_does_not_re_acquire() {
 #[test]
 fn distinct_roots_are_independently_locked() {
     let (vfs, first) = fresh_store();
-    let second_root = PathBuf::from("another-shire");
+    let second_root = PathBuf::from("another-store");
     vfs.create_dir_all(&second_root).expect("create root");
 
     let second = Store::init_unsourced(Arc::clone(&vfs), second_root, test_config())
@@ -175,8 +175,8 @@ fn a_failed_open_leaves_the_root_free() {
     let (vfs, root) = fresh_root();
 
     // No marker yet, so this fails validation -- before the lock is even taken.
-    let refused = Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect_err("not a shire");
-    assert!(matches!(refused, StoreError::NotAShire { .. }));
+    let refused = Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect_err("not a store");
+    assert!(matches!(refused, StoreError::NotAStore { .. }));
 
     drop(
         Store::init_unsourced(Arc::clone(&vfs), root, test_config())
@@ -190,7 +190,7 @@ fn a_failed_open_leaves_the_root_free() {
 fn a_refused_open_drops_no_lock_file_into_a_non_store() {
     let (vfs, root) = fresh_root();
 
-    Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect_err("not a shire");
+    Store::open_unsourced(Arc::clone(&vfs), root.clone()).expect_err("not a store");
 
     let entries = vfs.read_dir(&root).expect("read root");
     assert!(

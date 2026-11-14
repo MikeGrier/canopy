@@ -106,7 +106,10 @@ fn seeded_log_store(seed: &[u8]) -> (Arc<dyn Vfs>, Store) {
     let swaps = SwapSet::single(Swap::new(name("seed"), doc("seed.json"), body(seed)));
     store.apply_transaction_as(&swaps, &nonce("seed1")).unwrap();
     assert!(!store.commit_log().read().unwrap().is_empty());
-    store.install(StoreOptions::with_nonce_source(counting_nonce_source()));
+    store.install(StoreOptions::with_nonce_source(
+        test_agent(),
+        counting_nonce_source(),
+    ));
     (vfs, store)
 }
 
@@ -115,7 +118,9 @@ fn the_outermost_write_resets_the_log() {
     let (_vfs, store) = seeded_log_store(b"seed");
     store
         .write_document_replicated(name("record"), &doc("record.json"), &body(b"payload"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(
         store.commit_log().read().unwrap().is_empty(),
         "the write emptied the log before releasing the writer gate"
@@ -125,14 +130,20 @@ fn the_outermost_write_resets_the_log() {
 #[test]
 fn quiesce_truncates_the_log_on_demand() {
     let (_vfs, store) = seeded_log_store(b"seed");
-    store.quiesce().unwrap();
+    store
+        .quiesce()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert!(
         store.commit_log().read().unwrap().is_empty(),
         "an on-demand quiesce truncates the D53 commit log"
     );
     store
         .write_document_replicated(name("record"), &doc("record.json"), &body(b"after"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_eq!(
         store
             .read_body(name("record"), &doc("record.json"))
@@ -146,7 +157,9 @@ fn quiescence_reset_preserves_committed_data() {
     let (_vfs, store) = seeded_log_store(b"kept");
     store
         .write_document_replicated(name("record"), &doc("record.json"), &body(b"fresh"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     // The log is discardable at quiescence: emptying it loses no committed data, which
     // lives in the content and namespace trees.
     assert!(store.commit_log().read().unwrap().is_empty());
@@ -168,7 +181,9 @@ fn an_unlogged_write_on_an_absent_log_stays_a_no_op_reset() {
     let log_path = store.commit_log().path().to_path_buf();
     store
         .write_document_replicated(name("record"), &doc("record.json"), &body(b"payload"))
-        .unwrap();
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_eq!(
         store
             .read_body(name("record"), &doc("record.json"))

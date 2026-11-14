@@ -20,7 +20,10 @@ fn sampling_store(root: &str) -> (Store, FaultGate, Arc<std::sync::Mutex<Vec<u64
             PathMatcher::has_component(NAMESPACE_TREE_DIR),
             Fault::observe_with(move |_, _| {
                 if let Some(store) = store_for_probe.get() {
-                    recorded.lock().unwrap().push(store.modifications());
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(store.modifications().unwrap());
                 }
             }),
             When::Always,
@@ -43,11 +46,11 @@ fn a_transaction_reads_as_one_modification_across_all_its_swaps() {
     ])
     .unwrap();
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     gate.open();
     let outcome = store.apply_transaction_as(&swaps, &nonce("t1")).unwrap();
     gate.close();
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     assert!(outcome.is_committed());
     let samples = samples.lock().unwrap().clone();
@@ -80,13 +83,13 @@ fn an_unlogged_write_reads_as_one_modification_from_ingest_to_collection() {
         .write_document_replicated_as(name("alpha"), &doc("one"), &body(b"first"), &nonce("w0"))
         .unwrap();
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     gate.open();
     store
         .write_document_replicated_as(name("alpha"), &doc("one"), &body(b"second"), &nonce("w1"))
         .unwrap();
     gate.close();
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     let samples = samples.lock().unwrap().clone();
     assert_eq!(samples.len(), store.pointer_replica_count());
@@ -97,31 +100,31 @@ fn an_unlogged_write_reads_as_one_modification_from_ingest_to_collection() {
 #[test]
 fn nested_modifications_move_the_count_only_at_the_outermost_edges() {
     let (_vfs, store) = fresh_store();
-    let start = store.modifications();
+    let start = store.modifications().unwrap();
     {
-        let _outer = store.begin_modification();
-        assert_eq!(store.modifications(), start + 1);
+        let _outer = store.begin_modification().unwrap();
+        assert_eq!(store.modifications().unwrap(), start + 1);
         {
-            let _inner = store.begin_modification();
-            assert_eq!(store.modifications(), start + 1);
+            let _inner = store.begin_modification().unwrap();
+            assert_eq!(store.modifications().unwrap(), start + 1);
         }
         assert_eq!(
-            store.modifications(),
+            store.modifications().unwrap(),
             start + 1,
             "an inner modification ending must not restore even parity early"
         );
     }
-    assert_eq!(store.modifications(), start + 2);
+    assert_eq!(store.modifications().unwrap(), start + 2);
     assert!(Store::undisturbed(
-        store.modifications(),
-        store.modifications()
+        store.modifications().unwrap(),
+        store.modifications().unwrap()
     ));
 }
 
 #[test]
 fn successive_operations_each_move_the_count_by_two() {
     let (_vfs, store) = fresh_store();
-    let start = store.modifications();
+    let start = store.modifications().unwrap();
     for i in 0..10 {
         store
             .write_document_replicated_as(
@@ -131,7 +134,7 @@ fn successive_operations_each_move_the_count_by_two() {
                 &nonce(&format!("s{i}")),
             )
             .unwrap();
-        assert_eq!(store.modifications(), start + 2 * (i + 1));
+        assert_eq!(store.modifications().unwrap(), start + 2 * (i + 1));
     }
 }
 
@@ -145,10 +148,10 @@ fn a_rejected_transaction_still_reads_as_settled_afterwards() {
         crate::ContentDigest::of(b"not what is there"),
     )])
     .unwrap();
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     let outcome = store.apply_transaction_as(&swaps, &nonce("r1")).unwrap();
     assert!(outcome.is_rejected());
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
     assert!(Store::undisturbed(after, after));
     assert!(after >= before);
 }
@@ -176,14 +179,15 @@ fn a_transaction_that_ends_unresolved_leaves_the_count_odd() {
     gate.close();
     assert!(store.recovery_required());
 
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
     assert!(
         !Store::undisturbed(after, after),
         "an unresolved transaction must not read as settled: {after}"
     );
-    // A later modification under the fence must not flip it back to even either.
-    {
-        let _repair = store.begin_modification();
-    }
-    assert_eq!(store.modifications(), after);
+    // A later modification under the fence is refused, and cannot flip the count back to even.
+    assert!(matches!(
+        store.begin_modification(),
+        Err(StoreError::RecoveryRequired { .. })
+    ));
+    assert_eq!(store.modifications().unwrap(), after);
 }

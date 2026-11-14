@@ -119,7 +119,8 @@ impl Store {
     /// This is the generic store surface's single-document write verb; the multi-document
     /// sibling is [`apply_transaction`](Store::apply_transaction). Anything domain-specific
     /// belongs to the caller, layered on top (D54).
-    pub fn update_document(&self, swap: Swap) -> Result<Commit, StoreError> {
+    /// The [`WriteOutcome`] keeps any agent-stamp failure separate from the commit result.
+    pub fn update_document(&self, swap: Swap) -> Result<WriteOutcome<Commit>, StoreError> {
         self.apply_transaction(&SwapSet::single(swap))
     }
 
@@ -143,7 +144,7 @@ impl Store {
     ///    trees are swept.
     ///
     /// The nonce names both the log records and the per-transaction staging directories, and
-    /// is reported in the returned [`Commit`]. Multi-document all-or-nothing is exactly what
+    /// is reported in the [`Commit`] inside the returned [`WriteOutcome`]. Multi-document all-or-nothing is exactly what
     /// the log buys: a crash after the `prepare` fsync rolls the transaction forward, before
     /// it rolls back. When this is the outermost write on the calling thread, the commit log
     /// is emptied before the writer gate is released.
@@ -154,9 +155,9 @@ impl Store {
     /// staging is swept, what it ingested is collected, and the journal is reset. One that
     /// fails after -- or whose journal cannot be read to tell -- may have passed its commit
     /// point, so every handle to this store then refuses writes with
-    /// [`StoreError::RecoveryRequired`] and leaves the journal untouched until the store is
-    /// reopened and recovery has finished it.
-    pub fn apply_transaction(&self, swaps: &SwapSet) -> Result<Commit, StoreError> {
+    /// [`StoreError::RecoveryRequired`] and leaves the journal untouched until
+    /// [`Store::recover`] has finished it.
+    pub fn apply_transaction(&self, swaps: &SwapSet) -> Result<WriteOutcome<Commit>, StoreError> {
         let _writer = self.writable()?;
         let mut claim = self.claim_fresh_nonce()?;
         let result = self.apply_transaction_as(swaps, claim.nonce());
@@ -167,7 +168,8 @@ impl Store {
         let nonce = claim.nonce().clone();
         drop(claim);
         self.settle_log();
-        Ok(Commit::new(outcome, nonce))
+        let committed = outcome.is_committed();
+        Ok(self.stamped(Commit::new(outcome, nonce), committed))
     }
 
     /// [`update_document`](Store::update_document) under the caller's `txn`, unclaimed.
@@ -192,7 +194,7 @@ impl Store {
         let _writer = self.writable()?;
         // One modification for the whole transaction, so no sampler sees it settled between
         // swaps; dropped after any fence below is set, so an unresolved one stays odd.
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
         let mut began = false;
         let result = self.apply_transaction_gated(swaps, txn, &mut began);
         if result.is_err() && began && !matches!(self.rollback_unprepared(txn), Ok(true)) {

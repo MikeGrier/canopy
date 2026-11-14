@@ -56,3 +56,17 @@ Run them with:
 ```sh
 cargo test -p canopy-lock-holder
 ```
+
+## The `canopy-store-writer` binary
+
+```text
+canopy-store-writer <root> <node> <document> <body> [pause]
+```
+
+Opens `<root>` as its writer, writes one document, and holds the store until its stdin closes,
+reporting `opened`, then `paused` (with `pause`) and `wrote` as one line each. With `pause` it
+stops at the first rename into the namespace -- part-way through the write -- and waits for a
+line on stdin before it goes on. `tests/shared_count.rs` reads it from this process through
+`Store::open_read_only`: the modification count is odd while the write is paused, even and moved
+by two once it finishes, and odd after the writer is killed outright until a writer opens the
+root and recovers it.

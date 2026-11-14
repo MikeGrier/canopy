@@ -189,11 +189,11 @@ fn list_documents_reflects_a_multi_document_transaction() {
 }
 
 #[test]
-fn list_documents_skips_the_shire_marker_and_swept_staging() {
+fn list_documents_skips_the_store_marker_and_swept_staging() {
     let (_vfs, store) = fresh_store();
     let node = name("record");
     let d = doc("record.json");
-    // A committed update leaves the .shire marker in place and sweeps its staging tree;
+    // A committed update leaves the .store marker in place and sweeps its staging tree;
     // the traversal reports only the real document, never those reserved entries.
     store
         .update_document_as(

@@ -52,6 +52,7 @@ pub trait Registrant {
     /// A failure of the filesystem, and [`WouldWait`](super::CoordError::WouldWait) when the entry
     /// held is being inspected so its payload cannot be replaced now; the entry keeps the payload it
     /// had. Registration is best-effort: a caller that cannot register stays attached.
+    /// A failed first registration attempts to mark listings incomplete without replacing its error.
     fn register(&mut self, payload: &[u8]) -> CoordResult<Registration>;
 }
 

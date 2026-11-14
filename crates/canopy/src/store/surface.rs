@@ -17,11 +17,18 @@
 //! the evidence is kept, since kept evidence outlives its claim. Recovery reuses a transaction's
 //! staging without claiming it: the transaction's `begin` record is what owns that nonce.
 
-use std::thread;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use acadia::coord::CoordinationFactory;
+use acadia::coord::file::FileFactory;
 
 use super::*;
 use crate::feed::{CommitObserver, NonceSource};
 use crate::read::{Read, WRITER_READ_ATTEMPTS};
+
+mod stamp;
+pub use stamp::WriteOutcome;
 
 /// The directory under the store root holding one entry per claimed nonce.
 ///
@@ -29,50 +36,99 @@ use crate::read::{Read, WRITER_READ_ATTEMPTS};
 /// using a different name would not see the claims of operations still in flight.
 pub(crate) const CLAIMS_DIR: &str = ".claims";
 
-/// How many times [`Store::snapshot`] runs its read before reporting contention.
-///
-/// A disturbed read is retried immediately after yielding the thread, so this bounds how long
-/// a snapshot can be held off by a steady stream of writes, not how long it sleeps.
-pub const SNAPSHOT_ATTEMPTS: usize = 16;
+/// The default time [`Store::snapshot`] waits for a stable modification count.
+pub const DEFAULT_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The state behind the write surface that every clone of a store shares.
 #[derive(Default)]
 pub(crate) struct Surface {
     nonces: Mutex<Option<NonceSource>>,
     observer: Mutex<Option<Arc<dyn CommitObserver>>>,
+    snapshot_timeout: Mutex<Option<Duration>>,
+    agent: Mutex<Option<Agent>>,
+    stamp_cache: Mutex<Option<(acadia::coord::Generation, Genesis)>>,
+    description_pending: Mutex<Option<String>>,
 }
 
 /// How a store is opened.
 ///
-/// Passed to [`Store::init`] and [`Store::open`]. Whether the store has a nonce source is
-/// chosen explicitly, by the constructor used, so no store is left without one by omission.
+/// Passed to [`Store::init`], [`Store::open`] and [`Store::migrate`]. Whether the store has a nonce
+/// source is chosen explicitly, by the constructor used, so no store is left without one by
+/// omission. Which coordination implementation owns the root is chosen by
+/// [`with_coordination`](StoreOptions::with_coordination), and is acadia's file-based one unless
+/// it is.
 pub struct StoreOptions {
+    agent: Agent,
     nonce_source: Option<NonceSource>,
+    coordination: Arc<dyn CoordinationFactory>,
+    snapshot_timeout: Duration,
 }
 
 impl StoreOptions {
-    /// Options supplying the nonce source, called once per operation that writes.
+    /// Explicit agent inputs and the nonce source, called once per operation that writes.
     ///
     /// Nonces need only be statistically unique: two operations whose traces are on disk at
     /// the same time must not share one. A collision is detected and fails the operation; it
     /// never corrupts the store.
-    pub fn with_nonce_source(source: impl FnMut() -> Nonce + Send + 'static) -> Self {
+    pub fn with_nonce_source(agent: Agent, source: impl FnMut() -> Nonce + Send + 'static) -> Self {
         StoreOptions {
+            agent,
             nonce_source: Some(Box::new(source)),
+            coordination: default_coordination(),
+            snapshot_timeout: DEFAULT_SNAPSHOT_TIMEOUT,
         }
     }
 
-    /// Options with no nonce source, for a handle that only reads or only holds the root. Every
+    /// Explicit agent inputs with no nonce source, for a handle that only reads or holds the root. Every
     /// verb that writes is refused with [`StoreError::NoNonceSource`].
-    pub fn without_nonce_source() -> Self {
-        StoreOptions { nonce_source: None }
+    pub fn without_nonce_source(agent: Agent) -> Self {
+        StoreOptions {
+            agent,
+            nonce_source: None,
+            coordination: default_coordination(),
+            snapshot_timeout: DEFAULT_SNAPSHOT_TIMEOUT,
+        }
     }
+
+    /// Options that coordinate the root through `factory`'s implementation.
+    ///
+    /// A root records the implementation that owns it when it is created or migrated, and a store
+    /// keeps the one it was created with. The store builds its coordination from its own
+    /// [`Vfs`] and root through this factory, and accepts none built elsewhere.
+    #[must_use]
+    pub fn with_coordination(mut self, factory: Arc<dyn CoordinationFactory>) -> Self {
+        self.coordination = factory;
+        self
+    }
+
+    /// Bounds how long a snapshot waits for the modification count to change.
+    #[must_use]
+    pub fn with_snapshot_timeout(mut self, timeout: Duration) -> Self {
+        self.snapshot_timeout = timeout;
+        self
+    }
+
+    pub(crate) fn coordination(&self) -> Arc<dyn CoordinationFactory> {
+        Arc::clone(&self.coordination)
+    }
+
+    /// The software and document schema this handle speaks.
+    pub fn agent(&self) -> &Agent {
+        &self.agent
+    }
+}
+
+pub(crate) fn default_coordination() -> Arc<dyn CoordinationFactory> {
+    Arc::new(FileFactory::new())
 }
 
 impl fmt::Debug for StoreOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoreOptions")
+            .field("agent", &self.agent)
             .field("nonce_source", &self.nonce_source.is_some())
+            .field("coordination", self.coordination.implementation())
+            .field("snapshot_timeout", &self.snapshot_timeout)
             .finish()
     }
 }
@@ -172,7 +228,7 @@ impl Claim<'_> {
 impl Drop for Claim<'_> {
     fn drop(&mut self) {
         if !self.kept {
-            // Best-effort: a claim left behind refuses its nonce until the next open releases
+            // Best-effort: a claim left behind refuses its nonce until the next resolve releases
             // it, which costs one collision and never a corruption.
             let _ = self
                 .store
@@ -186,9 +242,57 @@ impl Store {
     pub(crate) fn install(&self, options: StoreOptions) {
         *self
             .surface
+            .stamp_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = self
+            .coordination
+            .acquired()
+            .map(|acquired| (acquired.advanced_to(), self.genesis.clone()));
+        *self
+            .surface
+            .agent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(options.agent);
+        *self
+            .surface
             .nonces
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = options.nonce_source;
+        *self
+            .surface
+            .snapshot_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(options.snapshot_timeout);
+    }
+
+    fn snapshot_timeout(&self) -> Duration {
+        self.surface
+            .snapshot_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or(DEFAULT_SNAPSHOT_TIMEOUT)
+    }
+
+    fn wait_for_snapshot_change(
+        &self,
+        sampled: acadia::coord::ModCount,
+        deadline: Instant,
+    ) -> Result<(), StoreError> {
+        let (ring, wake) = mpsc::channel();
+        let notice = self.coordination.notify(
+            sampled,
+            deadline,
+            Box::new(move || {
+                let _ = ring.send(());
+            }),
+        )?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "The synchronous snapshot's absolute deadline bounds a lost coordination notification (D120/D483)"
+        )]
+        let _ = wake.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        drop(notice);
+        Ok(())
     }
 
     /// Calls the nonce source once.
@@ -274,8 +378,9 @@ impl Store {
         Ok((output, nonces))
     }
 
-    /// Removes every claim. Run by `open` once recovery has finished, when no operation can be
-    /// in flight: a claim that survives to here belongs to an operation that died.
+    /// Removes every claim. Run by resolving and by recovery under writer exclusion, when no
+    /// operation can be in flight: a claim found there belongs to an operation that died, or to a
+    /// transaction that failed unresolved and kept it.
     ///
     /// A transaction's nonce stays owned by its records in the commit log, and an interrupted
     /// write's orphaned staging still refuses its nonce when it is next claimed, so releasing
@@ -376,7 +481,7 @@ impl Store {
         node: impl Into<NodePath>,
         document: &DocumentName,
         transform: impl FnOnce(Option<&DocumentBody>) -> DocumentBody,
-    ) -> Result<(DocumentBody, Commit), StoreError> {
+    ) -> Result<WriteOutcome<(DocumentBody, Commit)>, StoreError> {
         let _writer = self.writable()?;
         let node = node.into();
         let current = crate::read_within(self, &node, document, WRITER_READ_ATTEMPTS)?;
@@ -389,7 +494,7 @@ impl Store {
         };
         let commit = self.update_document(swap)?;
         self.settle_log();
-        Ok((body, commit))
+        Ok(commit.map(|commit| (body, commit)))
     }
 
     /// Plans a transaction from what the store holds and commits it, with exclusion held from
@@ -402,24 +507,27 @@ impl Store {
     pub fn plan_and_apply<Output>(
         &self,
         plan: impl FnOnce(&StoreView<'_>) -> (Output, Option<SwapSet>),
-    ) -> Result<(Output, Option<Commit>), StoreError> {
+    ) -> Result<WriteOutcome<(Output, Option<Commit>)>, StoreError> {
         let _writer = self.writable()?;
         let (value, swaps) = plan(&StoreView { store: self });
-        let commit = match swaps {
-            Some(swaps) => Some(self.apply_transaction(&swaps)?),
-            None => None,
+        let outcome = match swaps {
+            Some(swaps) => self
+                .apply_transaction(&swaps)?
+                .map(|commit| (value, Some(commit))),
+            None => self.stamped((value, None), false),
         };
         self.settle_log();
-        Ok((value, commit))
+        Ok(outcome)
     }
 
     /// Runs `read` against a state no write disturbed, without excluding writers.
     ///
     /// The [`modifications`](Store::modifications) count is sampled before and after each run.
-    /// A run during which nothing was modified is returned; a disturbed run is discarded and
-    /// `read` runs again, up to [`SNAPSHOT_ATTEMPTS`] times, after which the snapshot reports
-    /// [`StoreError::SnapshotContended`]. A count left odd by an unresolved transaction never
-    /// settles, so a store that needs recovery is refused at once.
+    /// A run during which nothing was modified is returned; a disturbed run is discarded. When a
+    /// write is in progress, the snapshot waits for the coordination notification and samples
+    /// again, up to the configured timeout, after which it reports [`StoreError::SnapshotContended`].
+    /// A count left odd by an unresolved transaction never settles, so a store that needs recovery
+    /// is refused at once.
     ///
     /// `read` may therefore run more than once, and its result is used only from the run that
     /// was undisturbed.
@@ -428,25 +536,41 @@ impl Store {
         mut read: impl FnMut(&StoreView<'_>) -> Output,
     ) -> Result<Output, StoreError> {
         self.refuse_if_unresolved()?;
+        let deadline = Instant::now() + self.snapshot_timeout();
         let view = StoreView { store: self };
-        for _ in 0..SNAPSHOT_ATTEMPTS {
-            let before = self.modifications();
-            if before.is_multiple_of(2) {
+        let mut attempts = 0;
+        loop {
+            let before = self.coordination.sample_count()?;
+            if before.get().is_multiple_of(2) {
+                attempts += 1;
                 let value = read(&view);
-                if Self::undisturbed(before, self.modifications()) {
+                let after = self.coordination.sample_count()?;
+                if Self::undisturbed(before.get(), after.get()) {
                     return Ok(value);
                 }
+                if after.get().is_multiple_of(2) {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    continue;
+                }
+                self.wait_for_snapshot_change(after, deadline)?;
+            } else {
+                self.wait_for_snapshot_change(before, deadline)?;
             }
-            thread::yield_now();
+            if Instant::now() >= deadline {
+                break;
+            }
         }
         self.refuse_if_unresolved()?;
-        Err(StoreError::SnapshotContended {
-            attempts: SNAPSHOT_ATTEMPTS,
-        })
+        Err(StoreError::SnapshotContended { attempts })
     }
 
     /// Empties the commit log, refusing while it holds a transaction recovery must finish.
-    pub fn quiesce(&self) -> Result<(), StoreError> {
-        self.quiesce_commit_log()
+    pub fn quiesce(&self) -> Result<WriteOutcome<()>, StoreError> {
+        let _writer = self.writable()?;
+        let changed = !self.commit_log_is_empty()? || _writer.publication_settled;
+        self.quiesce_commit_log()?;
+        Ok(self.stamped((), changed))
     }
 }

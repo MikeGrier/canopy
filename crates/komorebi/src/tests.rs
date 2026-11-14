@@ -65,10 +65,10 @@ fn capture_records_convention_fields() {
 #[test]
 fn capture_keeps_string_field_raw_without_quotes() {
     let (events, ()) = with_capture(|| {
-        info!(target: targets::LIFECYCLE, path = "/data/shire");
+        info!(target: targets::LIFECYCLE, path = "/data/store");
     });
 
-    assert_eq!(events[0].field(fields::PATH), Some("/data/shire"));
+    assert_eq!(events[0].field(fields::PATH), Some("/data/store"));
 }
 
 #[test]

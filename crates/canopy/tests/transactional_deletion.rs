@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
-    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store,
-    StoreError, StoreOptions, Swap, SwapSet,
+    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreError,
+    StoreId, StoreOptions, Swap, SwapSet,
 };
 
 fn node() -> NodePath {
@@ -44,16 +44,19 @@ fn body(text: &str) -> DocumentBody {
 }
 
 fn config() -> GenesisConfig {
-    GenesisConfig::new(ShireId::new("cvs15-shire").unwrap(), 3)
+    GenesisConfig::new(StoreId::new("cvs15-store").unwrap(), 3)
 }
 
 /// Options drawing nonces `T1`, `T2`, ... .
 fn options() -> StoreOptions {
     let mut n: u64 = 0;
-    StoreOptions::with_nonce_source(move || {
-        n += 1;
-        Nonce::new(&format!("T{n}")).unwrap()
-    })
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || {
+            n += 1;
+            Nonce::new(&format!("T{n}")).unwrap()
+        },
+    )
 }
 
 fn store_on(vfs: &Arc<dyn Vfs>, root: &Path) -> Store {
@@ -63,7 +66,7 @@ fn store_on(vfs: &Arc<dyn Vfs>, root: &Path) -> Store {
 
 fn fresh() -> (Arc<dyn Vfs>, PathBuf, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let store = store_on(&vfs, &root);
     (vfs, root, store)
 }
@@ -71,13 +74,17 @@ fn fresh() -> (Arc<dyn Vfs>, PathBuf, Store) {
 fn write(store: &Store, text: &str) {
     store
         .apply_transaction(&SwapSet::single(Swap::new(node(), document(), body(text))))
-        .expect("an uncontended write commits");
+        .expect("an uncontended write commits")
+        .agent_stamp
+        .expect("agent version stamp");
 }
 
 fn remove(store: &Store) {
     store
         .apply_transaction(&SwapSet::single(Swap::remove(node(), document())))
-        .expect("an uncontended removal commits");
+        .expect("an uncontended removal commits")
+        .agent_stamp
+        .expect("agent version stamp");
 }
 
 /// Every blob this document owns, across every replica, as `(replica, file name)`.
@@ -178,7 +185,9 @@ fn removing_a_node_takes_its_directory_from_both_trees() {
             &SwapSet::with_node_removals([Swap::remove(node(), document())], [node()])
                 .expect("valid"),
         )
-        .expect("the node is empty once its only document goes");
+        .expect("the node is empty once its only document goes")
+        .agent_stamp
+        .expect("agent version stamp");
 
     for index in 0..store.pointer_replica_count() {
         let dir = store
@@ -210,7 +219,7 @@ fn a_crash_between_end_and_the_collection_is_finished_by_recovery() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let store = store_on(&vfs, &root);
 
     write(&store, "v1");
@@ -233,7 +242,12 @@ fn a_crash_between_end_and_the_collection_is_finished_by_recovery() {
 
     gate.close();
     drop(store);
-    let reopened = Store::open(vfs.clone(), root, options()).expect("reopen replays the log");
+    let (reopened, _) = Store::open(vfs.clone(), root, options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen replays the log")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         blobs(&vfs, &reopened).len(),
@@ -256,12 +270,12 @@ fn replaying_two_completed_writes_does_not_collect_the_live_blob() {
         MemFs::new(),
         FaultPolicy::new().inject(
             FaultOp::Truncate,
-            PathBuf::from("shire").join(".commit-log"),
+            PathBuf::from("store").join(".commit-log"),
             Fault::io_error(),
             When::Always,
         ),
     ));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let store = store_on(&vfs, &root);
     write(&store, "v1");
     write(&store, "v2");
@@ -272,7 +286,12 @@ fn replaying_two_completed_writes_does_not_collect_the_live_blob() {
     );
 
     drop(store);
-    let reopened = Store::open(vfs.clone(), root, options()).expect("reopen replays the log");
+    let (reopened, _) = Store::open(vfs.clone(), root, options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen replays the log")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         resolved(&reopened).as_deref(),
@@ -303,7 +322,7 @@ fn a_rolled_back_transaction_leaves_the_previous_body_readable() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     let store = store_on(&vfs, &root);
 
     write(&store, "v1");
@@ -316,8 +335,12 @@ fn a_rolled_back_transaction_leaves_the_previous_body_readable() {
 
     gate.close();
     drop(store);
-    let reopened =
-        Store::open(vfs.clone(), root, options()).expect("reopen rolls the transaction back");
+    let (reopened, _) = Store::open(vfs.clone(), root, options()).expect("reopen");
+    reopened
+        .resolve()
+        .expect("reopen rolls the transaction back")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         resolved(&reopened).as_deref(),

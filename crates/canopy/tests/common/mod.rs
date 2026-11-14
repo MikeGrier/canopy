@@ -18,7 +18,7 @@
 //!   commit log, partition roots, node directories, committed documents, staging
 //!   temps). It has no filesystem effect, so a fault rule can name the exact path
 //!   an operation will touch *before* the store exists to be asked. It mirrors
-//!   the store's **specified** layout (`D40`/`D53`/`D8`): the marker `.shire`,
+//!   the store's **specified** layout (`D40`/`D53`/`D8`): the marker `.store`,
 //!   the log `.commit-log`, partitions `p{index}`, a node directory
 //!   `p{index}/<shard>/<name>`, and the staging trees. Binding to the specified
 //!   layout (not to incidental store behavior) is deliberate; if the store's
@@ -53,15 +53,15 @@ use std::sync::{Arc, Mutex};
 
 use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, MemFs, Vfs, When};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, ShireId, Store, StoreError,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreError, StoreId,
     StoreOptions, SwapSet, TransactionOutcome,
 };
 
 /// The store root every CHAOS test uses.
-pub const ROOT: &str = "shire";
+pub const ROOT: &str = "store";
 /// The reserved marker file name at the store root and mirrored in each partition
 /// (`D40`). Mirrors the store's specified layout.
-pub const MARKER_NAME: &str = ".shire";
+pub const MARKER_NAME: &str = ".store";
 /// The commit log file name at the store root (`D53`). Mirrors the store's
 /// specified layout.
 pub const LOG_NAME: &str = ".commit-log";
@@ -78,8 +78,8 @@ pub const STAGING_DIR: &str = ".staging";
 /// (`<document>.tmp.<nonce>`). Mirrors the store's specified layout.
 pub const TEMP_INFIX: &str = ".tmp.";
 
-/// The Shire id every CHAOS genesis carries.
-const SHIRE_ID: &str = "chaos-shire";
+/// The store id every CHAOS genesis carries.
+const STORE_ID: &str = "chaos-store";
 
 /// A pure calculator of the store's on-disk paths, with no filesystem effect.
 ///
@@ -113,7 +113,7 @@ impl Layout {
         &self.root
     }
 
-    /// The `.shire` marker at the store root.
+    /// The `.store` marker at the store root.
     #[must_use]
     pub fn marker(&self) -> PathBuf {
         self.root.join(MARKER_NAME)
@@ -326,13 +326,16 @@ impl Nonces {
     /// queued.
     pub fn options(&self) -> StoreOptions {
         let queue = Arc::clone(&self.0);
-        StoreOptions::with_nonce_source(move || {
-            queue
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("the test queued a nonce for every write")
-        })
+        StoreOptions::with_nonce_source(
+            canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+            move || {
+                queue
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("the test queued a nonce for every write")
+            },
+        )
     }
 
     /// Queues `nonce` for the next write.
@@ -386,7 +389,7 @@ impl Chaos {
         let vfs: Arc<dyn Vfs> = faulty.clone();
         vfs.create_dir_all(layout.root())
             .expect("create store root");
-        let genesis = GenesisConfig::new(ShireId::new(SHIRE_ID).unwrap(), 0)
+        let genesis = GenesisConfig::new(StoreId::new(STORE_ID).unwrap(), 0)
             .with_pointer_replica_count(replica_count)
             .unwrap()
             .with_blob_replica_count(replica_count)
@@ -445,10 +448,10 @@ impl Chaos {
         self.faulty.inner()
     }
 
-    /// Reopens the store at the harness root over the same faulted filesystem,
-    /// running the recovery replay. Any `When::Once`/`When::Times` fault scripted
-    /// for the first run has, if it fired, already been consumed, so a reopen
-    /// exercises recovery over the state that fault left behind.
+    /// Reopens the store at the harness root over the same faulted filesystem and
+    /// recovers it. Any `When::Once`/`When::Times` fault scripted for the first run
+    /// has, if it fired, already been consumed, so a reopen exercises recovery over
+    /// the state that fault left behind.
     pub fn reopen(&self, previous: impl Into<Option<Store>>) -> Result<Store, StoreError> {
         // Taking the old handle is the point, not ceremony: a root has one writer
         // (`D116`), so reopening while the previous handle lives is refused -- and was
@@ -456,10 +459,12 @@ impl Chaos {
         // `None` is for the case where the last attempt *failed*: a failed `open` returns
         // no handle, so its lock was already released.
         drop(previous.into());
-        Store::open(
+        let (store, _) = Store::open(
             self.fs(),
             self.layout.root().to_path_buf(),
             self.nonces.options(),
-        )
+        )?;
+        store.recover()?.agent_stamp.expect("agent version stamp");
+        Ok(store)
     }
 }

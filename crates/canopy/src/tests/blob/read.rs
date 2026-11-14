@@ -352,7 +352,7 @@ fn a_sequestered_copy_survives_a_crash() {
     // durable, or a crash loses evidence the repair reported as kept.
     let mem = Arc::new(acadia::MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     let name = ingest(&store, b"good bytes", "n1");
@@ -396,7 +396,10 @@ fn a_blob_repair_is_visible_to_the_modification_count_while_and_after_it_runs() 
             PathMatcher::file_name_prefix("blob.tmp."),
             Fault::observe_with(move |_, _| {
                 if let Some(store) = probe.get() {
-                    recorded.lock().unwrap().push(store.modifications());
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(store.modifications().unwrap());
                 }
             }),
             When::Always,
@@ -411,7 +414,7 @@ fn a_blob_repair_is_visible_to_the_modification_count_while_and_after_it_runs() 
     vfs.remove_file(&blob_path(&root, 1, &name, store.shard_width()))
         .unwrap();
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     gate.open();
     let outcome = store
         .repair_blob_as(
@@ -423,7 +426,7 @@ fn a_blob_repair_is_visible_to_the_modification_count_while_and_after_it_runs() 
         )
         .unwrap();
     gate.close();
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     assert_eq!(outcome.replaced(), [1]);
     let samples = samples.lock().unwrap().clone();
@@ -458,7 +461,7 @@ fn a_failed_blob_repair_still_moves_the_count_and_leaves_it_settled() {
     vfs.remove_file(&blob_path(&root, 1, &name, store.shard_width()))
         .unwrap();
 
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
     gate.open();
     store
         .repair_blob_as(
@@ -470,7 +473,7 @@ fn a_failed_blob_repair_still_moves_the_count_and_leaves_it_settled() {
         )
         .expect_err("the replacement rename fails");
     gate.close();
-    let after = store.modifications();
+    let after = store.modifications().unwrap();
 
     assert!(
         !Store::undisturbed(before, after),
@@ -491,7 +494,7 @@ fn a_repair_at_another_shard_width_is_refused_before_anything_moves() {
     let name = ingest(&store, b"good bytes", "n1");
     let own = blob_path(&root, 0, &name, store.shard_width());
     vfs.write(&own, b"rotted").unwrap();
-    let before = store.modifications();
+    let before = store.modifications().unwrap();
 
     for width in [1, store.shard_width() + 1] {
         let foreign = crate::BlobRef::new(name, width).unwrap();
@@ -510,7 +513,7 @@ fn a_repair_at_another_shard_width_is_refused_before_anything_moves() {
         b"rotted",
         "the corrupt copy was not touched"
     );
-    assert!(Store::undisturbed(before, store.modifications()));
+    assert!(Store::undisturbed(before, store.modifications().unwrap()));
     let verification = store.verify_blob(&reference(&store, &name)).unwrap();
     assert_eq!(verification.corrupt(), [0]);
 }

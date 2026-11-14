@@ -356,7 +356,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_after_a_reopen() {
     gate.close();
     drop(store);
 
-    let reopened = Store::open_unsourced(vfs, root).expect("reopen discharges the debt");
+    let reopened = open_resolved(vfs, root).expect("reopen discharges the debt");
     reopened
         .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
         .expect("write after reopen");
@@ -486,7 +486,7 @@ fn a_stale_intent_below_what_is_now_a_document_does_not_block_reopening() {
     )
     .unwrap();
 
-    let reopened = Store::open_unsourced(Arc::clone(&vfs), root.clone())
+    let reopened = open_resolved(Arc::clone(&vfs), root.clone())
         .expect("an intent under a document is obsolete, not fatal");
     assert_ne!(
         reopened.read_document(name("a"), &doc("b")).unwrap(),
@@ -550,7 +550,7 @@ fn an_unterminated_intent_tail_is_not_acted_on_at_reopen() {
     .unwrap();
 
     gate.open();
-    let reopened = Store::open_unsourced(Arc::clone(&vfs), root.clone());
+    let reopened = open_resolved(Arc::clone(&vfs), root.clone());
     gate.close();
     reopened.expect("the unterminated tail is not followed into a failing sync");
     assert!(
@@ -640,8 +640,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
     );
     drop(store);
 
-    let reopened =
-        Store::open_unsourced(Arc::clone(&vfs), root).expect("reopen discharges the debt");
+    let reopened = open_resolved(Arc::clone(&vfs), root).expect("reopen discharges the debt");
     reopened
         .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t3"))
         .expect("write after reopen");
@@ -695,7 +694,7 @@ fn a_refused_replicated_write_ingests_no_blob() {
 fn enumeration_reports_documents_at_every_depth_with_their_full_paths() {
     let (_vfs, store) = fresh_store();
     for (path, document) in [
-        ("shire", "permutation-key"),
+        ("store", "permutation-key"),
         ("tickets/aa/aaa", "record"),
         ("tickets/ab/abc", "record"),
         ("tickets/ab/abc", "engine"),
@@ -718,7 +717,7 @@ fn enumeration_reports_documents_at_every_depth_with_their_full_paths() {
         listed,
         [
             "PENDING-WORK/0001/ENTRY",
-            "SHIRE/PERMUTATION-KEY",
+            "STORE/PERMUTATION-KEY",
             "TICKETS/AA/AAA/RECORD",
             "TICKETS/AB/ABC/ENGINE",
             "TICKETS/AB/ABC/RECORD",
@@ -772,7 +771,7 @@ fn listing_a_prefix_reports_its_documents_and_child_nodes_separately() {
         ("tickets/aa", "record"),
         ("tickets/ab", "record"),
         ("tickets/ab/deeper", "record"),
-        ("shire", "permutation-key"),
+        ("store", "permutation-key"),
     ] {
         store
             .write_document_replicated_as(name(path), &doc(document), &body(b"x"), &nonce("t"))
@@ -845,15 +844,15 @@ fn listing_an_absent_path_is_empty_rather_than_an_error() {
 #[test]
 fn listing_the_root_level_reports_the_top_tier() {
     let (_vfs, store) = fresh_store();
-    for path in ["tickets/ab", "shire", "pending-work/0001"] {
+    for path in ["tickets/ab", "store", "pending-work/0001"] {
         store
             .write_document_replicated_as(name(path), &doc("record"), &body(b"x"), &nonce("t"))
             .expect("write");
     }
 
-    // `SHIRE` is a node here, not a document, because a document was written *beneath*
+    // `STORE` is a node here, not a document, because a document was written *beneath*
     // it -- the one-namespace rule seen from the listing side.
-    let children = store.list_children(name("shire")).expect("list");
+    let children = store.list_children(name("store")).expect("list");
     assert_eq!(
         children
             .documents()
@@ -875,14 +874,14 @@ fn a_child_listing_agrees_with_the_full_traversal_filtered_to_that_path() {
         ("tickets/aa", "record"),
         ("tickets/aa", "engine"),
         ("tickets/ab", "record"),
-        ("shire", "key"),
+        ("store", "key"),
     ] {
         store
             .write_document_replicated_as(name(path), &doc(document), &body(b"x"), &nonce("t"))
             .expect("write");
     }
 
-    for path in ["tickets", "tickets/aa", "tickets/ab", "shire"] {
+    for path in ["tickets", "tickets/aa", "tickets/ab", "store"] {
         let path = name(path);
         let mut from_traversal: Vec<DocumentName> = store
             .list_documents()

@@ -177,7 +177,7 @@ fn replicating_a_staged_blob_never_reads_it_whole() {
         When::Always,
     );
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let config = test_config().with_blob_replica_count(2).unwrap();
     let store = Store::init_unsourced(vfs.clone(), root.clone(), config).expect("init");

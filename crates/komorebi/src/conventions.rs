@@ -44,8 +44,8 @@ pub mod targets {
     /// is making forward progress (D5/D28).
     pub const LIFECYCLE: &str = "canopy::lifecycle";
 
-    /// The startup recovery pass: opening and validating the Shire, recovering
-    /// the shire-level singletons, replaying the commit log, rebuilding volatile
+    /// The startup recovery pass: opening and validating the store, recovering
+    /// the store-level singletons, replaying the commit log, rebuilding volatile
     /// state, and re-attaching orphaned children (D46).
     pub const RECOVERY: &str = "canopy::recovery";
 
@@ -92,8 +92,8 @@ pub mod fields {
     /// The result of a verify/repair action; a value from [`super::results`].
     pub const RESULT: &str = "result";
 
-    /// Identity (or path) of the Shire -- the store root -- an event concerns.
-    pub const SHIRE: &str = "shire";
+    /// Identity (or path) of the store -- the store root -- an event concerns.
+    pub const STORE: &str = "store";
 
     /// Ticket / job identifier an event concerns.
     pub const TICKET: &str = "ticket";
@@ -158,10 +158,10 @@ pub mod outcomes {
 /// Well-known values for the [`fields::PHASE`] field, one per ordered step of
 /// the D46 startup recovery pass.
 pub mod phases {
-    /// Open and validate the Shire, refusing to start if it is absent (D40/D46).
-    pub const OPEN_SHIRE: &str = "open_shire";
+    /// Open and validate the store, refusing to start if it is absent (D40/D46).
+    pub const OPEN_STORE: &str = "open_store";
 
-    /// Quorum-recover the shire-level singletons (D39/D36).
+    /// Quorum-recover the store-level singletons (D39/D36).
     pub const RECOVER_SINGLETONS: &str = "recover_singletons";
 
     /// Replay the commit log to roll interrupted transactions forward or back

@@ -164,24 +164,36 @@ impl Store {
     ///
     /// Each repair is made under its own nonce, drawn from the store's source and claimed for
     /// the pass; the nonces are returned with the report, in the order they were used.
-    pub fn scrub_content(&self) -> Result<(ContentScrubReport, Vec<Nonce>), StoreError> {
-        self.with_claimed_nonces(|mint| self.scrub_content_minting(mint))
+    pub fn scrub_content(
+        &self,
+    ) -> Result<WriteOutcome<(ContentScrubReport, Vec<Nonce>)>, StoreError> {
+        let mut stamp = Ok(());
+        let value =
+            self.with_claimed_nonces(|mint| self.scrub_content_minting(mint, &mut stamp))?;
+        Ok(WriteOutcome::new(value, stamp))
     }
 
     fn scrub_content_minting(
         &self,
         mint: &mut dyn FnMut() -> Result<Nonce, StoreError>,
+        stamp: &mut Result<(), StoreError>,
     ) -> Result<ContentScrubReport, StoreError> {
         let mut report = ContentScrubReport::default();
 
         // Settles a pending publication before the walk, so the documents listed and the
         // pointers judged stale are the ones the settled store holds.
-        drop(self.writable()?);
+        {
+            let writer = self.writable()?;
+            if writer.publication_settled {
+                self.accumulate_stamp(stamp);
+            }
+        }
         for (node, document) in self.list_documents()? {
             // Per document, not per scrub: a pass over a large store must not hold every
             // other writer off for its whole duration. Each document is checked and repaired
             // atomically; the pass as a whole is not a snapshot.
             let _writer = self.writable()?;
+            let mut repaired = _writer.publication_settled;
             report.documents += 1;
             let subject = format!("{node}/{}", document.as_str());
 
@@ -198,6 +210,7 @@ impl Store {
             let pointer_intact = read.rejected().is_empty() && read.missing().is_empty();
             if !pointer_intact {
                 let outcome = self.repair_pointer_as(&node, &document, &read, &mint()?)?;
+                repaired |= !outcome.is_noop();
                 report.pointer_repairs.push((subject.clone(), outcome));
             }
             let pointer_current = read.stale().is_empty();
@@ -213,9 +226,15 @@ impl Store {
                     }
                 }
                 Some(None) => report.unrepairable.push(subject),
-                Some(Some(outcome)) => report
-                    .blob_repairs
-                    .push((reference.relative_path(), outcome)),
+                Some(Some(outcome)) => {
+                    repaired |= !outcome.is_noop();
+                    report
+                        .blob_repairs
+                        .push((reference.relative_path(), outcome));
+                }
+            }
+            if repaired {
+                self.accumulate_stamp(stamp);
             }
         }
 
@@ -279,8 +298,13 @@ impl Store {
     /// The store must be quiescent, for the same reason [`Store::scrub_content`] requires it.
     /// Each repair is made under its own nonce, drawn from the store's source and claimed for
     /// the drain; the nonces are returned with the report, in the order they were used.
-    pub fn repair_reported_damage(&self) -> Result<(BacklogRepairReport, Vec<Nonce>), StoreError> {
-        self.with_claimed_nonces(|mint| self.drain_reported_damage(mint))
+    pub fn repair_reported_damage(
+        &self,
+    ) -> Result<WriteOutcome<(BacklogRepairReport, Vec<Nonce>)>, StoreError> {
+        let mut stamp = Ok(());
+        let value =
+            self.with_claimed_nonces(|mint| self.drain_reported_damage(mint, &mut stamp))?;
+        Ok(WriteOutcome::new(value, stamp))
     }
 
     /// [`repair_reported_damage`](Store::repair_reported_damage) under nonces the test
@@ -290,7 +314,7 @@ impl Store {
         &self,
         mut nonce_source: impl FnMut() -> Nonce,
     ) -> Result<BacklogRepairReport, StoreError> {
-        self.drain_reported_damage(&mut || Ok(nonce_source()))
+        self.drain_reported_damage(&mut || Ok(nonce_source()), &mut Ok(()))
     }
 
     /// [`repair_reported_damage`](Store::repair_reported_damage) over a minter that may refuse,
@@ -298,8 +322,12 @@ impl Store {
     fn drain_reported_damage(
         &self,
         mint: &mut dyn FnMut() -> Result<Nonce, StoreError>,
+        stamp: &mut Result<(), StoreError>,
     ) -> Result<BacklogRepairReport, StoreError> {
         let _writer = self.writable()?;
+        if _writer.publication_settled {
+            self.accumulate_stamp(stamp);
+        }
         let suspects = self
             .repair_backlog
             .lock()
@@ -332,6 +360,9 @@ impl Store {
                 None => report.already_whole += 1,
                 Some(None) => report.unrepairable.push(reference.relative_path()),
                 Some(Some(outcome)) => {
+                    if !outcome.is_noop() {
+                        self.accumulate_stamp(stamp);
+                    }
                     report.repairs.push((reference.relative_path(), outcome));
                 }
             }

@@ -3465,7 +3465,7 @@ expected to survive a re-run on other hardware because they are stated against t
   half a hold pushes a service at moderate load past saturation.
 
 [^cq-1]: `CQ-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#cq-1) [completed 2026-11-12]
-[^rd-1]: `RD-1` in [CHECKLIST.md](CHECKLIST.md)
+[^rd-1]: `RD-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-6) [completed 2026-11-14]
 
 ## A change to the coordination state is delivered as a notification
 
@@ -3494,7 +3494,7 @@ so a spurious or lost notification costs time, never correctness, and the deadli
 lost one costs. The primitive is built with the interface[^mp-5]; the synchronous snapshot waits on
 it until the queues replace it[^rd-1]; the Windows notified form is queued work of its own[^rd-2].
 
-[^rd-2]: `RD-2` in [CHECKLIST.md](CHECKLIST.md)
+[^rd-2]: `RD-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-7) [completed 2026-11-14]
 
 ## A client reaches the store through a session and its queue pairs
 
@@ -4128,3 +4128,381 @@ demand ([tla-sweep.yml](../../.github/workflows/tla-sweep.yml)). An idle reposit
   follows this decision reaching `main`[^g-1].
 
 [^g-1]: `G-1` in [CHECKLIST.md](CHECKLIST.md)
+
+## A store is called a store, 2026-11-13
+
+The directory that holds a canopy store is a store root, and its identity is a `StoreId`[^m7-1].
+Nothing in the code, the tests or the live documents calls it a Shire.
+
+- **Names.** `StoreId`, `GenesisConfig::store_id` and `Store::store_id`;
+  `StoreError::EmptyStoreId` and `StoreError::NotAStore`, with messages that say "store"; komorebi's
+  `store` field and `open_store` phase.
+- **The marker's file name and its serialized key are format, and keep their names for now.** The
+  marker is still `.shire` and the genesis still serializes the identity under `shire_id`, so a
+  root made before this change opens unchanged and a root made after it opens in an older binary.
+  The serialized key is pinned by a serde rename on the one field that carries it. The names that
+  say store replace them in the format advance that also migrates the coordination state, which
+  chooses them with the engineer and records them there; until then `MARKER_NAME` is the one
+  place the old name is spelled.
+- **Committed records keep the name they were written with.** Design decisions already committed,
+  the archives and the design sessions say Shire where they did when they were written, and are
+  read as saying store.
+
+[^m7-1]: `M7-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-1)
+
+## A root is migrated to the coordination layer's format, 2026-11-13
+
+> **SUPERSEDED in part, 2026-11-14, by "Agent metadata is behind the genesis version-8 barrier".**
+> The supported migration targets and inputs below are qualified by that decision: both supported
+> source versions reach version 8, and the caller supplies the agent.
+
+A store root records which coordination implementation coordinates it, under the names `.store` and
+`store_id`, and a root made before that is advanced to it by `Store::migrate`[^m7-2].
+
+- **The names.** The marker is `.store` (`MARKER_NAME`) and the genesis serializes the identity
+  under `store_id`. Genesis format version 7 is the barrier: an older binary looks for `.shire`, finds
+  none in a migrated root, and refuses it as not a store. `LEGACY_MARKER_NAME`, `MIGRATION_RECORD_NAME`
+  and the migration module are the only places that spell the old names.
+- **The implementation record is the coordination layer's reservation.** Creating a root and
+  migrating one both call `Coordination::reserve` on the implementation a `StoreOptions` names
+  (`with_coordination`; the default is the file-backed one), with the creation's or the migration's
+  inputs. `init` makes the reservation before any tree exists, so a root that reached a marker is a
+  root whose implementation is on record. A root reserved by another implementation, or for other
+  inputs, is refused with `StoreError::RootReserved`.
+- **The reservation's nonce is derived from the inputs.** Its first 16 bytes are the digest of the
+  inputs, because canopy has no clock or random source and an identical retry must resume what it
+  began rather than be refused as a second creation.
+- **A migration is five durable steps, in this order.** (1) The migration record, naming the
+  inputs (`from_version`, `to_version`), the implementation and the genesis the root will have.
+  (2) The implementation record. (3) The new marker, published atomically: this commits the
+  migration. (4) The old marker removed. (5) The record removed. Every publish and removal is
+  followed by an fsync of the root. A cut before (3) leaves the old marker in place, so an older
+  binary still opens the root; a cut after it leaves a root that opens only once (4) and (5) are done,
+  and which an older binary cannot open.
+- **`open` refuses a root while a record exists**, as it refuses one that holds only the old marker:
+  both are `StoreError::MigrationRequired`, because a root with a record is one a migration is
+  part-way through and the only way forward is to finish it.
+- **A migration is resumed only for the implementation it began with.** A record this build did not
+  write is `StoreError::MalformedMarker`; one begun for another implementation is
+  `StoreError::MigrationInputsDiffer`. The record decides before either marker does, so a cut at any
+  step is finished by the next `migrate` and never by `open`.
+- **The root is read again under its lock.** `migrate` takes the old root lock and finds the state
+  again under it, so two migrations at once migrate once and a migration that finished while this one
+  waited is `Migration::AlreadyCurrent`. `open` likewise reads the marker again after taking the lock.
+- **Only version 6 migrates.** A root at another version is `StoreError::UnsupportedFormatVersion`,
+  as is a `.store` marker at a version other than 7.
+- **Offline precondition.** The root must not be open by an older binary during the migration, and
+  none may start to open it: the old lock is the only exclusion available between the record and the
+  new marker, and an older binary takes it only to open. Between (3) and (4) a root holds both markers
+  and is opened by neither.
+- **Nothing else is new yet.** No other metadata is written by `init` or `migrate` until something
+  in the store uses it; the coordination state itself needs none, because state that is absent
+  reads as untrusted and the first writer to open the root vouches for it (see "The modification
+  count is the coordination state's").
+
+[^m7-2]: `M7-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-2)
+
+## The modification count is the coordination state's, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Store admission holds shared tiers for the handle's lifetime".**
+> The claim that a read-only open takes nothing is superseded: it holds shared reader attachment
+> and registers best-effort, while still taking neither the root lock nor writer exclusion.
+
+A store has one modification count for its root, and the coordination state publishes it, so a
+handle in any process samples the count a writer in any process raises[^m7-3].
+
+- **A handle is a participant, and a writer's handle also holds writer exclusion.** `Store` keeps
+  the coordination participant its `StoreOptions` factory made for the root. A handle that may write
+  asks for writer exclusion without waiting and holds it for as long as any clone of the handle
+  lives, beside the root's lock (`D116`): the lock already excludes every other process that may
+  write, so the hold's wait would be a wait on nothing. Raising the count is the hold's, so the
+  count is the one the contract orders against the writer's filesystem effects. Turn-taking per
+  write, in place of the lifetime hold, comes with several writers in M9.
+- **The count is raised through the hold, once at each end of the outermost modification.**
+  `begin_modification` is fallible: it refuses with `StoreError::RecoveryRequired` while the state
+  requires recovery, and with `StoreError::Coordination` when the opening raise cannot be published,
+  in which case no effect is made and the count is unchanged. Ending a modification closes it even,
+  or, for a transaction that ended unresolved, sets the fence and leaves it odd. A closing raise that
+  cannot be published does the same and marks the handle as needing recovery, so every clone then
+  refuses writes as after an unresolved transaction, and the operation reports its own result.
+- **`Store::modifications` is fallible and keeps its value across opens.** A sample is one read of
+  the published record; a failure to read it is an error and never a count, so it cannot be taken
+  for a settled store. The count is monotonic across opens and across processes, so it is meaningful
+  only as a comparison between two samples one caller takes, as before.
+- **A store opened only to read samples and takes nothing.** `Store::open_read_only` takes neither
+  the root's lock nor writer exclusion, recovers nothing and writes nothing. Every write verb is
+  refused with `StoreError::ReadOnly`, in `writable` before anything is settled and again at
+  `begin_modification`. It validates the marker, confirms the root records the implementation its
+  options name, and reads the marker again once the creation is known finished.
+- **What a reader sees of a dead writer is contention.** A writer killed part-way through a write
+  leaves the count odd, and so does a root whose coordination state is absent or from before a host
+  restart, because state that cannot be vouched for samples odd. A reader never opens such a root as
+  settled: its snapshots are `StoreError::SnapshotContended`, and a read that finds no majority is
+  `Read::Contended` rather than damage, until a writer opens the root, recovers it and vouches for it. Why recovery is required, as a
+  discovery call that answers without mutating anything, is M7-4's.
+- **A writer's open attaches, recovers and vouches, in that order.** It validates, takes the root's
+  lock, reads the marker again, confirms the root's recorded implementation is the one it was given
+  (a root no creation made, and one another implementation coordinates, are refused with
+  `StoreError::Coordination`), and acquires the hold. The recovery it already did runs with its
+  modifications marked as recovery's, which a state that requires recovery does not refuse; and only
+  when it has completed does the hold complete the recovery its acquisition found required, which
+  clears the fence and publishes a trusted even count. A failure at any step drops the hold with the
+  fence still set, so the next open recovers again. `init` attaches the same way once its marker is
+  durable: a root made now has nothing to recover and its state is vouched for at once.
+- **`init` and `migrate` create no coordination state.** The file-based implementation reads an
+  absent count as untrusted, so the state a creation or a migration leaves is already untrusted, and
+  the first writer's open vouches for it. The implementation record is the only coordination state
+  creation and migration make.
+- **A sample costs one read of a small file.** Both `Store::modifications` and a writer's own
+  samples go through the coordination layer, so a read pays two of them. A shared-memory
+  implementation, which M10 brings, is how that cost goes.
+- **Across processes, tests spawn a real writer.** A fixture binary opens a store as its writer
+  over `OsFs` and stops part-way through a write, and the tests read it from another process: odd
+  while it is paused, even and moved by two once it finishes, odd after it is killed outright until a
+  writer opens the root, and one count shared by several readers. They run on Windows and on Linux
+  under WSL.
+
+[^m7-3]: `M7-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-3)
+
+## Recovery is a run the caller drives, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Store admission holds shared tiers for the handle's lifetime".**
+> Opening may change volatile attachment and registry state. It still changes no document,
+> marker, recovery record or recovery status and performs no recovery.
+
+Opening a store changes no store data and reports what it found; whether recovery is required can
+be asked by any handle and answers without changing anything; resolving and recovering are the
+caller's, and recovery is a run of bounded, idempotent steps[^m7-4].
+
+- **Work left behind belongs to a hold of writer exclusion, not to an open handle.** Every claim, log
+  record, publication record and directory-sync record is made while some handle holds writer
+  exclusion, and a hold that ends normally has discharged all of them. So whoever acquires exclusion
+  knows that what it finds was abandoned -- by a holder that died or by one that failed and went on --
+  and the first opener, the nth opener and the next write of one of several attached handles are in
+  the same position. A quiesced store with handles attached owns nothing on the work list. What is
+  genuinely first is the first acquisition after the coordination state lost its continuity -- a host
+  restart, lost state, a migration -- which cannot vouch for that state; it depends on the boot, not
+  on how many have opened.
+- **To resolve is not to recover.** *Resolving* finishes the work writers left on the store root's
+  work list: the directory-sync record, a pending document publication, the transactions of the
+  commit log, which the log alone decides, and the nonce claims of operations that died. *Recovering*
+  is the general case: resolving, and making the coordination state trusted, which a fence alone does
+  not need and a host restart does. `Store::resolve` resolves, and when the state was vouched for and
+  a fence was all that required recovery, also completes it -- publishes the even count and clears
+  the fence -- since that follows from resolving alone; `Store::recover` and a step-at-a-time
+  `Store::recovery` are the general case.
+- **`Store::open` changes no store data and returns what it found.** It validates the marker, takes
+  the root's lock, reads the marker again, confirms the root's recorded implementation and acquires
+  writer exclusion, and moves no replica, log, record or coordination state. Beside the handle it
+  returns a `RecoveryNeed`: what acquiring found -- a fence, state that cannot be vouched for, a holder
+  that died -- and whether writers left work to resolve. What to do about it is the caller's. A handle
+  whose acquisition found recovery required refuses writes until resolving or recovery has lifted it,
+  through the refusal an unresolved transaction already makes: `StoreError::RecoveryRequired`, shared
+  by every clone. Work left behind with no fence does not by itself refuse writes: a write settles a
+  pending publication and the directory names before it acts, and a claim refuses only its own nonce.
+- **Open takes exclusion only because a handle holds it for its lifetime (`D116`).** Opening needs
+  the marker, the implementation record, a participant and an observation, which the read-only open
+  makes without exclusion. When writers take turns, exclusion is acquired per modification, and
+  learning that the last holder died moves with it, as does reporting the work list, which only a
+  holder of exclusion, or an observation that found it free, can call left behind[^m9-1].
+- **Resolving begins with the directory names and the publication, then the log, then the claims.** A
+  write that creates a directory empties the durable record of names not yet synced, so the record is
+  discharged before any replay can create one; an operation that acts on the namespace settles a
+  pending publication first, since a replay over a document whose replicas a failed write left
+  disagreeing would strand its vote; and the log is emptied, best-effort as at the end of a write,
+  once every transaction in it is settled and collected. Releasing every claim is sound because the
+  writer gate excludes the handle's own operations and the root's lock every other writer.
+- **Resolving's work list is files at the store's root.** The directory-sync record
+  (`.dir-sync-debt`), the publication record (`.publication`), the commit log (`.commit-log`) and the
+  claims directory (`.claims`) sit beside the marker, so the list is found by looking at the root and
+  never by asking a process; resolving works from them alone and reads no coordination state. Whatever
+  resolving is later given to do is recorded in a root file the same way before it is done.
+- **Opening waits for writer exclusion.** The root's lock leaves no other writer to wait for, and
+  the one other holder there can be is a discovery, which has the exclusion for an instant.
+- **Discovery is the coordination layer's observation.** `Store::recovery_need` asks the participant
+  to observe the fence, the restart state and the ownership record while no writer can come between
+  the readings, and reports which of them requires recovery: a fence, state that cannot be vouched
+  for, or a holder that died. A live writer's transaction is not reported, because the observation
+  takes the writer lock without waiting and a lock that is held means a live holder, whose record
+  is its transaction; the writer's own handle is a live holder to itself, and reports its fence
+  and its restart state. Any handle asks, one opened only to read included.
+- **The work list is reported only by a handle that can tell it was left behind.** A handle that may
+  write reads it under its writer gate, which waits for an operation of its own in progress, and the
+  root's lock excludes every other writer, so what it finds was left behind. A handle opened only to
+  read, or a writer asked from inside one of its own operations, cannot tell work left behind from a
+  live operation's, and reports that it cannot rather than guess.
+- **A recovery is phases of units, in one order, resolving's first.** The directory-sync record -- a unit per recorded
+  directory, and one to empty the record -- then the pending publication, then each transaction of the
+  commit log settled, then each one's superseded content collected (every transaction settled first,
+  `D330`), then the claims of operations that died, then completion. Completion empties the log,
+  best-effort, publishes the even count and the trusted state and clears the fence last, so a stop or a death at any step leaves the
+  fence set and the next recovery starts from what the commit log says. It reads the log and never the
+  coordination state, and settles each transaction by the log alone: a prepared one rolls forward and a
+  begun one rolls back.
+- **A step does one unit and reports where the run is.** `Recovery::step` returns the phase, the units
+  done and known, whether the known total grew in that step, and whether the run has finished. A phase's
+  units are counted when it is entered, so the total grows as the run reaches phases it had not
+  measured. A step that fails leaves its unit for the next, and every unit is idempotent: a sync made
+  again, a swap landing on the cell it already moved, an end record written only while the log's last
+  record is the prepare, a sweep that finds nothing.
+- **Stopping or dying is resuming.** A run dropped part-way leaves the handle needing recovery, and a
+  later `recovery` begins from what is durable; a process that dies leaves the fence, and the next
+  open is told. A recovery that has finished again does no work.
+- **A step runs under the writer gate with its modifications marked recovery's.** A state that
+  requires recovery refuses an ordinary modification and not recovery's, and the write paths the steps
+  reach -- the pointer moves, the collections, the settling of a publication -- are refused to every
+  other caller of the handle while it needs recovery, and open to the steps, which hold the gate.
+  Modifications recovery's steps make end settled, not unresolved: whatever a step fails to finish is
+  the next step's, and the fence is set already.
+- **A handle opened only to read cannot resolve or recover.** `Store::resolve`, `Store::recovery` and
+  `Store::recover` refuse it with `StoreError::ReadOnly`; it asks and reads, and a writer resolves and
+  recovers.
+- **Across processes, a killed writer is reported and recovered.** The tests spawn a real writer that
+  stops part-way through a write: while it lives, a reader in another process is told nothing is
+  required, and once it is killed outright the reader is told a holder died, a writer that opens is
+  told the holder died and left work, and the run it takes settles the count the reader samples. They run on
+  Windows and on Linux under WSL.
+
+[^m7-4]: `M7-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-4)
+
+[^m9-1]: `M9-1` in [CHECKLIST.md](CHECKLIST.md)
+
+## Agent metadata is behind the genesis version-8 barrier, 2026-11-14
+
+The version-8 marker contains required `metadata`: the agent's version-independent identifier,
+software version and description, plus `canopy_schema` and `agent_schema`, each carrying `current`
+and `oldest_reader`. The marker version is checked before decoding these fields, so a version-7
+binary refuses it and a current binary reports migration required for a version-6 or version-7
+root. The canopy schema is independent of the marker encoding version.
+
+`StoreOptions` requires an explicit `Agent` for creation and both open modes. Agent strings are
+opaque, compared exactly, with no case folding, version ordering or interpretation of the
+description. Schema numbers are unsigned 32-bit values, including zero. Creation and offline
+migration initialize each reader floor to its layer's current schema: admitting an earlier reader
+would require a compatibility promise those inputs do not make. An opener with a different
+version-independent identity is refused before acquiring writer exclusion; changing the supplied
+software version or description never rewrites the root at open.
+
+The metadata lives in the existing atomically published marker so it cannot be observed separately
+from the format barrier. Its serialized bytes are part of creation's reservation. A retry with a
+different identity, software version, description or agent schema cannot resume that creation.
+Missing metadata and a reader floor beyond its layer's current schema are malformed, not defaults.
+
+Offline migration preserves the store identity, creation time, replica configuration and documents.
+The durable migration record binds the source and target versions, requested agent and target
+marker. A version-6 migration reserves the implementation with that complete record as its inputs;
+a version-7 migration verifies and retains its existing reservation, whose creation inputs must not
+be rewritten. It publishes the v8 marker durably before removing the old marker and migration
+record. A retry checks the complete agent inputs before making an effect. A current root is an
+idempotent no-op only after validating its marker, agent identity and recorded implementation.
+
+The metadata and barrier work is tracked here[^m8-1]. Per-layer admission and attachment, successful
+write stamps and the management view remain the dependency-ordered obligations in
+[CHECKLIST.md](CHECKLIST.md); this decision does not implement or narrow them.
+
+[^m8-1]: `M8-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-1) [completed 2026-11-14]
+
+## Store admission holds shared tiers for the handle's lifetime, 2026-11-14
+
+Creation and both open modes attach through acadia before a handle is returned[^m8-2]. The
+coordination contract orders acquisition: the shared admission gate, the shared reader tier,
+release of the gate, then the shared writer tier for a writer, and writer exclusion last.
+Canopy retains the whole-lifetime writer exclusion and root lock; per-write turn-taking remains
+the later checklist obligation. A read-only handle holds shared reader attachment and no writer
+exclusion, and document reads acquire no additional tier.
+
+The marker is read again under the attachment. Agent identity and both schema layers are checked
+there, so an opener that waited at admission cannot use the marker it read before that wait.
+Readers must speak a schema in the inclusive `oldest_reader..=current` range for each layer;
+writers must speak each current schema exactly. `SchemaMismatch` identifies the failing layer,
+spoken version, current version, reader floor and whether writer access was requested. A refusal
+drops the acquired attachment without registering or acquiring writer exclusion.
+
+The attachment lives in the clone-shared `Coordinated` state. On its final drop, writer exclusion
+ends first, then acadia's attachment unregisters its entry before releasing its tiers, and the
+participant is released last. The root's lock continues to cover that teardown. No clone creates
+another entry or extends a registration past the attachment it describes.
+
+An admitted handle registers canopy-owned JSON after its check. The payload carries its encoding
+version, agent identifier and software version, spoken canopy and agent schemas, reader and writer
+tier modes, process ID and draining state. Encoding tags are named constants. Ordinary reads and
+writes neither rewrite nor renew the entry. A full registry or a failed registration does not
+refuse attachment; acadia records possible incompleteness when it can. The lower-layer handling
+of failed first registrations is recorded in [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md)
+"A failed first registration records possible incompleteness".
+
+The ordinary admission table is implemented here. Upgrade-time admission and lease draining
+remain scheduled with the upgrade protocol in [CHECKLIST.md](CHECKLIST.md), and the store-level
+registry listing and diagnostic view remain its management-surface item.
+
+[^m8-2]: `M8-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14]
+
+## Successful mutations stamp the agent version independently, 2026-11-14
+
+A mutation returning success carries `WriteOutcome<T>`: its operation value and a separate
+`agent_stamp` result. A failed stamp neither changes that success nor sets the recovery fence,
+and it never asks the caller to replay an operation that succeeded. The stamp follows the
+operation while its writer guard and coordination exclusion are still held. It is a durable
+marker replacement, not part of the transaction's journal or its commit decision[^m8-3].
+
+The rule covers committed transactions, unlogged document writes, direct repairs, each repaired
+scrub document, backlog repairs and successful resolving, recovery units and quiescence. A
+rejected transaction or a unit that changes nothing does not stamp. Settling a nonempty pending
+publication is maintenance work, including when it precedes an otherwise empty repair pass.
+Creation and migration already write their explicit agent metadata; opening and diagnostic
+registration do not stamp. Internal staging or repair calls do not stamp on behalf of an outer
+write that may still fail.
+
+Scrub retains its per-document guard and recovery its per-unit guard; neither retains exclusion
+across the caller's entire pass merely for stamping. Units completed before a later unit fails
+have succeeded independently and may already have stamped. A successful batch retains its first
+stamp failure in its receipt even if a later unit retries successfully. A failed unit propagates
+its operation error, not a successful receipt.
+
+The clone-shared cache is keyed by the generation returned by writer exclusion. It is seeded
+from the admitted marker at open, reloaded when that generation differs, and used to compare the
+recorded software version by equality alone. An unchanged version performs no marker I/O.
+When the version differs, the marker is reread to preserve other metadata, only `agent_version`
+is replaced, and the new bytes and directory entry are synced through the ordinary atomic
+publication primitive. The cache advances only after that sync succeeds. In particular, a failure
+after rename can expose the new version in memory while leaving the cache at the prior version;
+the next successful mutation retries its durable publication. Agent description and both schema
+layers are unaffected by stamping.
+
+These result and coverage choices were selected explicitly: a shared last-error slot would lose
+per-call association between clones, and returning a stamp failure as the write's error would
+invite duplicate writes. Keeping the metadata outcome beside the successful value preserves both.
+
+[^m8-3]: `M8-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-3) [completed 2026-11-14]
+
+## Store management and diagnosis do not borrow document access, 2026-11-14
+
+`Store::properties` reads the current marker, not the handle's open-time copy. Its owned result
+includes the agent identity, recorded version and description, coordination implementation,
+both schema layers and reader floors, store identity and creation time, genesis version and
+replication layout. One marker read supplies the metadata as an atomic published value[^m8-4].
+
+`attached_handles`, on both `Store` and `DiagnosticView`, decodes canopy's versioned JSON payload
+and retains acadia's liveness-at-probe semantics and incompleteness flag. Unknown payload versions,
+malformed payloads and disagreement with acadia's tier record count as unknown; they never make a
+partial list appear complete. Escaped opaque agent strings are decoded without restricting their
+contents. Listings are diagnostic observations, not simultaneous membership snapshots.
+
+`DiagnosticView` builds a participant from its own filesystem and root through the chosen factory,
+validates the current marker and recorded coordination identity, and takes no attachment tier or
+registry entry. Its surface offers only properties, attached handles and recovery discovery, so
+an administrator can diagnose a root while its admission gate is held. No agent or admissible
+schema is required; no document access or mutation is exposed. Recovery discovery reports the
+coordination observation and leaves the unresolved-work field unknown, rather than treating a
+live writer's work list as abandoned.
+
+`set_agent_description` is a mutation through the ordinary writer guard: read-only and fenced
+handles are refused. It rereads the marker, replaces only the description, publishes it durably,
+and returns the independent agent-version stamp result. A clone-shared pending description
+identifies a same-value retry after failed publication. The same-value path syncs the root even
+after reopening, because a visible rename alone does not prove durability. A successful retry on
+the original handle stamps completed pending work; an ordinary same-value call does not rewrite
+the marker or stamp a new version. Description failures are operation errors; a version-stamp
+failure after a successful description change leaves that change successful.
+
+[^m8-4]: `M8-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-4) [completed 2026-11-14]

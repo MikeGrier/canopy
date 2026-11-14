@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, MemFs, PathMatcher, Vfs, When};
 use canopy::{
-    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, ShireId, Store,
-    StoreError, StoreOptions, Swap,
+    BlobName, DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, PathHash, Store,
+    StoreError, StoreId, StoreOptions, Swap,
 };
 
 fn node() -> NodePath {
@@ -32,20 +32,21 @@ fn body(text: &str) -> DocumentBody {
 /// Options drawing nonces `N0`, `N1`, ... .
 fn options() -> StoreOptions {
     let next = AtomicU64::new(0);
-    StoreOptions::with_nonce_source(move || {
-        Nonce::new(&format!("N{}", next.fetch_add(1, Ordering::Relaxed))).unwrap()
-    })
+    StoreOptions::with_nonce_source(
+        canopy::Agent::new("canopy-tests", "test", "Canopy test fixture", 1),
+        move || Nonce::new(&format!("N{}", next.fetch_add(1, Ordering::Relaxed))).unwrap(),
+    )
 }
 
 /// A fresh store, plus the backend for inspecting what landed.
 fn fresh() -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("shire");
+    let root = PathBuf::from("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),
         root,
-        GenesisConfig::new(ShireId::new("cvs23-shire").unwrap(), 3),
+        GenesisConfig::new(StoreId::new("cvs23-store").unwrap(), 3),
         options(),
     )
     .expect("init");
@@ -95,7 +96,9 @@ fn an_unlogged_write_is_reachable_through_the_namespace() {
     let (_vfs, store) = fresh();
     store
         .write_document_replicated(node(), &doc(), &body("v1"))
-        .expect("the write commits");
+        .expect("the write commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         via_namespace(&store).as_deref(),
@@ -117,7 +120,9 @@ fn a_compare_and_set_over_an_unlogged_write_reaches_both_trees_too() {
     let (_vfs, store) = fresh();
     store
         .write_document_replicated(node(), &doc(), &body("v1"))
-        .expect("the seed commits");
+        .expect("the seed commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     let commit = store
         .update_document(Swap::conditional(
@@ -145,7 +150,9 @@ fn overwriting_does_not_strand_the_version_it_replaced() {
     for generation in 1..=5 {
         store
             .write_document_replicated(node(), &doc(), &body(&format!("v{generation}")))
-            .expect("the write commits");
+            .expect("the write commits")
+            .agent_stamp
+            .expect("agent version stamp");
         assert_eq!(
             blob_count(&vfs, &store),
             store.blob_replica_count(),
@@ -172,19 +179,21 @@ fn the_pointer_never_names_a_blob_that_is_not_there() {
                 gate.clone(),
             ),
         ));
-        let root = PathBuf::from("shire");
+        let root = PathBuf::from("store");
         vfs.create_dir_all(&root).unwrap();
         let store = Store::init(
             vfs.clone(),
             root,
-            GenesisConfig::new(ShireId::new("cvs23-shire").unwrap(), 3),
+            GenesisConfig::new(StoreId::new("cvs23-store").unwrap(), 3),
             options(),
         )
         .expect("init");
 
         store
             .write_document_replicated(node(), &doc(), &body("v1"))
-            .expect("the unfaulted seed write commits");
+            .expect("the unfaulted seed write commits")
+            .agent_stamp
+            .expect("agent version stamp");
 
         gate.open();
         if store
@@ -225,7 +234,9 @@ fn an_empty_body_round_trips() {
     let (_vfs, store) = fresh();
     store
         .write_document_replicated(node(), &doc(), &DocumentBody::new(Vec::new()))
-        .expect("the write commits");
+        .expect("the write commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(via_namespace(&store).as_deref(), Some(b"".as_slice()));
 }
@@ -238,10 +249,14 @@ fn a_node_holds_multiple_documents_independently() {
     let other = DocumentName::new("ENGINE").expect("a valid document name");
     store
         .write_document_replicated(node(), &doc(), &body("the record"))
-        .expect("the write commits");
+        .expect("the write commits")
+        .agent_stamp
+        .expect("agent version stamp");
     store
         .write_document_replicated(node(), &other, &body("pid+start"))
-        .expect("the write commits");
+        .expect("the write commits")
+        .agent_stamp
+        .expect("agent version stamp");
 
     assert_eq!(
         canopy::read_once(&store, &node(), &doc()).expect("read"),

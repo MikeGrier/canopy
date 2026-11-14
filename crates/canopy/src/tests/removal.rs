@@ -340,7 +340,7 @@ fn recovery_rolls_forward_a_prepared_removal() {
     // Crash point: prepared (past the commit point) but nothing deleted yet.
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"v1")));
 
-    let recovered = reopen(&vfs, store).unwrap();
+    let recovered = reopen_settled(&vfs, store);
     assert_eq!(
         recovered.read_body(&node, &d).unwrap(),
         None,

@@ -12,7 +12,7 @@ impl Store {
     /// Writes `body` as the document named `document` at `node`, without a transaction.
     ///
     /// The write is made under a nonce drawn from the store's source and claimed for it, and
-    /// the nonce is returned.
+    /// the nonce is returned in [`WriteOutcome`] beside the independent agent-stamp result.
     ///
     /// # It writes both trees, and journals neither (`D332`)
     ///
@@ -40,14 +40,14 @@ impl Store {
         node: impl Into<NodePath>,
         document: &DocumentName,
         body: &DocumentBody,
-    ) -> Result<Nonce, StoreError> {
+    ) -> Result<WriteOutcome<Nonce>, StoreError> {
         let _writer = self.writable()?;
         let claim = self.claim_fresh_nonce()?;
         self.write_document_replicated_as(node, document, body, claim.nonce())?;
         let nonce = claim.nonce().clone();
         drop(claim);
         self.settle_log();
-        Ok(nonce)
+        Ok(self.stamped(nonce, true))
     }
 
     /// [`write_document_replicated`](Store::write_document_replicated) under `nonce`, which
@@ -61,7 +61,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let _writer = self.writable()?;
         // One modification from ingest through collection (`D335`).
-        let _modifying = self.begin_modification();
+        let _modifying = self.begin_modification()?;
         let node = node.into();
 
         // Before the blob is ingested: a write the namespace will refuse must not leave a
@@ -140,8 +140,8 @@ impl Store {
     /// # A disagreement nothing was changing is not contention
     ///
     /// The vote is bracketed by two samples of the modification count. When they show nothing
-    /// was modified during it ([`Store::undisturbed`]), no writer in this process can have
-    /// scattered the replicas the read saw, and waiting will not gather them: the read returns
+    /// was modified during it ([`Store::undisturbed`]), no writer, in this process or another, can
+    /// have scattered the replicas the read saw, and waiting will not gather them: the read returns
     /// [`StoreError::PointerUnavailable`] rather than [`Read::Contended`], so a caller's loop
     /// stops instead of spinning. Under the publication record that is a pointer replica lost
     /// beneath a write that then failed part-way, and the next operation that settles -- a
@@ -159,7 +159,7 @@ impl Store {
         // and asking it twice more would only be answering a different question -- whether
         // to keep waiting -- which is the caller's.
         for _ in 0..2 {
-            let before = self.modifications();
+            let before = self.modifications()?;
             let read = match self.read_pointer(&node, document) {
                 Ok(read) => read,
                 // No pointer commanded a majority. Absence might still have: count the
@@ -178,7 +178,7 @@ impl Store {
                     if missing >= namespace::pointer_majority(replicas) {
                         return Ok(Read::Absent);
                     }
-                    let after = self.modifications();
+                    let after = self.modifications()?;
                     if Store::undisturbed(before, after) {
                         return Err(error);
                     }
@@ -219,7 +219,7 @@ impl Store {
             cause: Contention::Superseded {
                 resolved: resolved.expect("only the superseded path reaches here"),
             },
-            modifications: self.modifications(),
+            modifications: self.modifications()?,
         }))
     }
 }

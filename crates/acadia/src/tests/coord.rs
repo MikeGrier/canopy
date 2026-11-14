@@ -20,12 +20,14 @@ mod admission;
 mod basics;
 mod count;
 mod creation;
+mod discovery;
 mod exclusion;
 mod hold;
 mod layout;
 mod notify;
 mod process;
 mod registry;
+mod reserve;
 mod restart;
 mod values;
 
