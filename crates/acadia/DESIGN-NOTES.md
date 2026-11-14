@@ -605,7 +605,8 @@ suite[^m6-1].
 - **The crate's description and documentation change with it:** the seam is one layer of the crate
   and coordination is the other.
 
-[^m6-1]: `M6-1` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-1]: `M6-1` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-1)
+    [completed 2026-11-13; `d7daade`]
 
 ## The coordination interface, defined, 2026-11-13
 
@@ -687,7 +688,8 @@ for them -- the resumer that waited, the intruder that appeared during the wait,
 reservation was published second, the simultaneous creators, and the marker made durable by an
 open.
 
-[^m6-2]: `M6-2` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-2]: `M6-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-2)
+    [completed 2026-11-13; `d7daade`]
 
 ## A host restart is recognised from the boot identity the filesystem reports, 2026-11-13
 
@@ -727,7 +729,8 @@ Survival)[^m6-3].
 A revert-probe that ignored the boot identity in the record failed the case of a vouched record
 surviving a crash.
 
-[^m6-3]: `M6-3` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-3]: `M6-3` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-3)
+    [completed 2026-11-13; `d7daade`]
 
 ## The modification count is one record, carrying its boot and its standing, 2026-11-13
 
@@ -764,7 +767,8 @@ Revert-probes: a sample that ignored the standing failed the cases of a count ne
 no recovery vouched for, a record that is not one, and a sample after a restart; a failed closing
 publication that set no fence failed its case.
 
-[^m6-4]: `M6-4` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-4]: `M6-4` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-4)
+    [completed 2026-11-13; `d7daade`]
 
 ## Writer exclusion is one lock file, held whole, in the participant's table of holds, 2026-11-13
 
@@ -789,7 +793,8 @@ state's exclusion lock file[^m6-5]:
 A revert-probe that kept the lock after its hold was dropped left the waiting cases waiting until
 the harness's own timeout ended the run.
 
-[^m6-5]: `M6-5` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-5]: `M6-5` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-5)
+    [completed 2026-11-13; `d7daade`]
 
 ## The hold of writer exclusion keeps its bookkeeping in files replaced whole, 2026-11-13
 
@@ -825,7 +830,8 @@ Revert-probes: dropping the lock before removing the record made a live holder r
 case of two holders releasing and acquiring in turn, and an acquirer that did not set the fence
 failed the case of the fence outliving the finder's clean release, with the other death cases.
 
-[^m6-6]: `M6-6` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-6]: `M6-6` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-6)
+    [completed 2026-11-13; `d7daade`]
 
 ## The admission gate and the tiers are locks in two files, held in the participant's table of holds, 2026-11-13
 
@@ -859,7 +865,8 @@ the safe upgrade's case; keeping the gate after a safe upgrade, or releasing it 
 one, failed the case that only the unsafe upgrade keeps it; and an upgrade that kept its shared
 tiers waited on itself.
 
-[^m6-7]: `M6-7` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-7]: `M6-7` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-7)
+    [completed 2026-11-13; `d7daade`]
 
 ## The registry is a pair of lock bytes and a record file per entry, every lock taken as a try, 2026-11-13
 
@@ -898,7 +905,8 @@ the tiers failed the case that an entry is cleared while its tiers are held; an 
 its entry through the conversion failed the conversion's case; and a listing that ignored the
 overflow record failed both overflow cases.
 
-[^m6-8]: `M6-8` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-8]: `M6-8` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-8)
+    [completed 2026-11-13; `d7daade`]
 
 ## One poller per process samples the count for every registration, each with its own backoff, 2026-11-13
 
@@ -929,4 +937,5 @@ notice; a registration kept after it rang went on sampling, which the case of no
 ring caught once it held its notice past the ring; and a ring run without `catch_unwind` killed the
 poller and failed the panicking ring's case.
 
-[^m6-9]: `M6-9` in [canopy's CHECKLIST.md](../canopy/CHECKLIST.md)
+[^m6-9]: `M6-9` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m6-9)
+    [completed 2026-11-13; `d7daade`]
