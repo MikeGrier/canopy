@@ -317,6 +317,17 @@ fn main() -> ExitCode {
         options =
             options.with_coordination(Arc::new(acadia::coord::file::FileFactory::alternate()));
     }
+    match std::env::var("CANOPY_TEST_COORDINATION").as_deref() {
+        Ok("shared") => {
+            options =
+                options.with_coordination(Arc::new(acadia::coord::shared::SharedFactory::new()))
+        }
+        Ok("file") => {
+            options = options.with_coordination(Arc::new(acadia::coord::file::FileFactory::new()))
+        }
+        Ok(_) => return fail("unknown test coordination backend"),
+        Err(_) => {}
+    }
     if matches!(
         mode,
         "reader" | "reader-wait" | "source-probe" | "resume-upgrade"

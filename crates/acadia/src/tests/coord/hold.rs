@@ -256,6 +256,83 @@ fn modifications_through_the_hold_raise_the_count_once() {
 }
 
 #[test]
+fn exhausted_generations_leave_no_hold_or_new_ownership_record() {
+    on_every_implementation("coord-generation-exhausted", &|implementation, backend| {
+        let holder = participant(implementation, backend);
+        let mut initial = holder.acquire(Waiting::Wait).expect("initial hold");
+        initial.complete_recovery().expect("vouch state");
+        initial.release().expect("release");
+        let path = holder.layout().generation();
+        let mut encoded = holder.vfs().read(&path).expect("encoded generation");
+        let offset = encoded.len() - size_of::<u64>();
+        encoded[offset..].copy_from_slice(&u64::MAX.to_le_bytes());
+        holder
+            .vfs()
+            .write(&path, &encoded)
+            .expect("last generation");
+        assert!(matches!(
+            holder.acquire(Waiting::Never),
+            Err(CoordError::Exhausted { .. })
+        ));
+        assert_eq!(
+            holder.vfs().read(&path).expect("unchanged generation"),
+            encoded
+        );
+        assert!(
+            !holder
+                .vfs()
+                .exists(&holder.layout().owner())
+                .expect("owner")
+        );
+        assert!(
+            holder
+                .vfs()
+                .try_lock(
+                    &holder.layout().exclusion_lock(),
+                    crate::LockMode::Exclusive,
+                    crate::LockSpan::File
+                )
+                .is_ok()
+        );
+    });
+}
+
+#[test]
+fn file_release_retains_ownership_when_a_required_fence_cannot_be_published() {
+    use crate::Vfs;
+    use crate::coord::CoordinationFactory;
+    use std::path::Path;
+    for end_before_release in [false, true] {
+        let gate = crate::FaultGate::closed();
+        let policy = crate::FaultPolicy::new().inject_gated(
+            crate::FaultOp::Write,
+            crate::PathMatcher::predicate(|_| true),
+            crate::Fault::io_error(),
+            crate::When::Always,
+            gate.clone(),
+        );
+        let fs = std::sync::Arc::new(crate::FaultyFs::new(crate::MemFs::new(), policy));
+        fs.create_dir_all(Path::new("/file-failed-fence")).unwrap();
+        let participant = crate::coord::file::FileFactory::new()
+            .open(fs, Path::new("/file-failed-fence"))
+            .unwrap();
+        let mut hold = participant.acquire(Waiting::Wait).unwrap();
+        hold.complete_recovery().unwrap();
+        hold.begin_modification(Purpose::Ordinary).unwrap();
+        gate.open();
+        if end_before_release {
+            assert!(hold.end_modification(ModificationEnd::Unresolved).is_err());
+        }
+        assert!(hold.release().is_err());
+        gate.close();
+        let mut next = participant.acquire(Waiting::Never).unwrap();
+        assert!(next.acquired().holder_died());
+        assert!(next.acquired().recovery_required());
+        next.complete_recovery().unwrap();
+    }
+}
+
+#[test]
 fn a_holder_told_to_wait_is_refused_while_another_holds() {
     on_every_implementation("coord-hold-never", &|implementation, backend| {
         let _held = acquire(&participant(implementation, backend));

@@ -36,8 +36,19 @@ fn quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn execution_root(host: &Path, native: Option<&str>) -> io::Result<String> {
+    match native {
+        Some(path) if path.starts_with('/') && !path.contains('\0') => Ok(path.to_owned()),
+        Some(_) => Err(io::Error::other(
+            "CANOPY_WSL_ROOT must be an absolute Linux path",
+        )),
+        None => linux_path(host),
+    }
+}
+
 fn forward() -> io::Result<ExitCode> {
-    let root = linux_path(&std::env::current_dir()?)?;
+    let native_root = std::env::var("CANOPY_WSL_ROOT").ok();
+    let root = execution_root(&std::env::current_dir()?, native_root.as_deref())?;
     let home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo")))

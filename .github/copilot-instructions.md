@@ -425,6 +425,12 @@ Linux compiler. Its source is [cargo-wsl.rs](../tools/cargo-wsl.rs); its own uni
 `manifest_path: ".scratch/cargo-wsl-tests/Cargo.toml"`, which setup generates. Do not add this
 scratch package to the workspace. `CANOPY_WSL_DISTRO` selects the distribution (default `Ubuntu`),
 and `CANOPY_WSL_TARGET_DIR` selects its Linux artifact directory (default `/tmp/canopy-linux`).
+`CANOPY_WSL_ROOT` optionally selects an absolute Linux-native checkout instead of translating the
+Windows working directory; omit it to keep the existing mounted-workspace path. Set it through
+the cargo tool's per-call `env`, keep `working_dir` at the Windows workspace root, and set
+`CANOPY_WSL_TARGET_DIR` beneath the native checkout when native source and artifacts are required.
+The native checkout must contain the intended source revision before the call; the bridge does
+not copy changes for the caller. Benchmark data belongs beneath that checkout's `.scratch/` too.
 For a narrowed WSL test call use `test_name`, not `test_filter` or `bisect`: modes that enumerate
 or execute compiled test binaries on the Windows host cannot run Linux executables.
 

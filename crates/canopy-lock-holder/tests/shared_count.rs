@@ -27,6 +27,9 @@ mod turns;
 #[path = "shared_count/upgrades.rs"]
 mod upgrades;
 
+#[path = "shared_count/shared_backend.rs"]
+mod shared_backend;
+
 /// How long to wait for the writer to report a step.
 ///
 /// Generous on purpose: the assertion is that the step happens, not how soon.
@@ -173,6 +176,16 @@ impl Writer {
         extra: &[String],
     ) -> Writer {
         let mut command = Command::new(env!("CARGO_BIN_EXE_canopy-store-writer"));
+        let mode = if let Some(mode) = mode.strip_prefix("shared-") {
+            command.env("CANOPY_TEST_COORDINATION", "shared");
+            mode
+        } else if let Some(mode) = mode.strip_prefix("file-") {
+            command.env("CANOPY_TEST_COORDINATION", "file");
+            mode
+        } else {
+            command.env_remove("CANOPY_TEST_COORDINATION");
+            mode
+        };
         command
             .arg(root)
             .args([node, document, text])

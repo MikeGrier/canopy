@@ -36,35 +36,6 @@ Each item here names the event it waits on; it joins a milestone once that event
   engine must reject undefined transitions rather than invent a format change. Graduate this item
   when a concrete schema change is specified; the generic engine is the current milestone's work.
 
-## M10 -- A shared-memory coordination implementation
-
-A shared-memory implementation of the whole coordination contract -- exclusion, attachment, the
-registry and the counters -- for stores on a local filesystem on Windows and Linux, passing the
-same conformance suite (was `MP-11`). It lives with the coordination interface, in `crates/acadia`.
-
-- [ ] **M10-1** (was `MP-11.1`) -- The implementation's state: specify how it creates and re-creates it (a
-  Windows mapping backed by the paging file vanishes when its last user exits), treating any state
-  it cannot vouch for as requiring recovery, and how it simulates abandonment. Test last-process
-  exit, host restart and a failed creation separately.
-  **CROSS-COMPONENT PREREQUISITE:** component `crates/canopy` -> `M9` -> `M9-7` (writer/upgrade
-  baseline and bounded contention comparison) must land first. See
-  [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-7).
-
-- [ ] **M10-2** (was `MP-11.2`) -- Writer exclusion, the fence, the generation and the ownership record, passing
-  the conformance cases of M6-5 and M6-6.
-
-- [ ] **M10-3** (was `MP-11.3`) -- The admission gate and the attachment tiers, passing the conformance cases of
-  M6-7.
-
-- [ ] **M10-4** (was `MP-11.4`) -- The registry of attached handles, passing the conformance cases of M6-8.
-
-- [ ] **M10-5** (was `MP-11.5`) -- The modification count and its notification, passing the conformance cases of
-  M6-4 and M6-9.
-
-- [ ] **M10-6** (was `MP-11.6`) -- Benchmark reader sampling and writer handoff against the file-based
-  implementation, and run the cases between two implementations against the file-based and the
-  shared-memory implementations.
-
 ## M11 -- Conformance harness
 
 - [ ] **M11-1** (was `FM-3.1`) -- Export TLC behaviours as JSON traces (simulation mode for breadth, the
@@ -72,6 +43,9 @@ same conformance suite (was `MP-11`). It lives with the coordination interface, 
   includes every timeline's replay from SPEC-2.2's scenario tables, so that M11-2 replays the
   timelines against the code ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A timeline is replayed by TLC
   from a scenario table").
+  **CROSS-COMPONENT PREREQUISITE:** acadia's `M10` -> `M10-6` (shared coordination conformance,
+  native process checks and sampling/handoff comparison) must land first. See
+  [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m10-6).
 
 - [ ] **M11-2** (was `FM-3.2`) -- A Rust test that replays each trace step against `Store` on
   `MemFs` + `FaultyFs` (failures as injected faults, crash as `simulate_crash`, reopen as

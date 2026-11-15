@@ -114,7 +114,12 @@ impl FileCoordination {
             self.record_boot(Standing::Untrusted)?;
         }
         let found = self.read_generation(remade)?;
-        let advanced_to = Generation::new(found.get() + 1);
+        let advanced_to = Generation::new(
+            found
+                .get()
+                .checked_add(1)
+                .ok_or(CoordError::Exhausted { what: "generation" })?,
+        );
         self.write_generation(advanced_to)?;
         let fenced = self.fence_is_set()?;
         self.write_owner()?;
@@ -140,15 +145,20 @@ impl FileHold {
         self.fenced || (!self.recovered && self.acquired.recovery_required())
     }
 
-    /// Clears the ownership record, then drops the lock. A participant that was abandoned does no
-    /// bookkeeping, as a dead one cannot.
+    /// Clears ownership only after required recovery evidence is present, then drops the lock.
+    /// An abandoned participant performs no bookkeeping.
     fn release_cleanly(&mut self) -> CoordResult<()> {
         let Some(exclusion) = self.exclusion.take() else {
             return Ok(());
         };
         let participant = exclusion.participant();
         let cleared = match participant.alive() {
-            Ok(()) => participant.clear_owner(),
+            Ok(()) => (|| {
+                if (self.fenced || self.modifications.is_open()) && !participant.fence_is_set()? {
+                    participant.set_fence()?;
+                }
+                participant.clear_owner()
+            })(),
             Err(_) => Ok(()),
         };
         drop(exclusion);
@@ -184,7 +194,17 @@ impl ExclusionHold for FileHold {
         }
         let participant = self.participant();
         let published = participant.read_count()?;
-        participant.publish_count(published.value.next_multiple_of(2), Standing::Vouched)?;
+        let even = if published.value.is_multiple_of(2) {
+            published.value
+        } else {
+            published
+                .value
+                .checked_add(1)
+                .ok_or(CoordError::Exhausted {
+                    what: "modification count",
+                })?
+        };
+        participant.publish_count(even, Standing::Vouched)?;
         participant.record_boot(Standing::Vouched)?;
         match participant.vfs().remove_file(&participant.layout().fence()) {
             Err(error) if error.kind() != VfsErrorKind::NotFound => return Err(error.into()),

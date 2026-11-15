@@ -1946,3 +1946,118 @@ Commands and input tables are in [README.md](../canopy-lock-holder/README.md#bou
 
 > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> `M10` -> `M10-1`
 > (shared-memory coordination state). See [CHECKLIST.md](CHECKLIST.md#m10----a-shared-memory-coordination-implementation).
+
+## Moved 2026-11-14 -- Shared-memory state epochs
+
+### <a id="m10-1"></a>M10-1 -- Create shared-state epochs with explicit trust, liveness, restart recognition and simulated abandonment. *(completed 2026-11-14 23:17:41 -05:00)*
+
+The shared backend's state is an unnamed file-backed mapping whose shared liveness proves whether
+an epoch still has participants. Setup remains held through initialization and the transition to
+a shared liveness hold. Last-participant loss, changed/unknown boot and inactive corrupt metadata
+create an untrusted recovery-fenced epoch; live corrupt metadata is refused without repair.
+
+The MemFs model shares atomic words by immutable instance and simulated boot and distinguishes
+abandonment from clean bookkeeping. Deterministic tests exercise initialization failures and
+restart independently; a killed real process proves a child retains the trusted epoch after its
+parent detaches and the next opener cannot trust state after that last process dies. The state
+protocol is in acadia's [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#shared-coordination-state-belongs-to-a-live-epoch-2026-11-14),
+with rationale in [DESIGN-RATIONALE.md](../acadia/DESIGN-RATIONALE.md#shared-state-epochs).
+
+## Moved 2026-11-14 -- Shared writer ownership and recovery evidence
+
+### <a id="m10-2"></a>M10-2 -- Implement shared writer ownership, recovery fences, checked generations and recovery-evidence-preserving release. *(completed 2026-11-14 23:59:41 -05:00)*
+
+Writer holds retain their participant and its shared epoch independently of the original borrow.
+The participant's hold table releases locks on abandonment without clearing ownership. Acquisition
+and release use acquire/release RMWs on the ownership word; count openings precede effects through
+an acquire/release RMW, nesting raises once, and unresolved inner endings preserve the shared
+fence and odd parity until completed recovery. Diagnostic probes release through RAII without
+advancing generation, including after a panic. Counter exhaustion is a typed refusal, not a wrap.
+
+Focused controls pin two existing file-path failures: an unresolved inner ending must fence all
+participants, and failure to publish that fence must retain ownership as recovery evidence after
+release. Those failures reproduce before their source repairs. File and shared mechanisms remain
+independent rather than being consolidated. A killed native writer leaves its mapped ownership
+and odd count visible to the retained peer and the next recovery, separately from last-process
+epoch recreation; modeled reboot invalidates old holds before any subsequent effect.
+
+The contract and the named unresolved-modification evidence guarantee are in acadia's
+[DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#shared-writer-holds-preserve-recovery-evidence-2026-11-14),
+with rationale in [DESIGN-RATIONALE.md](../acadia/DESIGN-RATIONALE.md#shared-writer-evidence).
+
+## Moved 2026-11-15 -- Shared admission and registry membership
+
+### <a id="m10-3"></a>M10-3 -- Implement shared admission, conversion and registry with one resource lifetime and explicit incomplete membership, including planned M10-4. *(completed 2026-11-15 01:12:31 -05:00)*
+
+The admission and registry interfaces were implemented together because the attachment/upgrade
+trait bounds require real `Registrant` behavior. Ordinary gate/reader/writer order, native blocking
+conversion and incremental gate/tier polling remain distinct specified paths. Cancellation and
+changed-safety refusal release partial holds; safe incremental conversion opens readers only after
+explicit admission, while unsafe conversion retains the gate. Registration drops before tiers.
+
+Mapped registry slots carry stable tokens, declared tiers and immutable references to arbitrary
+opaque payload bytes. Claim/liveness probes never wait, failed updates retain their old payload,
+claimed or malformed live slots are unknown, and first-registration failure or capacity overflow
+marks incomplete membership without invalidating attachment. A persistent epoch ordinal prevents
+token reuse after last-participant loss; model instances isolate copied filesystem metadata from
+live source words. Dead-epoch payload cleanup runs only under proven exclusive liveness.
+
+Focused tests pin stale-token refusal, entry reuse after abandonment, copied-world isolation and
+conversion cancellation. A killed registered native reader releases the tier blocking an unsafe
+conversion and ceases being listed live. The contract is in acadia's
+[DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#shared-admission-and-registry-retain-one-resource-lifetime-2026-11-15),
+with rationale in [DESIGN-RATIONALE.md](../acadia/DESIGN-RATIONALE.md#shared-admission-membership).
+
+<a id="m10-4"></a>Planned M10-4's registry work is included in the coupled admission and membership
+implementation above, not deferred or replaced by a registration placeholder.
+
+## Moved 2026-11-15 -- Shared count notification and public factory
+
+### <a id="m10-5"></a>M10-5 -- Expose the complete lazy shared factory, atomic count sampling and bounded one-shot notifications with common public-contract coverage. *(completed 2026-11-15 01:31:27 -05:00)*
+
+The public factory opens without mutation, checks reservation identity before initializing shared
+state, and supplies its own resumable creation and confirmation path. Owned creation locks release
+on abandonment, while a callback that abandons its participant cannot publish a later artifact.
+Native sampling is one acquire/release count RMW without a writer lock or composite record.
+One process-wide shared poller provides independent bounded backoff, one-shot change/deadline/error
+callbacks and lifetime cancellation, containing callback panics outside its mutex.
+
+Durably reserved generation ranges prevent reuse after the last participant exits while preserving
+mapped ordinary handoff. Common public-interface cases exercise the canonical file, alternate file
+and shared implementations over MemFs, OsFs and FaultyFs. A native child publication changes its
+parent's mapped count and rings a notice; the checked count, not the ring alone, establishes the
+publication. A failed-update control exposed the file registry's torn in-place update and pins its
+source repair through atomic replacement under the existing claim lock.
+
+The specification and atomic registry update guarantee are in acadia's
+[DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#shared-count-sampling-and-notifications-expose-the-whole-contract-2026-11-15),
+with rationale in [DESIGN-RATIONALE.md](../acadia/DESIGN-RATIONALE.md#shared-whole-contract).
+
+> **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy-lock-holder` -> `M10` ->
+> `M10-6` (sampling/handoff comparison and mixed-implementation process checks). See
+> [CHECKLIST.md](CHECKLIST.md#m10----a-shared-memory-coordination-implementation).
+
+## Moved 2026-11-15 -- Native coordination cost and mixed implementation checks
+
+### <a id="m10-6"></a>M10-6 -- Compare file/shared reader sampling and writer handoff on Windows and native Linux and verify mixed-implementation process refusal. *(completed 2026-11-15 07:08:59 -05:00)*
+
+The public-contract benchmark measures batched sampling and closed writer loops in real processes,
+alternates backend order, preserves raw request/acquisition/release times, and checks every
+generation and count raise. Windows and native ext4 comparisons observe cheaper sampling and
+handoff with mapped state without treating those finite closed loops as a fairness guarantee or
+as end-to-end document transaction latency. Native source, artifact and report placement is explicit
+through the opt-in WSL root override; the mounted-workspace default remains available.
+
+Process fixtures keep default file behavior and explicitly select the shared backend for
+interleaved logged/unlogged writes, snapshots, death at durable boundaries and target-schema
+recovery of interrupted upgrades. Canonical file and shared processes refuse each other's roots
+before changing their reservation. The file and shared paths are retained as deliberately
+independent supported implementations, not merged after the speculative path's proof.
+
+The cost finding and retain-both decision are in acadia's
+[DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#coordination-cost-and-independent-backends-2026-11-15),
+with rationale in [DESIGN-RATIONALE.md](../acadia/DESIGN-RATIONALE.md#coordination-cost-comparison).
+Commands and report semantics are in [README.md](../canopy-lock-holder/README.md#coordination-implementation-comparison).
+
+> **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M11` -> `M11-1`
+> (TLC trace corpus for the conformance harness). See [CHECKLIST.md](CHECKLIST.md#m11----conformance-harness).

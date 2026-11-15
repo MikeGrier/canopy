@@ -20,6 +20,7 @@ test-support = []
 [dependencies]
 cap-std = "4.0"
 cap-fs-ext = "4.0"
+memmap2 = "0.9.12"
 
 [dev-dependencies]
 test-timers = { path = "../test-timers" }

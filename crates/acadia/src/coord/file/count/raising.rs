@@ -29,6 +29,7 @@ pub(crate) struct Modifications {
     depth: u32,
     /// The odd value and standing the outermost raised the count to, which it must close.
     raised: Option<(u64, Standing)>,
+    unresolved: bool,
 }
 
 impl Modifications {
@@ -65,22 +66,36 @@ impl FileCoordination {
     /// A failed raise leaves the count unchanged and no modification open.
     pub(crate) fn begin_modification(&self, open: &mut Modifications) -> CoordResult<()> {
         self.alive()?;
+        let next_depth = open.depth.checked_add(1).ok_or(CoordError::Exhausted {
+            what: "modification nesting",
+        })?;
         if open.depth == 0 {
             let published = self.read_count()?;
+            if published.value == u64::MAX {
+                return Err(CoordError::Exhausted {
+                    what: "modification count",
+                });
+            }
             open.raised = None;
+            open.unresolved = false;
             if published.sample().is_settled() {
+                published
+                    .value
+                    .checked_add(2)
+                    .ok_or(CoordError::Exhausted {
+                        what: "modification count",
+                    })?;
                 let odd = published.value + 1;
                 self.publish_count(odd, published.standing)?;
                 open.raised = Some((odd, published.standing));
             }
         }
-        open.depth += 1;
+        open.depth = next_depth;
         Ok(())
     }
 
-    /// Ends the innermost modification. The outermost one that raised the count closes it even
-    /// for a settled end; an unresolved end sets the fence and leaves the count odd, as does a
-    /// closing raise that fails, whose failure is returned.
+    /// Any unresolved end fences the logical modification and preserves odd parity until recovery.
+    /// Only an outermost settled end with no unresolved inner end may publish the closing raise.
     pub(crate) fn end_modification(
         &self,
         open: &mut Modifications,
@@ -90,18 +105,25 @@ impl FileCoordination {
         if open.depth == 0 {
             return Err(CoordError::NoModificationOpen);
         }
+        if end == ModificationEnd::Unresolved {
+            open.unresolved = true;
+            self.set_fence()?;
+        }
         open.depth -= 1;
-        if open.depth > 0 {
+        if open.depth > 0 || open.unresolved {
             return Ok(());
         }
-        match (end, open.raised.take()) {
-            (ModificationEnd::Unresolved, _) => self.set_fence(),
-            (ModificationEnd::Settled, None) => Ok(()),
-            (ModificationEnd::Settled, Some((odd, standing))) => {
-                self.publish_count(odd + 1, standing).inspect_err(|_| {
-                    let _ = self.set_fence();
+        match open.raised.take() {
+            None => Ok(()),
+            Some((odd, standing)) => odd
+                .checked_add(1)
+                .ok_or(CoordError::Exhausted {
+                    what: "modification count",
                 })
-            }
+                .and_then(|even| self.publish_count(even, standing))
+                .inspect_err(|_| {
+                    let _ = self.set_fence();
+                }),
         }
     }
 }

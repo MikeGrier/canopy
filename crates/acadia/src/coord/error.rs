@@ -56,6 +56,11 @@ pub enum CoordError {
     NoModificationOpen,
     /// Recovery was completed with a modification still open.
     ModificationOpen,
+    /// A coordination counter cannot advance without reusing a previous value.
+    Exhausted {
+        /// The exhausted counter or nesting level.
+        what: &'static str,
+    },
     /// A file of the coordination state does not hold what the implementation writes there.
     Malformed {
         /// Which file.
@@ -86,6 +91,7 @@ impl fmt::Display for CoordError {
             CoordError::RecoveryRequired => f.write_str("recovery is required"),
             CoordError::NoModificationOpen => f.write_str("no modification is open"),
             CoordError::ModificationOpen => f.write_str("a modification is still open"),
+            CoordError::Exhausted { what } => write!(f, "the coordination {what} is exhausted"),
             CoordError::Malformed { what } => {
                 write!(f, "the coordination state's {what} is malformed")
             }

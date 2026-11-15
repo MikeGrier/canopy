@@ -1094,3 +1094,190 @@ canopy's schema conversion[^m9-4]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#incremental-tier-conversion).
 
 [^m9-4]: `M9-4` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14; `bb46904`]
+
+## Shared coordination state belongs to a live epoch, 2026-11-14
+
+The shared-memory path is separate from the file-based coordination backend. Its state is a fixed
+layout of aligned atomic words in an unnamed file-backed mapping, with `memmap2` providing the
+native mapping because that facility matches the owned shared-access and lifetime contract. The
+mapping's file has a name reserved to coordination; callers never truncate or remove it while an
+epoch has participants. Separate setup and liveness lock files keep data outside locked spans.
+
+An initializer holds setup exclusively, probes liveness exclusively and retains that probe while
+it creates or recreates state. It clears trust and ownership, sets the recovery fence and publishes
+the ready format only after the shared words are initialized. It records the host boot durably,
+then exchanges the exclusive liveness probe for its own shared liveness while retaining setup.
+Concurrent openers therefore cannot see an initialization gap as a live trusted epoch. Native
+file-backed state deliberately survives mapping closure, but absence of any liveness holder makes
+its prior trust unusable. A damaged inactive instance or mapping is recreated untrusted; a damaged
+live instance or mapping is refused without destructive repair.
+
+The boot record, a missing last participant, incomplete initialization and an unknown state format
+are independent reasons to require recovery. An unknown boot is never vouched for. Abandonment
+releases only that participant's liveness and refuses its later operations; ownership and shared
+records remain for recovery. An in-flight diagnostic keeps liveness serialized with abandonment,
+so a recreated mapping cannot undercut a read through its previous participant.
+
+MemFs uses shared atomic words keyed by the instance identity and modeled boot. Its word storage
+is retained only by participants, and a recreated epoch is fenced just as a native one is. Tests
+separate last-participant exit, host restart, injected initialization failure and loss of the last
+real OS process. The ordinary file backend remains independently selectable.
+This state foundation is recorded in canopy's
+[COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-1). Rationale
+is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-state-epochs).
+
+## Shared writer holds preserve recovery evidence, 2026-11-14
+
+A shared writer holds the specified VFS exclusion lock and retains its participant's mapping and
+liveness. Its resource table releases every owned lock on abandonment without clearing ownership;
+dropping the original participant does not release resources an outstanding hold still owns. The
+owner is a nonzero acquisition-generation token. Acquisition and release meet on that one word
+with acquire/release RMWs, so a new acquirer observes the predecessor's publication without
+depending on incidental OS-lock or code-generator ordering. Abandoned ownership fences the root
+before the record is replaced. Generation and hold identities advance without wraparound.
+
+The opening count raise is an acquire/release RMW before any effect, and nested work raises only
+once. **UNRESOLVED-MODIFICATION-EVIDENCE** means that an unresolved inner ending fences every
+participant and preserves odd parity for the whole logical modification; a settled outer ending
+cannot erase it. An open modification's dropped hold preserves recovery evidence. Ordinary work
+is refused behind the fence, and only completed recovery publishes a trusted even count and
+clears the fence. Count or nesting exhaustion is an explicit `CoordError::Exhausted`, not a reused
+generation or count; an opening is refused if its closing raise cannot be represented.
+
+The same evidence rule belongs to the established file path. If its fence publication fails, a
+release leaves ownership in place rather than erasing the only record that requires recovery.
+Its native-wait and file-publication mechanisms remain separate from the shared implementation;
+these are correctness repairs to the specified contract, not a new discipline or consolidation.
+
+Discovery's free-exclusion probe is owned by RAII and advances no root generation or record,
+including when the inspection panics. A nonchanging owner RMW supplies the same observation
+ordering as acquisition. A live holder is not reported dead. The virtual filesystem's changed
+boot rejects old holds before any later effect; explicit abandonment remains the separate modeled
+process-death action. Native mapped words use a mutable pointer captured before sharing, and
+that mapping's fixed lifetime bounds every atomic reference. Invalid shared headers cannot be
+vouched for merely by completing a count transition.
+
+This work is the writer/fence/generation part of the shared-memory milestone[^m10-2]. Rationale is
+in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-writer-evidence).
+
+[^m10-2]: `M10-2` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-2) [completed 2026-11-14]
+
+## Shared admission and registry retain one resource lifetime, 2026-11-15
+
+Admission holds the gate shared, then the reader tier shared, releases the gate and takes the
+writer tier shared for write access. Each tier is a distinct OS-lock file, owned by the same
+participant resource table as writer exclusion, so death releases every held tier independently
+of mapped bookkeeping. A conversion unregisters and releases its shared tiers before acquiring
+the gate exclusively. The native blocking conversion remains distinct from incremental polling;
+polling retains partial acquisitions and cancellation drops them without reacquiring attachment.
+Safe polling keeps reader admission closed until its consumer explicitly admits readers; unsafe
+conversion retains the gate and reader exclusion through completion. A changed safety choice is
+refused and releases the partial holds.
+
+Registration belongs to those same attachment/upgrade handles. Mapped slots carry the token,
+declared tiers and immutable payload reference; arbitrary opaque payload bytes live in fresh
+files, so no fixed buffer silently narrows the contract. Every registration and inspection holds
+an entry's nonblocking claim lock, and its registrant retains exclusive liveness from before
+publishing the slot until unregistering. A listing proves liveness under that claim, counts
+claimed/unreadable slots unknown and takes no attachment tier. Updates publish a new payload
+before changing its reference, retain their token, and leave the previous payload intact on
+failure. Unregistration removes the entry before releasing tiers; an abandoned registrant neither
+updates nor erases a reuser's slot. Stale mapped tokens refuse updates.
+
+The persistent epoch ordinal and checked registry sequence prevent reuse of a token on that
+root across last-participant exit. The model's in-process instance is minted again only when
+exclusive liveness proves a fresh epoch, so copied files in an independent filesystem cannot
+alias live word storage. Exhausted or malformed epoch identity is refused rather than reusing
+an earlier registration identity. Registry capacity exhaustion leaves an attachment unregistered
+and marks membership incomplete; a failed first registration also attempts that mark without
+replacing its own error. The incomplete mark survives epoch recreation until a recognized host
+restart. Only an initializer with exclusive liveness removes dead-epoch payload artifacts.
+
+Admission and registry are one work item because `Attachment` and `Upgrade` both require real
+`Registrant` behavior. Neither interface is implemented by a placeholder while its other half
+waits. Native process tests retain a registered reader while an unsafe conversion waits, then
+kill it and require both tier release and refusal to report its old record as live. The coupled
+work is tracked by canopy's shared-memory milestone[^m10-3], with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-admission-membership).
+
+[^m10-3]: `M10-3` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-3) [completed 2026-11-15]
+
+## Shared count sampling and notifications expose the whole contract, 2026-11-15
+
+`SharedFactory` makes a lazy participant whose construction changes no root data or coordination
+state. First use checks any creation reservation's implementation identity before initializing
+the shared epoch. Its separate creation exclusion and stable `acadia-shared-v1` identity use the
+owned reservation wire format: opaque canonical inputs, creation nonce and implementation. Root
+creation reads before and after exclusion, resumes only identical inputs and publishes the marker
+last; confirmation refuses foreign reservations before relying on shared state. Creation locks
+belong to the participant's abandonment table, and callbacks cannot finish a later artifact after
+abandonment. Initialization never makes abandonment wait behind a blocked initializer.
+
+Sampling is one acquire/release RMW on the mapped count, with no writer lock, syscall or composite
+record on the native fast path. Its release ordering retains the read-before-sample bracket and
+its acquire ordering retains the sample-before-read bracket; only an exclusion holder changes the
+count's value. Untrusted epochs begin odd and only completed recovery admits a trusted even count.
+The virtual backend additionally rejects a modeled old boot, because its old process objects can
+still exist in the test after the model's power loss.
+
+One shared-backend poller per process samples outstanding registrations, with independent bounded
+backoff and a wait while none are outstanding. It rings once for changed count, deadline or failed
+sampling, withdraws registrations on notice drop and contains callback panics. Callbacks and retired
+registrations are dropped outside the poller mutex. No registrant dedicates a thread; default file
+notifications and their Windows oplock path remain independent implementations of the same contract.
+Real process tests require a child publication to change the parent's mapped sample and ring its
+notice, rather than treating a timer ring as evidence of publication.
+
+Generation ranges are reserved durably at epoch creation and renewed only when a live writer
+exhausts its current reservation. The ordinary acquisition remains atomic mapped bookkeeping,
+but cold epochs begin beyond every previously reserved generation. The bounded range record is
+atomically replaced, checked with its complement and never reused after malformed identity or
+exhaustion. This preserves the generation contract across loss of the last participant rather
+than making a consumer infer cache identity from the current implementation's trust behavior.
+
+Public-interface conformance runs the same creation, count, ownership, admission, registry and
+notification cases against canonical file, alternate file and shared implementations over MemFs,
+OsFs and FaultyFs. **ATOMIC-REGISTRY-PAYLOAD-UPDATE** means that a failed replacement preserves the
+prior live payload and token. A torn-write control exposed the file path's in-place update; its
+source repair publishes a fresh record by atomic rename under the existing claim lock, without
+changing its registry lock discipline or replacing the file baseline. This whole-contract
+completion is the count/factory work[^m10-5]; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-whole-contract).
+
+[^m10-5]: `M10-5` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-5) [completed 2026-11-15]
+
+## Coordination cost and independent backends, 2026-11-15
+
+The raw public-contract comparison measures sample batches and closed writer loops in four real
+processes, alternating backend order across replications. The measured sampling interval excludes
+warm-up and the handoff interval excludes process setup; it includes acquisition, ownership and
+generation bookkeeping, modification opening/closing and release, but no document work. Each
+completed turn is checked against its acquisition generation and modification count, so a timing
+report cannot silently omit a turn or count raise. The Windows run uses the Windows filesystem;
+the Linux run builds and executes from the native ext4 checkout with data and artifacts there,
+not through the Windows-backed mount.
+
+The shared backend reduces sampling cost by eliminating the per-sample file open/read and reduces
+raw writer handoff cost by keeping ownership, generation and count transitions in mapped words.
+Both platform comparisons observe that reduction without a lost generation, completed turn or
+count raise. This finding is about the coordination mechanism, not end-to-end transaction latency:
+the store's journal and document syncs remain their own costs. Finite closed loops cannot establish
+a stationary tail or a fairness promise, and exclusion remains unordered in both implementations.
+
+Store-level process checks exercise interleaved logged/unlogged writes, snapshot visibility, death
+at each durable writer boundary and interrupted schema migration resumed by a target process.
+Canonical file and shared processes refuse each other's roots before changing their reservation;
+their admission identity is part of correctness, not an optional benchmark setting. The common
+strict deadline-only multi-registration control uses the polled primitive, because default Windows
+oplocks can deliver permitted early hints. Default notifications remain covered as hints whose
+consumer samples again rather than inferring the changed condition from callback time alone.
+
+The speculative path's merge-or-delete decision is **retain both implementations independently**:
+the file backend remains the specified default baseline, and the shared factory is explicit opt-in
+with its own root identity and epoch semantics. Its common contract and native process checks prove
+the separate path without authorizing a collapse of the established one. The benchmark and public
+process evidence are the final shared-memory milestone work[^m10-6]; commands and raw report schema
+are in [README.md](../canopy-lock-holder/README.md#coordination-implementation-comparison), and
+rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#coordination-cost-comparison).
+
+[^m10-6]: `M10-6` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-6) [completed 2026-11-15]

@@ -18,6 +18,7 @@ use crate::{FaultPolicy, FaultyFs, MemFs, OsFs, Vfs};
 
 mod admission;
 mod basics;
+mod contract;
 mod count;
 mod creation;
 mod discovery;
@@ -30,6 +31,17 @@ mod registry;
 mod reserve;
 mod restart;
 mod values;
+
+fn on_every_contract(tag: &str, case: &dyn Fn(&dyn CoordinationFactory, &Backend)) {
+    let factories: Vec<Box<dyn CoordinationFactory>> = vec![
+        Box::new(FileFactory::new()),
+        Box::new(FileFactory::alternate()),
+        Box::new(crate::coord::shared::SharedFactory::new()),
+    ];
+    for factory in factories {
+        on_every_backend(tag, &|backend| case(factory.as_ref(), backend));
+    }
+}
 
 /// Long enough that a wait the case expects to end never reaches it.
 const LONG: Duration = Duration::from_secs(30);

@@ -116,6 +116,57 @@ fn only_the_outermost_modification_raises_the_count() {
 }
 
 #[test]
+fn a_nested_unresolved_end_sets_the_fence_and_keeps_the_outer_count_odd() {
+    for depth in 2..=12 {
+        on_every_implementation(
+            &format!("coord-count-nested-unresolved-{depth}"),
+            &|implementation, backend| {
+                let holder = participant(implementation, backend);
+                vouched(&holder, 0);
+                let mut open = Modifications::default();
+                for _ in 0..depth {
+                    holder.begin_modification(&mut open).expect("begin");
+                }
+                holder
+                    .end_modification(&mut open, ModificationEnd::Unresolved)
+                    .expect("inner unresolved");
+                assert!(
+                    fenced(&holder),
+                    "an unresolved inner end must fence every participant"
+                );
+                for _ in 1..depth {
+                    holder
+                        .end_modification(&mut open, ModificationEnd::Settled)
+                        .expect("outer settled");
+                }
+                assert_eq!(sample(&holder), ModCount::new(1));
+                assert!(fenced(&holder));
+            },
+        );
+    }
+}
+
+#[test]
+fn exhausted_counts_refuse_modification_before_any_publication() {
+    on_every_implementation("coord-count-exhausted", &|implementation, backend| {
+        let holder = participant(implementation, backend);
+        for value in [u64::MAX - 1, u64::MAX] {
+            vouched(&holder, value);
+            let mut open = Modifications::default();
+            assert!(matches!(
+                holder.begin_modification(&mut open),
+                Err(CoordError::Exhausted { .. })
+            ));
+            assert_eq!(sample(&holder), ModCount::new(value));
+            assert!(matches!(
+                holder.end_modification(&mut open, ModificationEnd::Settled),
+                Err(CoordError::NoModificationOpen)
+            ));
+        }
+    });
+}
+
+#[test]
 fn an_unresolved_modification_leaves_the_count_odd_and_sets_the_fence() {
     on_every_implementation("coord-count-unresolved", &|implementation, backend| {
         let holder = participant(implementation, backend);

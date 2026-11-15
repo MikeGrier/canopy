@@ -180,3 +180,37 @@ overlapping snapshots share writers and do not satisfy that assumption. An absen
 an insufficient p99.9 sample or a censored minute/hour lifetime is unknown, not a budget pass.
 The owned budgets and simulation comparison are in canopy's
 [DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md#how-long-the-contract-makes-a-caller-wait-2026-11-12).
+
+## Coordination Implementation Comparison
+
+The existing benchmark also compares the raw public coordination contract without document I/O:
+
+```powershell
+target/release/canopy-contention-bench.exe coordination .scratch/m10-coordination-windows.ndjson 1000 32 10
+```
+
+Arguments are output path, samples per batch, writer turns per process, and replications. Each
+replication measures ten sample batches and contended writer turns in four real processes; backend
+order alternates between file and shared. Raw results retain request/acquired/released clocks,
+acquisition generations and modification counts, and fail on missing turns or nonconservation.
+Sampling warm-up and writer process setup are outside their measured intervals. Finite closed
+loops are a coordination-cost comparison, not a stationary wait or fairness guarantee.
+
+For native Linux storage, keep the source, artifact directory and report beneath the native clone.
+The `cargo_build` MCP call selects `toolchain: "canopy-wsl"`, `release: true`, package
+`canopy-lock-holder`, binary `canopy-contention-bench`, and per-call environment values
+`CANOPY_WSL_ROOT=/home/micgrier/github/canopy` and
+`CANOPY_WSL_TARGET_DIR=/home/micgrier/github/canopy/target`; its `working_dir` stays the Windows
+workspace root. Then run:
+
+```powershell
+wsl -d Ubuntu -- /home/micgrier/github/canopy/target/release/canopy-contention-bench coordination /home/micgrier/github/canopy/.scratch/m10-coordination-linux-native.ndjson 1000 32 10
+```
+
+The fixture's `CANOPY_TEST_COORDINATION=shared` or `file` selects that backend for existing writer,
+recovery and upgrade modes; omitted means the existing file baseline. Process tests use
+`shared-`/`file-` mode prefixes to set this explicitly, leaving unprefixed cases unchanged.
+[shared_backend.rs](tests/shared_count/shared_backend.rs) covers interleaved logged/unlogged writes,
+snapshot visibility, writer death at durable boundaries, target-schema upgrade recovery, and
+bidirectional wrong-backend refusal without changing the root's reservation. The shared-state
+and public-interface cases are the same contract checked over MemFs, OsFs and FaultyFs.

@@ -3,6 +3,7 @@
 mod contention {
     pub mod campaign;
     pub mod clock;
+    pub mod coordination;
     pub mod metrics;
     pub mod timed;
     pub mod worker;
@@ -14,7 +15,12 @@ fn main() {
         err: std::sync::Mutex::new(Box::new(std::io::stderr())),
     });
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = if args.first().is_some_and(|arg| arg == "worker") {
+    let result = if args
+        .first()
+        .is_some_and(|arg| arg == "coordination" || arg == "coordination-worker")
+    {
+        contention::coordination::run(&args, &reporter)
+    } else if args.first().is_some_and(|arg| arg == "worker") {
         (|| {
             let root = std::path::PathBuf::from(
                 args.get(1)

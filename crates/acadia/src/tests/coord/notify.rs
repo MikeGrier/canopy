@@ -143,6 +143,8 @@ fn a_dropped_notice_never_rings() {
 #[test]
 fn many_registrations_on_many_participants_each_ring_for_their_own_reason() {
     on_every_implementation("coord-notify-many", &|implementation, backend| {
+        let polled = implementation.clone().polled();
+        let implementation = &polled;
         let writer = participant(implementation, backend);
         publish(&writer, 10);
         let waiters: Vec<_> = (0..6)

@@ -162,7 +162,12 @@ impl FileCoordination {
         let layout = self.layout();
         if let Some(held) = entry {
             let claim = self.try_claim(held.index)?.ok_or(CoordError::WouldWait)?;
-            let written = self.vfs().write(
+            let written = self.replace_whole(
+                &layout.registry_dir().join(format!(
+                    "update-{}-{}",
+                    held.index,
+                    super::staging_suffix()
+                )),
                 &layout.registry_entry(held.index),
                 &encode(held.token, tiers, payload),
             );

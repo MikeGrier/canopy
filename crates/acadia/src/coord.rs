@@ -35,6 +35,10 @@
 //! [`file`](mod@file) is built from [`Vfs`] primitives, so it runs over [`OsFs`](crate::OsFs),
 //! [`MemFs`](crate::MemFs) and [`FaultyFs`](crate::FaultyFs) alike. Every implementation passes one
 //! conformance suite.
+//! [`shared::SharedFactory`] retains the same contract with mapped atomic state on local
+//! filesystems and a shared atomic model over [`MemFs`](crate::MemFs). Root reservations keep
+//! implementation identity explicit, so these independently selectable paths never coordinate
+//! one root under incompatible locks.
 
 use std::fmt;
 use std::path::Path;
@@ -51,6 +55,7 @@ mod exclusion;
 pub mod file;
 mod registry;
 mod restart;
+pub mod shared;
 mod types;
 
 pub use admission::{Admission, Attachment, Registrant, Upgrade, UpgradeConversion};

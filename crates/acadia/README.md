@@ -92,6 +92,26 @@ Faults can also target paths by pattern (`FaultPolicy::inject_matching` with a
 (`FaultPolicy::inject_gated`), so setup runs clean and only the operation under test
 fails.
 
+## Coordination Implementations
+
+`coord::file::FileFactory` and `coord::shared::SharedFactory` implement the same creation,
+admission, ownership, recovery, count and notification contract. Choose a factory explicitly
+through the storage engine's coordination option; a root's reservation records its implementation
+identity, and opening through a different implementation is refused rather than silently sharing
+incompatible locks. The file-based backend remains the default and an independently supported
+baseline.
+
+The shared implementation uses aligned atomic words in an unnamed file-backed mapping on local
+Windows/Linux filesystems, and owned atomic storage with the same epoch rules for MemFs. Per-
+participant liveness proves whether an epoch can still be trusted; last-participant loss or an
+unrecognized boot requires explicit recovery. Writer holds and attachment/registry resources
+retain that epoch independently of the original participant borrow. Count sampling takes no
+writer lock, and one shared-backend poller per process provides bounded one-shot notices.
+
+The state and recovery contracts are in [DESIGN-NOTES.md](DESIGN-NOTES.md), with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md). Native process and raw coordination benchmarks are
+described in [README.md](../canopy-lock-holder/README.md#coordination-implementation-comparison).
+
 ## Platform notes
 
 On Unix, `OsFs::lock_exclusive` uses `flock`; on Windows the exclusion comes from the

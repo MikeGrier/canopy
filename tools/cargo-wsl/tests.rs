@@ -3,6 +3,31 @@
 use super::*;
 
 #[test]
+fn native_execution_roots_are_explicit_absolute_and_do_not_change_the_default() {
+    let host = Path::new(r"Q:\github\canopy");
+    assert_eq!(execution_root(host, None).unwrap(), "/mnt/q/github/canopy");
+    for path in [
+        "/home/user/github/canopy",
+        "/tmp/with spaces",
+        "/tmp/with'quotes",
+        "/tmp/$literal",
+        "/tmp/a;b",
+        "/tmp/a&b",
+        "/tmp/[name]",
+        "/tmp/a|b",
+        "/tmp/one-two",
+        "/",
+        "/tmp/with\\backslash",
+        "/tmp/two  spaces",
+    ] {
+        assert_eq!(execution_root(host, Some(path)).unwrap(), path);
+    }
+    for path in ["", "relative", "C:/windows", "~/repo", "/tmp/bad\0path"] {
+        assert!(execution_root(host, Some(path)).is_err());
+    }
+}
+
+#[test]
 fn absolute_drive_paths_preserve_components_and_normalize_the_mount_drive() {
     for (input, expected) in [
         (r"C:\one", "/mnt/c/one"),
