@@ -1,5 +1,10 @@
 # windows-threadpool-sys family: waits on an object the waiter cannot change
 
+> **SUPERSEDED in part, 2026-11-15.** The sealed Windows APIs are published, and Linux also lends
+> a sealed native wait capability. Current consumer behavior is in
+> [DESIGN-NOTES.md](crates/canopy/DESIGN-NOTES.md#native-wait-lending-matches-the-sealed-safety-profile-2026-11-15).
+> The request below is retained as its historical record.
+
 A request to [MikeGrier/windows-threadpool-sys](https://github.com/MikeGrier/windows-threadpool-sys)
 and the crates beside it (`win-handles-sys`, `win-sync-sys`, `windows-threadpool-sys`), written
 2026-11-13. It follows

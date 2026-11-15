@@ -2061,3 +2061,23 @@ Commands and report semantics are in [README.md](../canopy-lock-holder/README.md
 
 > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M11` -> `M11-1`
 > (TLC trace corpus for the conformance harness). See [CHECKLIST.md](CHECKLIST.md#m11----conformance-harness).
+
+## Moved 2026-11-15 -- Matched sealed native wait safety
+
+### <a id="g-2"></a>G-2 -- Lend sealed Windows/Linux native wait capabilities with safe waits and explicitly unsafe raw-target integration. *(completed 2026-11-15 07:36:20 -05:00)*
+
+Windows Doorbell::native_wait_event lends the published family's sealed event and retires the
+legacy native_wait_handle API chosen by the engineer. Linux Doorbell::native_wait_fd lends an
+owned sealed eventfd with the same safe-code boundary: no safe AsFd/raw-fd/ownership extraction,
+opaque mixed poll targets and redacted Debug identity. Its existing native_fd borrow remains
+explicitly unsafe for compatible custom integration. Signal owners retain their unsealed APIs;
+Linux's lack of wait-only kernel rights is handled by the type seal rather than a claimed mask.
+
+Kernel tests pin level-preserving single/mixed waits, clone lifetime, Windows sealed thread-pool
+rearming and Linux sealed epoll-service producer/consumer pumping. Compile-fail doctests reject
+safe target extraction and Windows activation handle access. Raw descriptor/handle integration
+requires an unsafe no-mutation contract; the recommended Doorbell::watch path remains inside the
+sealed protocol. The canonical decisions are in
+[DESIGN-NOTES.md](DESIGN-NOTES.md#native-wait-lending-matches-the-sealed-safety-profile-2026-11-15)
+and acadia's [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#sealed-native-wait-capabilities-on-both-platforms-2026-11-15),
+with rationale in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#native-wait-safety-parity).

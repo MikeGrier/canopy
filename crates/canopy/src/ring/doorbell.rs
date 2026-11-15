@@ -206,32 +206,68 @@ impl<S: Signal + 'static> Doorbell<S> {
 
 #[cfg(windows)]
 impl Doorbell<acadia::EventSignal> {
-    /// A new handle to the doorbell's event that can wait on it and cannot set or reset it, for a
-    /// consumer's own native wait: a thread-pool wait, which takes it without further `unsafe`, or
-    /// a multiple-object wait.
+    /// A sealed event for the consumer's native single/multiple-object or thread-pool wait.
+    /// Safe code cannot extract a handle or change the event through this value.
     ///
     /// The wait sees the signal's level, so a thread-pool callback that re-arms its wait before
     /// the consumer has rearmed the doorbell is called again at once.
     ///
-    /// # Safety
+    /// ```compile_fail
+    /// use canopy::ring::Doorbell;
+    /// use std::os::windows::io::AsHandle;
+    /// let doorbell = Doorbell::new().unwrap();
+    /// let wait = doorbell.native_wait_event().unwrap();
+    /// let handle = wait.as_handle();
+    /// ```
     ///
-    /// The caller must only wait on the handle. It must not change the event's level by any
-    /// means -- through this handle, a duplicate of it, or anything else it can reach from it --
-    /// and must keep any code it hands the handle to from doing so. A set or
-    /// reset outside the doorbell's protocol can leave the doorbell rung with its signal low, so
-    /// that no ring wakes the consumer; the protocol, and the model it is checked against,
-    /// assume nothing but the doorbell changes the signal.
+    /// ```compile_fail
+    /// use canopy::ring::Doorbell;
+    /// use std::os::windows::io::AsRawHandle;
+    /// let doorbell = Doorbell::new().unwrap();
+    /// let wait = doorbell.native_wait_event().unwrap();
+    /// let handle = wait.as_raw_handle();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use canopy::ring::Doorbell;
+    /// let doorbell = Doorbell::new().unwrap();
+    /// let wait = doorbell.native_wait_event().unwrap();
+    /// let handle = wait.try_into_owned();
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns the error from duplicating the handle.
-    pub unsafe fn native_wait_handle(&self) -> io::Result<acadia::WaitOnlyEvent> {
-        self.signal.wait_only()
+    pub fn native_wait_event(&self) -> io::Result<acadia::SealedWaitOnlyEvent> {
+        self.signal.sealed_wait_only()
     }
 }
 
 #[cfg(target_os = "linux")]
 impl Doorbell<acadia::EventFdSignal> {
+    /// A sealed native wait capability for the doorbell's eventfd.
+    /// Safe single/mixed waits and epoll-service watches cannot read or write the descriptor.
+    /// Custom descriptor integration is available only through its unsafe wait-only borrow.
+    ///
+    /// ```compile_fail
+    /// use canopy::ring::Doorbell;
+    /// use std::os::fd::AsFd;
+    /// let doorbell = Doorbell::new().unwrap();
+    /// let wait = doorbell.native_wait_fd().unwrap();
+    /// let fd = wait.as_fd();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use canopy::ring::Doorbell;
+    /// use std::os::fd::{AsRawFd, OwnedFd};
+    /// let doorbell = Doorbell::new().unwrap();
+    /// let wait = doorbell.native_wait_fd().unwrap();
+    /// let raw = wait.as_raw_fd();
+    /// ```
+    pub fn native_wait_fd(&self) -> io::Result<acadia::SealedWaitOnlyFd> {
+        self.signal.sealed_wait_only()
+    }
+
     /// The doorbell's `eventfd`, for a consumer's own native wait: an `epoll` set or `poll`.
     ///
     /// The descriptor is readable while the doorbell's signal is raised, so a level-triggered

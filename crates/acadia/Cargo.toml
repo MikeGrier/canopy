@@ -43,9 +43,9 @@ libc = "0.2.176"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Wdk_System_SystemServices", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Ioctl", "Win32_System_Threading"] }
 # The event behind `EventSignal`, and the platform's wait on it.
-win-sync-sys = "0.1.0"
+win-sync-sys = "0.1.1"
 # The thread-pool wait behind `EventSignal::watch`; 0.4.1 is the first that takes a wait-only handle.
-windows-threadpool-sys = "0.4.1"
+windows-threadpool-sys = "0.4.2"
 # The endpoint and operation the thread pool's I/O takes, for the oplock behind the Windows
 # `CountNotification`.
 windows-overlapped-io-sys = "0.3.1"

@@ -112,6 +112,16 @@ The state and recovery contracts are in [DESIGN-NOTES.md](DESIGN-NOTES.md), with
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md). Native process and raw coordination benchmarks are
 described in [README.md](../canopy-lock-holder/README.md#coordination-implementation-comparison).
 
+## Sealed Native Waits
+
+`EventSignal::sealed_wait_only` on Windows and `EventFdSignal::sealed_wait_only` on Linux lend
+owned wait capabilities whose raw targets cannot be extracted by safe code. Clones retain the
+same kernel object, waits preserve its level, and Debug hides its identity. Windows uses
+`SealedWaitOnlyEvent`; Linux uses `SealedWaitOnlyFd`, with `wait`, `watch` and opaque `wait_object`
+targets for `wait_native_any`. Custom Linux integration requires unsafe `as_waitable_fd` and must
+never read, write or otherwise mutate the signal through that descriptor or a duplicate.
+The existing unsealed owner APIs remain available as separate lower-layer capabilities.
+
 ## Platform notes
 
 On Unix, `OsFs::lock_exclusive` uses `flock`; on Windows the exclusion comes from the

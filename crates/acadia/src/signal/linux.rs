@@ -15,6 +15,9 @@ use super::{
     wait_until_deadline,
 };
 
+mod wait_only;
+pub use wait_only::{SealedWaitObject, SealedWaitOnlyFd, wait_native_any};
+
 /// A [`Signal`] that is a Linux `eventfd`, non-blocking and not in semaphore mode: readable
 /// while its counter is not zero, so it is a level as an event is. A write raises it and a
 /// read, which takes the whole counter, lowers it.

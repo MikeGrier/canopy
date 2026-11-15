@@ -18,16 +18,6 @@ Each item here names the event it waits on; it joins a milestone once that event
   the engineer whether the runner stays hosted or becomes self-hosted, recorded in the same
   decision. Waits on the workflow reaching `main`.
 
-- [ ] **G-2** (was `RG-4`) -- A safe accessor for a consumer's own native wait on the doorbell on Windows, once
-  the windows-threadpool-sys crate family provides waits on an event the waiter cannot change, as
-  specified in [WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md](../../WINDOWS-THREADPOOL-SYS-SEALED-WAITS.md):
-  acadia lends the family's sealed wait-only event, and the doorbell lends that without `unsafe`;
-  decide with the engineer whether `native_wait_handle` stays as `unsafe` or is retired, and record
-  it in [DESIGN-NOTES.md](DESIGN-NOTES.md). Blocked on the family's release. Tests: a thread-pool
-  wait and a multiple-object wait on the doorbell through the safe accessor take everything
-  producers publish, and `compile_fail` doctests show that no handle can be borrowed from what the
-  doorbell lends.
-
 ## M9+ -- Concrete Canopy schema migrations
 
 - [ ] **CANOPY-MIGRATION** -- Specify a concrete Canopy source/target schema change and supply its

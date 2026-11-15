@@ -1281,3 +1281,31 @@ are in [README.md](../canopy-lock-holder/README.md#coordination-implementation-c
 rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#coordination-cost-comparison).
 
 [^m10-6]: `M10-6` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-6) [completed 2026-11-15; `e0500f8`]
+
+## Sealed native wait capabilities on both platforms, 2026-11-15
+
+The signal owner can lend a native wait capability that safe code cannot use to change its level.
+Windows lends the published family's `SealedWaitOnlyEvent`; Linux lends acadia's owned
+`SealedWaitOnlyFd`, a duplicate eventfd retained through clones. Neither sealed value offers safe
+borrowed/raw-handle or descriptor extraction, ownership conversion, or an I/O interface. Debug
+output exposes no numeric target identity. Opaque mixed-wait objects retain that same boundary.
+The owner and any previously retained unsealed alias remain able to control the signal.
+
+The safety profile is the type boundary, not platform access rights. Linux eventfd duplicates have
+no wait-only kernel access mode: reading drains the level and writing raises it. Only the explicit
+unsafe `as_waitable_fd` borrow can expose that descriptor, with a contract forbidding I/O, close,
+flag changes and exposure of derived duplicates to mutating code. Windows' published unsafe
+borrow applies the corresponding wait-only restriction to handles. Safe single/mixed waits observe
+readiness without consuming the signal. Linux's sealed watch registers with the existing epoll
+service and never lends a descriptor to its callback; Windows sealed thread-pool activations
+expose rearming but no safe handle route.
+
+Unsealed signal APIs remain distinct lower-layer capabilities: EventSignal's event/handle and
+wait-only APIs, EventFdSignal's AsFd and Signal control operations are retained. Sealing a lent
+value is not a reason to remove the owner's platform surface. The doorbell keeps the mutable
+owner private and only lends sealed capabilities safely. Compile-fail tests pin extraction routes,
+while kernel tests pin level preservation, mixed readiness, clone lifetime and service callbacks.
+This is the native-wait capability work[^g-2], with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#sealed-native-wait-capabilities).
+
+[^g-2]: `G-2` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#g-2) [completed 2026-11-15]

@@ -160,3 +160,17 @@ is missing service evidence, which is recorded as unknown. The burst's capacity 
 visible among completed operations, while the unissued member work and long-lived attachment
 drains retain their censoring. The engineer chose a separate native checkout for the next run,
 without overwriting the existing checkout or rewriting this campaign's storage provenance.
+
+## Native wait safety parity
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Native wait lending matches the
+sealed safety profile". Windows handle access masks do not protect a protocol once safe code can
+recover a handle; Linux eventfd has no wait-only rights at all. A sealed owned capability is the
+common boundary: its safe operations wait without consuming the level, and raw target recovery
+requires an unsafe promise that every use and derived alias remain nonmutating.
+
+The engineer chose to retire the Windows legacy unsafe accessor when the published sealed
+family became available and then asked for Linux's types to match that unsafe profile. Linux
+therefore gains a safe sealed accessor while keeping its existing unsafe borrow for compatible
+custom integration. No mutable lower-layer signal API is removed, and no formal doorbell rule
+changes: producer/consumer ordering and signal control stay owned by the protocol.

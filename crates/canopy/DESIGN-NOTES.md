@@ -3968,6 +3968,11 @@ steps composed in the only orders the protocol allows.
 
 ## The doorbell's signal is sealed, 2026-11-13
 
+> **SUPERSEDED in part, 2026-11-15, by "Native wait lending matches the sealed safety profile".**
+> Native lending uses safe sealed capabilities on both platforms. Windows's unsafe accessor is
+> retired; Linux's unsafe descriptor borrow remains a compatible, explicitly unsafe integration.
+> The requirement that only the protocol changes the signal remains in force.
+
 > **SUPERSEDED in part, 2026-11-13, by "A consumer watches the doorbell from the thread pool"
 > below.** The bullet on steering callers to a thread pool says that until `watch` exists a
 > consumer on a thread pool uses the `unsafe` accessor, as canopy's tests do. `Doorbell::watch`
@@ -4905,3 +4910,29 @@ the existing Windows-backed measurement remains identifiable rather than being r
 silently replaced. The owned budgets remain those in "How long the contract makes a caller wait",
 and neither platform's bounded evidence changes the unordered baseline[^m9-7]. Rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#linux-bounded-comparison).
+
+## Native wait lending matches the sealed safety profile, 2026-11-15
+
+A consumer can safely obtain the doorbell's native wait capability without gaining an event
+handle or eventfd descriptor. Windows `native_wait_event` lends the family's sealed event and
+replaces the retired `native_wait_handle` API chosen by the engineer. Linux `native_wait_fd`
+lends acadia's sealed eventfd, matching the safe-code/unsafe-extraction boundary; its legacy
+`native_fd` remains explicitly unsafe for source compatibility. Neither sealed value implements
+safe raw/borrowed target extraction or ownership conversion. Safe waits observe the level without
+changing it, and opaque mixed-wait targets preserve the seal.
+
+Linux's kernel has no wait-only eventfd mode; the type withholds its descriptor instead. Unsafe
+custom integration must not read, write, close, change flags or expose a derived duplicate to code
+that can change the signal. The same no-mutation rule governs Windows handle extraction. Existing
+lower-layer unsealed owner APIs remain separate, and the doorbell exposes no safe route to them.
+Doorbell::watch remains the recommended path that registers and pumps inside the sealed protocol.
+
+Kernel tests exercise native level preservation, mixed wait targets, Windows sealed thread-pool
+rearming, Linux sealed epoll-service pumping and producer/consumer publication. Platform-specific
+compile-fail doctests reject safe extraction from sealed values, mixed wait objects and Windows
+sealed activations. The formal doorbell rule remains unchanged: only its protocol changes the
+signal, and a caller must use an explicit unsafe route to break that seal. The capability work is
+tracked by the native-wait item[^g-2], with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#native-wait-safety-parity).
+
+[^g-2]: `G-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#g-2) [completed 2026-11-15]

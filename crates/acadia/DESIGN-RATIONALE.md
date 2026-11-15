@@ -133,3 +133,17 @@ unreviewed permanent duplication. The file-based platform and its Windows notifi
 independent baselines, while the shared path retains a distinct identity and conservative epoch
 loss/recovery behavior. Mixed-implementation process refusal prevents the consumer from accidentally
 coordinating one root with two mechanisms that need not exclude each other.
+
+## Sealed native wait capabilities
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Sealed native wait capabilities on
+both platforms". I/O safety keeps a borrowed descriptor open but does not prevent safe code from
+reading or writing it. Linux cannot narrow an eventfd duplicate to wait-only kernel rights, so
+matching Windows' unsafe profile requires an owned opaque type rather than returning BorrowedFd
+from a safe accessor. Even Debug must hide the numeric identity because RawFd is an integer.
+
+Safe waits and a sealed epoll-service watch perform their own internal borrow, while custom
+integration uses an explicit unsafe extraction with the no-mutation contract. The duplicate's
+lifetime is independent of the original owner, and clones share its ownership. Existing unsealed
+owner APIs remain available: sealing the consumer's view does not collapse the platform layer or
+pretend it protects against a caller that already owns an unsealed alias.

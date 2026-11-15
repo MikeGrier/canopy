@@ -78,9 +78,12 @@ pub use os::OsFs;
 pub use signal::LoomSignal;
 pub use signal::{CondvarSignal, PlatformSignal, Signal, Watch};
 #[cfg(target_os = "linux")]
-pub use signal::{EventFdSignal, wait_native};
+pub use signal::{EventFdSignal, SealedWaitObject, SealedWaitOnlyFd, wait_native, wait_native_any};
 #[cfg(windows)]
-pub use signal::{EventSignal, wait_native};
+pub use signal::{EventSignal, wait_native, wait_sealed};
+/// The sealed Windows wait capability lent without exposing its handle to safe code.
+#[cfg(windows)]
+pub use win_sync_sys::SealedWaitOnlyEvent;
 /// The handle [`EventSignal::wait_only`] lends, named here so that a crate lending it on does not
 /// depend on `win-sync-sys` for the name.
 #[cfg(windows)]

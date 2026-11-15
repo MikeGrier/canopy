@@ -401,20 +401,50 @@ fn a_pump_after_a_ring_takes_at_once() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sealed_native_epoll_watch_pumps_everything_producers_publish() {
+    let doorbell = Arc::new(Doorbell::<PlatformSignal>::new().unwrap());
+    let queue = Arc::new(Queue::default());
+    let (sender, receiver) = mpsc::channel();
+    let owner = Arc::clone(&doorbell);
+    let pending = Arc::clone(&queue);
+    let take = std::sync::Mutex::new(watching(pending, sender));
+    let native = doorbell.native_wait_fd().unwrap();
+    let watch = native
+        .watch(move || {
+            let mut take = take.lock().unwrap();
+            owner.pump(Duration::ZERO, &mut *take).unwrap();
+        })
+        .unwrap();
+    let (producers, items) = (4, 256);
+    std::thread::scope(|scope| {
+        for _ in 0..producers {
+            let (queue, doorbell) = (Arc::clone(&queue), Arc::clone(&doorbell));
+            scope.spawn(move || {
+                for _ in 0..items {
+                    queue.publish();
+                    doorbell.ring().unwrap();
+                }
+            });
+        }
+    });
+    assert_eq!(seen_until(&receiver, producers * items), producers * items);
+    drop(watch);
+    assert!(!native.wait(Duration::ZERO).unwrap());
+}
+
 // -- The platform's own wait ------------------------------------------------------------------
 
 #[cfg(windows)]
 fn native_wait(doorbell: &Doorbell<PlatformSignal>, timeout: Duration) -> bool {
-    use std::os::windows::io::AsHandle;
-    // SAFETY: the handle is only waited on.
-    let handle = unsafe { doorbell.native_wait_handle() }.unwrap();
-    acadia::wait_native(handle.as_handle(), timeout).unwrap()
+    let event = doorbell.native_wait_event().unwrap();
+    acadia::wait_sealed(&event, timeout).unwrap()
 }
 
 #[cfg(target_os = "linux")]
 fn native_wait(doorbell: &Doorbell<PlatformSignal>, timeout: Duration) -> bool {
-    // SAFETY: the descriptor is only waited on.
-    acadia::wait_native(unsafe { doorbell.native_fd() }, timeout).unwrap()
+    doorbell.native_wait_fd().unwrap().wait(timeout).unwrap()
 }
 
 #[cfg(any(windows, target_os = "linux"))]

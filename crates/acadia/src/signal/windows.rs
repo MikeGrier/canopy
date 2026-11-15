@@ -9,10 +9,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
-use win_sync_sys::{Event, ResetMode, WaitOnlyEvent, WaitOutcome, wait_for_single_object};
+use win_sync_sys::{
+    Event, ResetMode, SealedWaitOnlyEvent, WaitOnlyEvent, WaitOutcome, wait_for_single_object,
+};
 use windows_threadpool_sys::wait::ThreadpoolWait;
 
 use super::{Callback, Registration, Signal, Watch, run_callback, sealed, wait_until_deadline};
+
+#[cfg(test)]
+mod sealed_tests;
 
 /// A [`Signal`] that is a Windows manual-reset event, a `win-sync-sys` [`Event`]: raised by
 /// setting it, lowered by resetting it, and signalled to every wait while it is raised.
@@ -44,6 +49,41 @@ impl EventSignal {
     /// Returns the error from duplicating the handle.
     pub fn wait_only(&self) -> io::Result<WaitOnlyEvent> {
         self.event.duplicate_wait_only()
+    }
+
+    /// Duplicates the event into the published sealed type, whose handle is reachable only
+    /// through an unsafe wait-only borrow. The owner retains its unsealed control operations.
+    ///
+    /// ```compile_fail
+    /// use acadia::{EventSignal, Signal};
+    /// use std::os::windows::io::{AsHandle, OwnedHandle};
+    /// let wait = EventSignal::new().unwrap().sealed_wait_only().unwrap();
+    /// let handle = wait.as_handle();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use acadia::{EventSignal, Signal};
+    /// let wait = EventSignal::new().unwrap().sealed_wait_only().unwrap();
+    /// let handle: std::os::windows::io::OwnedHandle = wait.into();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use acadia::{EventSignal, Signal};
+    /// let wait = EventSignal::new().unwrap().sealed_wait_only().unwrap();
+    /// let handle = wait.as_waitable_handle();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use windows_threadpool_sys::wait::SealedWaitActivation;
+    /// fn extract(activation: &SealedWaitActivation<'_>) { let handle = activation.handle(); }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use windows_threadpool_sys::wait::SealedThreadpoolWait;
+    /// fn extract(wait: SealedThreadpoolWait) { let handle = wait.into_handle(); }
+    /// ```
+    pub fn sealed_wait_only(&self) -> io::Result<SealedWaitOnlyEvent> {
+        self.event.duplicate_sealed_wait_only()
     }
 }
 
@@ -171,6 +211,20 @@ pub fn wait_native(handle: BorrowedHandle<'_>, timeout: Duration) -> io::Result<
             WaitOutcome::TimedOut => Ok(false),
             other => Err(io::Error::other(format!(
                 "a wait on an event ended as {other:?}"
+            ))),
+        }
+    })
+}
+
+/// Waits on a sealed event without extracting its handle or changing its level.
+/// As with [`Signal::wait`], a timeout is never reported before its bound passes.
+pub fn wait_sealed(event: &SealedWaitOnlyEvent, timeout: Duration) -> io::Result<bool> {
+    wait_until_deadline(timeout, |remaining| {
+        match wait_for_single_object(event, Some(remaining.min(LONGEST_PLATFORM_WAIT)))? {
+            WaitOutcome::Signalled => Ok(true),
+            WaitOutcome::TimedOut => Ok(false),
+            other => Err(io::Error::other(format!(
+                "a sealed event wait ended as {other:?}"
             ))),
         }
     })
