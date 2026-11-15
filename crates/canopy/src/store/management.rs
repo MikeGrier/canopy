@@ -13,6 +13,7 @@ pub struct StoreProperties {
     pub coordination_implementation: ImplementationId,
     pub canopy_schema: SchemaVersions,
     pub agent_schema: SchemaVersions,
+    pub schema_upgrade: Option<super::UpgradeRequest>,
     pub store_id: String,
     pub created_at_unix_ms: u64,
     pub genesis_format_version: u32,
@@ -26,7 +27,7 @@ fn properties(
     root: &Path,
     implementation: &ImplementationId,
 ) -> Result<StoreProperties, StoreError> {
-    let genesis = Store::read_genesis(vfs, root)?;
+    let genesis = Store::read_admission_genesis(vfs, root)?;
     Ok(StoreProperties {
         agent_identifier: genesis.metadata.agent_identifier,
         agent_version: genesis.metadata.agent_version,
@@ -34,6 +35,10 @@ fn properties(
         coordination_implementation: implementation.clone(),
         canopy_schema: genesis.metadata.canopy_schema,
         agent_schema: genesis.metadata.agent_schema,
+        schema_upgrade: genesis
+            .metadata
+            .transition
+            .map(|transition| transition.request),
         store_id: genesis.store_id,
         created_at_unix_ms: genesis.created_at_unix_ms,
         genesis_format_version: genesis.format_version,
@@ -106,20 +111,26 @@ impl DiagnosticView {
 
     /// Observes recovery status without resolving anything or interpreting a live writer's work list.
     pub fn recovery_need(&self) -> Result<RecoveryNeed, StoreError> {
-        Ok(RecoveryNeed::observed(
-            self.participant.discover_recovery()?,
-        ))
+        let mut work = None;
+        let need = self.participant.discover_recovery_with(&mut || {
+            work = Some(Store::root_has_unresolved_work(&self.vfs, &self.root));
+        })?;
+        let mut observed = RecoveryNeed::observed(need);
+        observed.set_unresolved_work(work.transpose()?);
+        Ok(observed)
     }
 }
 
 impl Store {
     /// Lists attached handles, retaining unknown entries and possible incompleteness.
     pub fn attached_handles(&self) -> Result<AttachedHandles, StoreError> {
+        let _lease = self.operation_lease()?;
         Ok(super::agent::attached_handles(self.coordination.list()?))
     }
 
     /// Reads fresh store metadata rather than this handle's open-time marker.
     pub fn properties(&self) -> Result<StoreProperties, StoreError> {
+        let _lease = self.operation_lease()?;
         properties(&self.vfs, &self.root, self.coordination.implementation())
     }
 }

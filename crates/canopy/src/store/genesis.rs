@@ -29,21 +29,18 @@ impl Store {
         let participant = factory.open(Arc::clone(vfs), root)?;
         participant.confirm_created(OsStr::new(MARKER_NAME))?;
         let mut attachment = participant.attach(access, Waiting::Wait)?;
-        let genesis = Self::read_genesis(vfs, root)?;
+        let genesis = Self::read_admission_genesis(vfs, root)?;
         genesis.metadata.check_admission(agent, access)?;
-        let payload = super::agent::registration_payload(agent, attachment.tiers())?;
+        let payload = super::agent::registration_payload(agent, attachment.tiers(), false)?;
         let _ = attachment.register(&payload);
         let coordinated = match access {
             Access::Read => Coordinated::reader(participant, attachment),
-            Access::Write => {
-                let hold = participant.acquire(Waiting::Wait)?;
-                Coordinated::writer(participant, attachment, hold)
-            }
+            Access::Write => Coordinated::writer(participant, attachment),
         };
         Ok((genesis, coordinated))
     }
 
-    /// Takes the root's exclusive-writer lock (`D116`), naming contention as
+    /// Takes offline migration's legacy root lock, naming contention as
     /// [`StoreError::RootInUse`] rather than letting it fold into a bare
     /// [`StoreError::Vfs`].
     fn lock_root(vfs: &Arc<dyn Vfs>, root: &Path) -> Result<Arc<dyn VfsLock>, StoreError> {
@@ -67,9 +64,8 @@ impl Store {
     /// marker and [`open`](Store::open) cleanly refuses the partial store rather
     /// than adopting it.
     ///
-    /// Takes the root's exclusive-writer lock (`D116`) and holds it for the
-    /// returned store's life; a root another process already holds is refused
-    /// with [`StoreError::RootInUse`].
+    /// Holds coordination's writer exclusion for creation only. A concurrent creation
+    /// with identical inputs that finds a completed marker is [`StoreError::AlreadyInitialized`].
     ///
     /// Before it makes anything else it records, durably, the coordination implementation
     /// `options` names as the one that owns the root, so a root with a marker always has the
@@ -141,20 +137,19 @@ impl Store {
             Ok(())
         };
 
-        // Scanned twice. Once before locking, so a root that is plainly not ours is refused
-        // without leaving a lock file in it. Again under the lock, because a scan taken
-        // without it can pass and then lose the root to another `init` that completes and
-        // releases it, and this one would write over that store.
+        // A refusal before reserving leaves an occupied root untouched; exclusion protects the recheck.
         refuse_occupied(&root)?;
-        let lock = Self::lock_root(&vfs, &root)?;
-        refuse_occupied(&root)?;
-
         let genesis = Genesis::from_config(config, agent);
         let bytes = serde_json::to_vec_pretty(&genesis)?;
 
         // The implementation record comes before any artifact, as a creation's reservation does:
         // a root that gets as far as a marker is a root whose implementation is on record.
         Self::reserve_implementation(&vfs, &root, factory, &bytes)?;
+
+        let participant = factory.open(Arc::clone(&vfs), &root)?;
+        let mut creation = participant.acquire(Waiting::Wait)?;
+        refuse_occupied(&root)?;
+        creation.begin_modification(acadia::coord::Purpose::Recovery)?;
 
         // Additive first: build both trees before the root marker exists.
         //
@@ -184,9 +179,11 @@ impl Store {
 
         // A root made now has nothing to recover, and its coordination state, which no one has
         // vouched for yet, is vouched for by the first hold of writer exclusion.
+        creation.end_modification(acadia::coord::ModificationEnd::Settled)?;
+        creation.complete_recovery()?;
+        drop(creation);
         let (genesis, coordination) =
             Self::attach_store(&vfs, &root, factory, agent, Access::Write)?;
-        coordination.complete_recovery()?;
 
         Ok(Store {
             vfs,
@@ -200,7 +197,6 @@ impl Store {
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             publication: Arc::default(),
-            _lock: Some(lock),
             surface: Arc::default(),
         })
     }
@@ -222,9 +218,9 @@ impl Store {
     /// `options` supplies the nonce source the write verbs draw from and the coordination
     /// implementation the root must record; see [`StoreOptions`].
     ///
-    /// The store holds the root's lock and writer exclusion for as long as any handle to it lives
-    /// (`D116`). Opening changes only volatile attachment/registry state, not store data or recovery state.
-    /// It returns, beside the handle, what acquiring exclusion found -- a fence, state that cannot
+    /// The store holds shared attachment tiers, but no writer exclusion, between operations.
+    /// Opening changes only volatile attachment/registry state, not store data or recovery state.
+    /// It returns, beside the handle, what discovery observed -- a fence, state that cannot
     /// be vouched for, a holder that died -- and whether writers left work to resolve. What to do
     /// about it is the caller's: [`resolve`](Store::resolve) finishes what writers left, and when
     /// the state was vouched for that is all a fence needs; [`recover`](Store::recover), or a
@@ -302,7 +298,6 @@ impl Store {
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             publication: Arc::default(),
-            _lock: None,
             surface: Arc::default(),
         };
         store.install(options);
@@ -317,14 +312,10 @@ impl Store {
     ) -> Result<Self, StoreError> {
         let root = root.into();
 
-        // Validation is read-only, so it runs first: a directory that turns out
-        // not to be a store never gets a lock file dropped into it. Acquisition
-        // is still the serialization point -- two concurrent opens can both pass
-        // validation, and exactly one gets the lock.
+        // Validation before attachment leaves a non-store untouched; admission rechecks under its tiers.
         Self::read_genesis(&vfs, &root)?
             .metadata
             .check_identity(agent)?;
-        let lock = Self::lock_root(&vfs, &root)?;
         let (genesis, coordination) =
             Self::attach_store(&vfs, &root, factory, agent, Access::Write)?;
 
@@ -340,19 +331,12 @@ impl Store {
             log_durability: Arc::default(),
             unsynced_dirs: Arc::default(),
             publication: Arc::default(),
-            _lock: Some(lock),
             surface: Arc::default(),
         };
-        // Every handle refuses writes while its state requires recovery, which replays the D53
-        // log and writes, and so runs under the lock and the exclusion this handle now holds.
-        if store.coordination.recovery_was_required() {
-            store.writer.mark_unresolved();
-        }
-
         Ok(store)
     }
 
-    /// Migrates genesis versions 6 and 7 to version 8, recording the explicit agent in `options`.
+    /// Migrates earlier supported formats to the current barrier; agent-format metadata is preserved.
     ///
     /// # The root must be offline
     ///
@@ -458,6 +442,18 @@ impl Store {
         genesis: &Genesis,
     ) -> Result<(), StoreError> {
         let root = root.to_path_buf();
+
+        if genesis
+            .metadata
+            .transition
+            .as_ref()
+            .is_some_and(|transition| !transition.valid(&genesis.metadata))
+        {
+            return Err(StoreError::MalformedMarker {
+                root,
+                reason: "an invalid schema upgrade announcement",
+            });
+        }
 
         if genesis.metadata.canopy_schema.oldest_reader > genesis.metadata.canopy_schema.current
             || genesis.metadata.agent_schema.oldest_reader > genesis.metadata.agent_schema.current

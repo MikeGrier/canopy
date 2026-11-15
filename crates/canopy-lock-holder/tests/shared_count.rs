@@ -21,6 +21,12 @@ use canopy::{
     StoreError, StoreId, StoreOptions,
 };
 
+#[path = "shared_count/turns.rs"]
+mod turns;
+
+#[path = "shared_count/upgrades.rs"]
+mod upgrades;
+
 /// How long to wait for the writer to report a step.
 ///
 /// Generous on purpose: the assertion is that the step happens, not how soon.
@@ -133,6 +139,39 @@ struct Writer {
 
 impl Writer {
     fn spawn(root: &Path, node: &str, document: &str, text: &str, pause: bool) -> Writer {
+        Self::spawn_mode(
+            root,
+            node,
+            document,
+            text,
+            if pause { "pause" } else { "write" },
+        )
+    }
+
+    fn spawn_mode(root: &Path, node: &str, document: &str, text: &str, mode: &str) -> Writer {
+        Self::spawn_version(root, node, document, text, mode, "test")
+    }
+
+    fn spawn_version(
+        root: &Path,
+        node: &str,
+        document: &str,
+        text: &str,
+        mode: &str,
+        version: &str,
+    ) -> Writer {
+        Self::spawn_extra(root, node, document, text, mode, version, &[])
+    }
+
+    fn spawn_extra(
+        root: &Path,
+        node: &str,
+        document: &str,
+        text: &str,
+        mode: &str,
+        version: &str,
+        extra: &[String],
+    ) -> Writer {
         let mut command = Command::new(env!("CARGO_BIN_EXE_canopy-store-writer"));
         command
             .arg(root)
@@ -140,9 +179,8 @@ impl Writer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        if pause {
-            command.arg("pause");
-        }
+        command.args([mode, version]);
+        command.args(extra);
         let mut child = command.spawn().expect("spawn the writer");
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("piped stdout");
@@ -169,6 +207,16 @@ impl Writer {
         }
     }
 
+    fn next(&self) -> String {
+        test_timers::mpsc::recv_timeout(&self.lines, STEP_DEADLINE).expect("fixture progress")
+    }
+
+    fn command(&mut self, command: &str) {
+        let stdin = self.stdin.as_mut().expect("stdin is open");
+        writeln!(stdin, "{command}").expect("send command");
+        stdin.flush().expect("flush command");
+    }
+
     /// Lets a writer paused part-way through its write go on.
     fn go(&mut self) {
         let stdin = self.stdin.as_mut().expect("stdin is open");
@@ -186,12 +234,24 @@ impl Writer {
 
     /// Closes the writer's stdin, which is how a finished writer is let go, and waits for it.
     fn finish(mut self) {
+        assert!(self.close_stdin().success(), "the fixture reported failure");
+    }
+
+    fn expect_failure(mut self) {
+        assert!(
+            !self.close_stdin().success(),
+            "the fixture unexpectedly succeeded"
+        );
+    }
+
+    fn close_stdin(&mut self) -> std::process::ExitStatus {
         drop(self.stdin.take());
         let deadline = Instant::now() + RELEASE_DEADLINE;
         while self.child.try_wait().expect("poll the writer").is_none() {
             assert!(Instant::now() < deadline, "the writer did not exit");
             test_timers::thread::sleep(Duration::from_millis(25));
         }
+        self.child.wait().unwrap()
     }
 }
 
@@ -225,8 +285,40 @@ fn a_reader_here_reads_what_a_writer_in_another_process_wrote() {
 }
 
 #[test]
-fn a_reader_here_cannot_write_and_a_second_writer_is_refused_while_another_process_holds_the_root()
-{
+fn a_writer_killed_before_its_first_effect_still_requires_explicit_recovery() {
+    let root = TempRoot::new("before-effect");
+    seed_store(root.path());
+    let reader = open_reader(root.path());
+    let count = reader.modifications().unwrap();
+    let writer = Writer::spawn_mode(root.path(), "alpha", "one", "not written", "pause-before");
+    writer.expect("opened");
+    writer.expect("paused");
+    assert_eq!(reader.modifications().unwrap(), count);
+    assert!(!reader.recovery_need().unwrap().holder_died());
+    writer.kill();
+    let (survivor, found) =
+        Store::open(vfs(), root.path().to_path_buf(), nonce_source("survivor")).unwrap();
+    assert!(found.holder_died());
+    assert!(matches!(
+        survivor.write_document_replicated(node("alpha"), &document("one"), &body("refused")),
+        Err(StoreError::RecoveryRequired { .. })
+    ));
+    survivor.recover().unwrap().agent_stamp.unwrap();
+    assert_eq!(
+        reader
+            .read_document(node("alpha"), &document("one"))
+            .unwrap(),
+        Read::Absent
+    );
+    survivor
+        .write_document_replicated(node("alpha"), &document("one"), &body("after recovery"))
+        .unwrap()
+        .agent_stamp
+        .unwrap();
+}
+
+#[test]
+fn a_reader_cannot_write_but_another_attached_writer_takes_a_turn() {
     let root = TempRoot::new("refused");
     seed_store(root.path());
     let writer = Writer::spawn(root.path(), "alpha", "one", "held", false);
@@ -238,10 +330,19 @@ fn a_reader_here_cannot_write_and_a_second_writer_is_refused_while_another_proce
         reader.write_document_replicated(node("beta"), &document("two"), &body("no")),
         Err(StoreError::ReadOnly { .. })
     ));
-    assert!(matches!(
-        Store::open(vfs(), root.path().to_path_buf(), nonce_source("second")),
-        Err(StoreError::RootInUse { .. })
-    ));
+    let (second, _) =
+        Store::open(vfs(), root.path().to_path_buf(), nonce_source("second")).unwrap();
+    second
+        .write_document_replicated(node("beta"), &document("two"), &body("another writer"))
+        .unwrap()
+        .agent_stamp
+        .unwrap();
+    assert_eq!(
+        reader
+            .read_document(node("beta"), &document("two"))
+            .unwrap(),
+        Read::Found(body("another writer"))
+    );
     writer.finish();
 }
 
@@ -464,12 +565,13 @@ fn a_writer_killed_mid_write_is_reported_here_and_recovered_by_a_writer_that_ope
 
     let (attached, found) = open_within_deadline(root.path()).expect("the root is free once dead");
     assert!(
-        found.holder_died() && found.fenced() && found.unresolved_work() == Some(true),
+        found.holder_died() && !found.fenced() && found.unresolved_work() == Some(true),
         "opening was told: {found:?}"
     );
-    assert!(attached.recovery_required());
-    assert!(attached.recovery_need().unwrap().fenced());
+    assert!(attached.recovery_required().unwrap());
+    assert!(!attached.recovery_need().unwrap().fenced());
     let mut run = attached.recovery().expect("begin");
+    assert!(attached.recovery_need().unwrap().fenced());
     let mut steps = 0;
     while !run.progress().finished() {
         run.step()

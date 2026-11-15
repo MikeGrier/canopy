@@ -43,3 +43,21 @@ cancellation that leaves the default pool unable to dispatch. Writing those call
 duplicate that argument and lose its fixes. An event the pool should watch is a `win-sync-sys`
 `Event`, from the same repository, which a wait takes without `unsafe` because it is known to be
 an event and never a mutex; acadia's `EventSignal` holds one for that reason.
+
+## Linux execution uses an opt-in cargo MCP toolchain, 2026-11-14
+
+Cargo-running MCP tools select a host Rustup toolchain. The opt-in `canopy-wsl` toolchain forwards
+those Cargo invocations to WSL's login environment, leaving the repository's pinned compiler
+unchanged. [setup-cargo-wsl.ps1](tools/setup-cargo-wsl.ps1) builds the bridge under the ignored
+scratch directory and registers that local toolchain; [cargo-wsl.rs](tools/cargo-wsl.rs) maps
+absolute Windows drive paths to their WSL mounts and quotes argument values into the Bash command.
+This avoids the launcher's handling of Bash positional expansion. Unsupported network and
+drive-relative paths fail explicitly rather than guessing a mount.
+
+Linux artifacts live separately from Windows artifacts, while the populated Windows registry
+cache can be reused offline. Test selection stays inside Cargo using `test_name`: host-side
+enumeration or bisection cannot execute Linux test binaries on Windows. The invocation steps and
+bridge unit-test entry point are in [.github/copilot-instructions.md](.github/copilot-instructions.md)
+"Running tests on Linux via WSL". This tooling supports the process-level kernel checks[^m9-2].
+
+[^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](crates/canopy/COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14]

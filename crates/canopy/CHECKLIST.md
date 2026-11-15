@@ -28,105 +28,13 @@ Each item here names the event it waits on; it joins a milestone once that event
   producers publish, and `compile_fail` doctests show that no handle can be borrowed from what the
   doorbell lends.
 
-## M9 -- Writers in several processes take turns, and schemas are upgraded
+## M9+ -- Concrete Canopy schema migrations
 
-Writers take turns first (M9-1, M9-2); the schema upgrade follows (M9-3 to M9-5), since its
-upgrader takes writer exclusion only once it holds its tiers, and is then tested across processes.
-
-- [ ] **M9-1** (was `MP-9`) -- Replace the in-process writer gate and the root lock with the contract's
-  exclusion, acquired once by the outermost write and by `init`, with callbacks receiving the
-  read-only view WS-2 decided. When exclusion reports that the previous holder died holding it,
-  report `StoreError::RecoveryRequired` and replay nothing; recovery runs only through M7-4's
-  API, under its own capability, keeping the dead holder's count odd until it finishes and
-  clearing the fence only after it succeeds. Reload each handle's commit-log durability
-  knowledge, directory-sync debt state and recorded agent version whenever the generation has
-  moved since that handle last held exclusion, including for two handles opened in one process.
-  Stop holding the root exclusively for a handle's lifetime, and retire `D116` in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md) once nothing relies on it. `open` then stops acquiring
-  exclusion: what it reports comes from discovery's observation, and it reports the root's work
-  list as left behind only when that observation found exclusion free, since otherwise the list may
-  be a live writer's ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Recovery is a run the caller drives").
-
-- [ ] **M9-2** (was `MP-10.1`, part of `MP-10`) -- Writers, recovery and discovery across processes, on Windows and on Linux
-  under WSL: writer processes
-  interleaving writes and transactions; a writer killed while holding exclusion before its first
-  effect, mid-publication, mid-transaction and after its last effect; the survivors refused with
-  `RecoveryRequired` until an explicit recovery converges the store; a recovering process killed
-  after each of its steps -- the first swap, the swaps, the end record, the sweep, the count's
-  publication -- and another process resuming its recovery; discovery called beside a live
-  holder's transaction, which it never reports as abandoned, and beside a dead holder's, which it
-  always does; a commit-log reset never overlapping another process's transaction; two handles
-  opened in one process taking turns; and an open through a different coordination implementation
-  refused.
-
-- [ ] **M9-3** (was `MP-7.2`, part) -- Leases and the upgrade's drain: every operation on a clone holds a lease
-  on the attachment for its duration; an upgrade puts the attachment into a draining state, refusing
-  new operations on every clone and waiting for the outstanding leases to end while it still holds
-  its tiers; an upgrade started from inside an operation is refused, decided by the caller's own
-  operation context and not by whether the handle has any lease, so other clones' leases are waited
-  for; cancelling while draining ends the drain and leaves the handle attached and usable; the
-  registry entry shows the draining state ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Clones, leases and
-  the upgrade drain, modelled in `Coordination.tla`"). Test a cancellation while draining leaving
-  the handle attached, a clone refused while the drain runs, an operation in flight on a clone
-  finishing before the drain ends, and an upgrade started from inside a callback refused while one
-  started beside another clone's operation waits for it.
-
-- [ ] **M9-4** (was `MP-7.2`, part) -- The upgrade's conversion and reader compatibility: after the drain,
-  the upgrader releases its tiers, takes the admission gate, acquires the writer tier exclusively --
-  and the reader tier first when the upgrade is not safe for readers -- and checks the schemas
-  again; a conversion that fails or is cancelled returns promptly with the handle detached, and every
-  operation on a detached handle is refused until it attaches again, as an ordinary admission, or is
-  dropped once its clones' operations have ended; during a reader-safe upgrade the gate reopens to
-  readers; the admission table's rows for an upgrade in progress apply to every layer of every
-  attaching handle. An upgrade states the oldest reader schema that can read what it leaves, which
-  canopy judges against the layer's oldest admissible reader schema and never against the current
-  one; one that some admissible reader schema cannot read takes the reader tier exclusively,
-  draining every reader before it begins, and its completion sets the layer's oldest admissible
-  reader schema to its target, while a safe one leaves it alone ([DESIGN-NOTES.md](DESIGN-NOTES.md)
-  "Cumulative reader compatibility, modelled in `Coordination.tla`"). Until M9-5 an upgrade has no
-  body and completes by advancing the schema. Test a cancelled conversion leaving the handle
-  detached, readers of both versions attaching during a reader-safe upgrade, two reader-safe
-  upgrades in a row with a reader of the first source still attached, an upgrade that an older
-  admissible reader schema cannot read waiting for a reader of that schema to leave and refusing it
-  afterwards, and an upgrade of one layer beside handles that speak another.
-
-- [ ] **M9-5** (was `MP-7.3`) -- The upgrade's body, driven by the caller: holding its tiers, the upgrader
-  takes writer exclusion and finds it free, and is refused, taking nothing, when it finds recovery
-  required. Inside the count's bracket it records a durable intent -- the layer, the source and target
-  schemas, the floor and the reader-safety judgment -- in a root file on resolving's work list before
-  its first step; the caller drives the migration through an upgrade handle, as `Store::recovery` is
-  driven, each step an idempotent, resumable unit the caller supplies and the store applies, which
-  reports progress; the schema advances durably only after the last step, and the intent clears only
-  after that. Exclusion is held across the caller's calls for the whole body, which no other writer
-  can be waiting on because the upgrader holds the writer tier exclusively: record that as a
-  decision, and supersede in part "No caller code runs under exclusion but the commit observer". A
-  failure or a cancellation in the body sets the fence and leaves the intent. An interrupted upgrade
-  is reported by discovery and by `open`'s `RecoveryNeed`, and resumed as a phase of
-  `Store::recovery` by a handle speaking the target schemas, which supplies the remaining steps; the
-  phase's place among resolving's phases is decided and recorded with the item, since an interrupted
-  step's own transaction must be settled before the next step runs. No handle that speaks only the
-  source schemas is admitted to write while the intent stands ([DESIGN-NOTES.md](DESIGN-NOTES.md)
-  "The schema upgrade's body, modelled in `Coordination.tla`"). Test an upgrade interrupted at each
-  step and resumed, a source-only writer refused while the intent stands, an upgrader that finds
-  recovery required refused with nothing taken, and a failure in the body leaving the fence and the
-  intent.
-
-- [ ] **M9-6** (was `MP-10.2`, part of `MP-10`) -- Schema upgrades across processes, on Windows and on Linux under WSL: a schema upgrade waiting for attached
-  writers to leave, and one that is unsafe for readers waiting for attached readers of any schema
-  to leave, with the registry naming them and never listing a killed process as attached, and new
-  handles waiting while it holds the gate; an upgrader killed after its intent, between its steps,
-  after its last step and after the schema advanced, and its upgrade resumed by a writer that
-  speaks the target schema while a writer that speaks only the source schema is refused; an
-  upgrader that finds recovery required refused, taking nothing; a failure injected in the body
-  leaving the fence and the intent; and two upgraders in different processes at once, without
-  deadlock.
-
-- [ ] **M9-7** (was `CQ-2`) -- Benchmark contended writes and upgrades across processes on Windows and Linux
-  at the utilisations and with the workloads CQ-1 studied, measuring the wait-time distribution
-  and how often a waiter is passed over, and compare them with CQ-1's predictions against the
-  same budget on the wait. Record the comparison in
-  [DESIGN-NOTES.md](DESIGN-NOTES.md); a prediction the measurements contradict reopens ODI-2's
-  decision.
+- [ ] **CANOPY-MIGRATION** -- Specify a concrete Canopy source/target schema change and supply its
+  store-owned idempotent units to the migration engine. **BLOCKER:** the repository defines Canopy
+  schema 1 but no newer schema's data or layout changes. The engineer agreed on 2026-11-14 that the
+  engine must reject undefined transitions rather than invent a format change. Graduate this item
+  when a concrete schema change is specified; the generic engine is the current milestone's work.
 
 ## M10 -- A shared-memory coordination implementation
 
@@ -138,6 +46,9 @@ same conformance suite (was `MP-11`). It lives with the coordination interface, 
   Windows mapping backed by the paging file vanishes when its last user exits), treating any state
   it cannot vouch for as requiring recovery, and how it simulates abandonment. Test last-process
   exit, host restart and a failed creation separately.
+  **CROSS-COMPONENT PREREQUISITE:** component `crates/canopy` -> `M9` -> `M9-7` (writer/upgrade
+  baseline and bounded contention comparison) must land first. See
+  [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-7).
 
 - [ ] **M10-2** (was `MP-11.2`) -- Writer exclusion, the fence, the generation and the ownership record, passing
   the conformance cases of M6-5 and M6-6.

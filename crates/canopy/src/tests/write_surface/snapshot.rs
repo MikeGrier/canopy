@@ -259,7 +259,7 @@ fn a_snapshot_after_a_failure_rolled_back_reads_the_prior_state() {
     );
     gate.close();
     assert!(
-        !store.recovery_required(),
+        !store.recovery_required().unwrap(),
         "it failed before its commit point"
     );
     let value = store

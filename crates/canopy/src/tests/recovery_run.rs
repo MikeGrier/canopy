@@ -103,8 +103,79 @@ fn store_with_an_unresolved_transaction(label: &str) -> (Arc<dyn Vfs>, Store) {
     gate.open();
     assert!(store.apply_transaction_as(&swaps, &nonce("u1")).is_err());
     gate.close();
-    assert!(store.recovery_required());
+    assert!(store.recovery_required().unwrap());
     (vfs, store)
+}
+
+#[test]
+fn a_fence_refuses_another_attached_writer_until_either_handle_recovers() {
+    let (vfs, first) = store_with_an_unresolved_transaction("shared-fence");
+    let second = open_writer(&vfs, first.root()).unwrap();
+    assert!(second.recovery_required().unwrap());
+    assert!(matches!(
+        second.update_document_as(
+            Swap::new(name("alpha"), doc("later"), body(b"later")),
+            &nonce("later")
+        ),
+        Err(StoreError::RecoveryRequired { .. })
+    ));
+    second.recover().unwrap().agent_stamp.unwrap();
+    assert!(!first.recovery_required().unwrap());
+    first
+        .update_document_as(
+            Swap::new(name("alpha"), doc("later"), body(b"later")),
+            &nonce("later"),
+        )
+        .unwrap();
+}
+
+#[test]
+fn two_recovery_runs_interleave_without_reusing_stale_phase_records() {
+    let (vfs, first) = store_with_three_logged();
+    let second = open_writer(&vfs, first.root()).unwrap();
+    let mut left = first.recovery().unwrap();
+    let mut right = second.recovery().unwrap();
+    for _ in 0..100 {
+        if !left.progress().finished() {
+            left.step().unwrap().agent_stamp.unwrap();
+        }
+        if !right.progress().finished() {
+            right.step().unwrap().agent_stamp.unwrap();
+        }
+        if left.progress().finished() && right.progress().finished() {
+            break;
+        }
+    }
+    assert!(left.progress().finished() && right.progress().finished());
+    assert_recovered(&first, &vfs);
+    assert_recovered(&second, &vfs);
+}
+
+#[test]
+fn a_paused_recovery_cannot_clear_a_later_transactions_log() {
+    let (vfs, first) = store_with_an_unresolved_transaction("stale-recovery");
+    let second = open_writer(&vfs, first.root()).unwrap();
+    let mut paused = first.recovery().unwrap();
+    while paused.progress().phase() != RecoveryPhase::Completion {
+        paused.step().unwrap().agent_stamp.unwrap();
+    }
+    second.recover().unwrap().agent_stamp.unwrap();
+    logged(&second, "later", "later", b"new committed", true);
+    {
+        let _writer = second.exclusive();
+        let _modification = second.begin_modification().unwrap();
+    }
+    for _ in 0..30 {
+        paused.step().unwrap().agent_stamp.unwrap();
+        if paused.progress().finished() {
+            break;
+        }
+    }
+    assert!(paused.progress().finished());
+    assert_eq!(
+        first.read_body(name("later"), &doc("record.json")).unwrap(),
+        Some(body(b"new committed"))
+    );
 }
 
 /// Every file beneath `root` with its contents, other than the coordination's own and the lock.
@@ -140,7 +211,7 @@ fn opening_a_root_a_failed_transaction_left_changes_no_store_data_and_requires_r
     let attached = open_writer(&vfs, &root).unwrap();
 
     assert_eq!(tree(&vfs, &root), before, "opening moved store data");
-    assert!(attached.recovery_required());
+    assert!(attached.recovery_required().unwrap());
     let need = attached.recovery_need().unwrap();
     assert!(need.required() && need.fenced(), "{need:?}");
 }
@@ -169,7 +240,7 @@ fn a_handle_that_needs_recovery_refuses_writes_and_still_reads_until_recovery_co
         .agent_stamp
         .expect("agent version stamp");
 
-    assert!(!attached.recovery_required());
+    assert!(!attached.recovery_required().unwrap());
     assert_eq!(
         attached.read_body(name("alpha"), &doc("pin")).unwrap(),
         Some(body(b"committed")),
@@ -241,7 +312,7 @@ fn opening_a_root_that_needs_nothing_requires_no_recovery() {
     let root = store.root().to_path_buf();
     drop(store);
     let attached = open_writer(&vfs, &root).unwrap();
-    assert!(!attached.recovery_required());
+    assert!(!attached.recovery_required().unwrap());
     assert!(!attached.recovery_need().unwrap().required());
     attached
         .write_document_replicated_as(name("alpha"), &doc("one"), &body(b"v"), &nonce("w1"))
@@ -262,7 +333,7 @@ fn a_transaction_that_failed_unresolved_is_recovered_without_reopening() {
 
     let settled = store.modifications().unwrap();
     assert!(Store::undisturbed(settled, settled), "{settled}");
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
     assert!(!store.recovery_need().unwrap().required());
     assert_eq!(
         store.read_body(name("alpha"), &doc("pin")).unwrap(),
@@ -350,7 +421,7 @@ fn state_nothing_has_vouched_for_is_reported_to_a_reader_and_recovery_vouches_fo
     assert!(!need.fenced());
 
     let writer = open_writer(&vfs, &root).unwrap();
-    assert!(writer.recovery_required());
+    assert!(writer.recovery_required().unwrap());
     writer
         .recover()
         .unwrap()
@@ -459,7 +530,10 @@ fn a_run_stopped_at_any_step_is_finished_by_resolving_after_the_next_open() {
         drop(run);
         drop(store);
         let reopened = open_resolved(Arc::clone(&vfs), root).unwrap();
-        assert!(!reopened.recovery_required(), "stopped after {stop}");
+        assert!(
+            !reopened.recovery_required().unwrap(),
+            "stopped after {stop}"
+        );
         assert_recovered(&reopened, &vfs);
     }
 }
@@ -481,7 +555,7 @@ fn a_run_stopped_before_it_completes_leaves_the_fence_and_the_next_open_is_told(
 
     let attached = open_writer(&vfs, &root).unwrap();
     assert!(
-        attached.recovery_required(),
+        attached.recovery_required().unwrap(),
         "the fence outlives a recovery that stopped"
     );
     attached
@@ -639,13 +713,13 @@ fn recovering_a_store_that_needs_none_leaves_its_count_and_documents_as_they_wer
 fn clones_of_a_handle_share_the_recovery_that_finishes() {
     let (_vfs, store) = store_with_an_unresolved_transaction("clones-recover");
     let clone = store.clone();
-    assert!(clone.recovery_required());
+    assert!(clone.recovery_required().unwrap());
     clone
         .recover()
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
     store
         .write_document_replicated_as(name("beta"), &doc("two"), &body(b"v"), &nonce("w1"))
         .unwrap();
@@ -667,7 +741,7 @@ fn an_open_reports_what_a_failed_transaction_left_and_resolving_makes_it_writabl
         "{found:?}"
     );
     assert_eq!(found.unresolved_work(), Some(true));
-    assert!(opened.recovery_required());
+    assert!(opened.recovery_required().unwrap());
     assert!(matches!(
         opened.write_document_replicated_as(name("beta"), &doc("two"), &body(b"no"), &nonce("w0")),
         Err(StoreError::RecoveryRequired { .. })
@@ -679,7 +753,10 @@ fn an_open_reports_what_a_failed_transaction_left_and_resolving_makes_it_writabl
         .agent_stamp
         .expect("agent version stamp");
 
-    assert!(!opened.recovery_required(), "resolving was all it needed");
+    assert!(
+        !opened.recovery_required().unwrap(),
+        "resolving was all it needed"
+    );
     assert_eq!(
         opened.recovery_need().unwrap().unresolved_work(),
         Some(false)
@@ -712,7 +789,7 @@ fn an_open_does_not_recover_state_nothing_has_vouched_for() {
 
     let opened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
 
-    assert!(opened.recovery_required());
+    assert!(opened.recovery_required().unwrap());
     assert!(opened.recovery_need().unwrap().state_untrusted());
     assert_eq!(
         opened.read_body(name("alpha"), &doc("one")).unwrap(),
@@ -730,7 +807,7 @@ fn an_open_does_not_recover_state_nothing_has_vouched_for() {
         .agent_stamp
         .expect("agent version stamp");
 
-    assert!(!opened.recovery_required());
+    assert!(!opened.recovery_required().unwrap());
     assert!(!opened.recovery_need().unwrap().required());
     opened
         .write_document_replicated_as(name("beta"), &doc("two"), &body(b"yes"), &nonce("w3"))
@@ -751,7 +828,7 @@ fn an_open_after_a_host_restart_needs_recovery_and_loses_nothing_that_was_durabl
     let opened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
 
     assert!(
-        opened.recovery_required(),
+        opened.recovery_required().unwrap(),
         "state is not trusted across a restart"
     );
     assert!(opened.recovery_need().unwrap().state_untrusted());
@@ -760,7 +837,7 @@ fn an_open_after_a_host_restart_needs_recovery_and_loses_nothing_that_was_durabl
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
-    assert!(!opened.recovery_required());
+    assert!(!opened.recovery_required().unwrap());
     assert_eq!(
         opened.read_body(name("alpha"), &doc("one")).unwrap(),
         Some(body(b"kept"))
@@ -784,7 +861,7 @@ fn a_clean_root_opens_with_nothing_found() {
 
     assert!(!found.required(), "{found:?}");
     assert_eq!(found.unresolved_work(), Some(false));
-    assert!(!opened.recovery_required());
+    assert!(!opened.recovery_required().unwrap());
     write_one(&opened);
 }
 
@@ -841,7 +918,7 @@ fn each_kind_of_work_left_behind_is_reported_and_requires_no_recovery() {
         assert_eq!(found.unresolved_work(), Some(true), "{what}");
         assert!(!found.required(), "{what}: {found:?}");
         assert!(present(&vfs, &opened), "{what}: opening moved it");
-        assert!(!opened.recovery_required(), "{what}");
+        assert!(!opened.recovery_required().unwrap(), "{what}");
     }
 }
 
@@ -902,7 +979,10 @@ fn work_left_behind_cannot_be_told_from_a_live_operations_by_a_reader_or_from_in
     leave(&vfs, &store);
 
     let reader = open_reader(&vfs, store.root());
-    assert_eq!(reader.recovery_need().unwrap().unresolved_work(), None);
+    assert_eq!(
+        reader.recovery_need().unwrap().unresolved_work(),
+        Some(true)
+    );
     assert!(matches!(reader.resolve(), Err(StoreError::ReadOnly { .. })));
 
     let inside = store.exclusive();
@@ -954,11 +1034,14 @@ fn resolving_state_nothing_has_vouched_for_finishes_the_work_and_leaves_recovery
         .expect("agent version stamp");
 
     assert!(!present(&vfs, &opened));
-    assert!(opened.recovery_required(), "resolving vouches for nothing");
+    assert!(
+        opened.recovery_required().unwrap(),
+        "resolving vouches for nothing"
+    );
     opened
         .recover()
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
-    assert!(!opened.recovery_required());
+    assert!(!opened.recovery_required().unwrap());
 }

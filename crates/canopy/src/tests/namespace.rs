@@ -971,6 +971,7 @@ fn replicas_that_all_disagree_under_a_modification_are_contended_rather_than_an_
     // Nothing here is decidable yet, so the read says so in the one shape a caller's loop can
     // wait out (`D336`).
     let (_vfs, store, node, document) = scattered();
+    let _writer = store.exclusive();
     let _modifying = store.begin_modification().unwrap();
 
     match store.read_document(&node, &document).expect("read") {
@@ -1114,7 +1115,7 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
         .update_document_as(Swap::remove(&node, d.clone()), &nonce("w2"))
         .expect_err("the removal's parent sync fails after `prepare`");
     gate.close();
-    assert!(store.recovery_required());
+    assert!(store.recovery_required().unwrap());
     drop(store);
 
     let reopened = open_resolved(Arc::clone(&vfs), root.clone()).expect("recovery completes");

@@ -29,5 +29,11 @@ pub trait RecoveryDiscovery {
     /// # Errors
     ///
     /// A failure of the filesystem or of the platform's boot identity.
-    fn discover_recovery(&self) -> CoordResult<RecoveryNeed>;
+    fn discover_recovery(&self) -> CoordResult<RecoveryNeed> {
+        self.discover_recovery_with(&mut || {})
+    }
+
+    /// Calls `inspect` only when exclusion is free, while preventing a writer from acquiring it.
+    /// The inspection may read caller-owned recovery records but must not mutate or acquire exclusion.
+    fn discover_recovery_with(&self, inspect: &mut dyn FnMut()) -> CoordResult<RecoveryNeed>;
 }

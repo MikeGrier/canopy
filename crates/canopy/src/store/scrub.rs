@@ -167,6 +167,7 @@ impl Store {
     pub fn scrub_content(
         &self,
     ) -> Result<WriteOutcome<(ContentScrubReport, Vec<Nonce>)>, StoreError> {
+        let _lease = self.operation_lease()?;
         let mut stamp = Ok(());
         let value =
             self.with_claimed_nonces(|mint| self.scrub_content_minting(mint, &mut stamp))?;
@@ -301,6 +302,7 @@ impl Store {
     pub fn repair_reported_damage(
         &self,
     ) -> Result<WriteOutcome<(BacklogRepairReport, Vec<Nonce>)>, StoreError> {
+        let _lease = self.operation_lease()?;
         let mut stamp = Ok(());
         let value =
             self.with_claimed_nonces(|mint| self.drain_reported_damage(mint, &mut stamp))?;

@@ -43,6 +43,7 @@ mod apply;
 mod blob;
 mod coordinated;
 mod document;
+mod drain;
 mod errors;
 mod genesis;
 mod management;
@@ -53,12 +54,14 @@ mod recovery;
 mod repair;
 mod scrub;
 mod surface;
+mod upgrade;
 mod writer;
 
 pub use agent::{
     Agent, AttachedHandle, AttachedHandles, CANOPY_SCHEMA_VERSION, SchemaLayer, SchemaVersions,
 };
 use coordinated::{Coordinated, ModificationGuard};
+pub use drain::UpgradeDrain;
 pub use genesis::Migration;
 pub use management::{DiagnosticView, StoreProperties};
 pub use publication::PUBLICATION_RECORD_NAME;
@@ -68,6 +71,9 @@ use repair::RepairBacklog;
 pub use repair::{BlobVerification, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, RepairOutcome};
 pub use scrub::BacklogRepairReport;
 pub use scrub::ContentScrubReport;
+pub use upgrade::{
+    MigrationUnit, SchemaUpgrade, UPGRADE_INTENT_NAME, UpgradeProgress, UpgradeRequest,
+};
 use writer::{WriterGate, WriterGuard};
 #[cfg(test)]
 mod tests;
@@ -104,7 +110,7 @@ pub(crate) const LEGACY_MARKER_NAME: &str = ".shire";
 /// on-disk layout.
 pub const MIGRATION_RECORD_NAME: &str = ".migration";
 
-/// The name of the root's exclusive-writer lock file (`D116`).
+/// The legacy root-lock file used only by offline migration.
 ///
 /// A dotfile for the same reason [`MARKER_NAME`] is: a node name never begins
 /// with `.`, so it cannot collide with a shard directory, and `init`'s
@@ -116,13 +122,16 @@ pub const MIGRATION_RECORD_NAME: &str = ".migration";
 pub const LOCK_NAME: &str = ".lock";
 
 /// The marker encoding version; changing it breaks compatibility, checked before decoding (`D325`).
-pub const GENESIS_FORMAT_VERSION: u32 = 8;
+pub const GENESIS_FORMAT_VERSION: u32 = 9;
 
 /// The oldest migratable genesis version; changing this changes migration support.
 pub const MIGRATABLE_FORMAT_VERSION: u32 = 6;
 
 /// The coordinated genesis format before agent metadata; changing this changes migration support.
 pub const COORDINATED_FORMAT_VERSION: u32 = 7;
+
+/// The agent-metadata format before caller-driven upgrade intent; changing this changes migration support.
+pub const AGENT_FORMAT_VERSION: u32 = 8;
 
 /// The largest replica count canopy accepts -- a safety ceiling (`D79`).
 ///
@@ -621,15 +630,6 @@ pub struct Store {
     unsynced_dirs: Arc<Mutex<DirSyncDebt>>,
     /// What is known durable about the publication record's name, shared by every clone.
     publication: Arc<PublicationDurability>,
-    /// The root's exclusive-writer lock (`D116`), held for as long as any handle
-    /// to this store lives.
-    ///
-    /// `Arc` because `Store` is `Clone` and the clones are one writer, not
-    /// several: re-acquiring per clone would deadlock against ourselves, so the
-    /// lock is released only when the **last** handle drops. There is no `Drop`
-    /// There is no `Drop` impl -- dropping the `Arc` is the release. A store opened only to read
-    /// holds none.
-    _lock: Option<Arc<dyn VfsLock>>,
     /// The nonce source and commit observer the public write surface uses, shared by every
     /// clone because the clones are one writer.
     surface: Arc<surface::Surface>,
@@ -686,6 +686,7 @@ impl Store {
     /// [`StoreError::Coordination`] if the coordination state cannot be sampled. A failed sample is
     /// an error and never a count, so it cannot be mistaken for a settled store.
     pub fn modifications(&self) -> Result<u64, StoreError> {
+        let _lease = self.operation_lease()?;
         self.coordination.sample()
     }
 
@@ -867,7 +868,40 @@ impl Store {
     /// fence check, so a test can occupy the gate directly.
     #[cfg(test)]
     pub(crate) fn exclusive(&self) -> WriterGuard {
-        self.writer.enter()
+        self.enter_exclusion().expect("test writer exclusion")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn acquired_exclusion(&self) -> Option<acadia::coord::Acquired> {
+        self.coordination.acquired()
+    }
+
+    pub(crate) fn enter_exclusion(&self) -> Result<WriterGuard, StoreError> {
+        let lease = self.operation_lease()?;
+        self.refuse_if_read_only()?;
+        let mut guard = self.writer.enter();
+        guard.lease = Some(lease);
+        if self.writer.held_depth() == 1 {
+            let (acquired, changed) = self.coordination.acquire()?;
+            guard.other_holder = changed;
+            if acquired.recovery_required() {
+                self.writer.mark_unresolved();
+            } else {
+                self.writer.clear_unresolved();
+            }
+            if changed {
+                self.log_durability.invalidate();
+                self.publication.invalidate();
+                *self
+                    .unsynced_dirs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = DirSyncDebt::default();
+            }
+            self.refresh_stamp_generation(acquired, changed);
+        }
+        guard.coordination = Some(Arc::clone(&self.coordination));
+        guard.store = Some(self.clone());
+        Ok(guard)
     }
 
     /// Holds this store's writer gate until the guard drops, for a write: refused while a
@@ -879,7 +913,7 @@ impl Store {
     /// a store with no publication pending, and none needs to remember to settle.
     pub(crate) fn writable(&self) -> Result<WriterGuard, StoreError> {
         self.refuse_if_read_only()?;
-        let mut guard = self.writer.enter();
+        let mut guard = self.enter_exclusion()?;
         self.refuse_if_unresolved()?;
         if self.writer.held_depth() == 1 {
             guard.publication_settled = self.settle_publication()?;
@@ -899,6 +933,12 @@ impl Store {
     /// Refuses while this handle needs recovery, except to recovery's own steps, which hold the
     /// writer gate and reach the write paths they replay through.
     pub(crate) fn refuse_if_unresolved(&self) -> Result<(), StoreError> {
+        if self.writer.is_unresolved()
+            && self.writer.held_depth() == 0
+            && !self.coordination.discover()?.required()
+        {
+            self.writer.clear_unresolved();
+        }
         if self.writer.is_unresolved() && !self.coordination.is_recovering() {
             return Err(StoreError::RecoveryRequired {
                 root: self.root.clone(),
@@ -911,8 +951,9 @@ impl Store {
     /// state requiring it, or a transaction through any handle to this store failed after it
     /// may have reached its commit point. Writes are refused until [`recover`](Store::recover)
     /// completes.
-    pub fn recovery_required(&self) -> bool {
-        self.writer.is_unresolved()
+    pub fn recovery_required(&self) -> Result<bool, StoreError> {
+        let _lease = self.operation_lease()?;
+        Ok(self.coordination.discover()?.required())
     }
 
     /// Marks a modification in progress until the guard drops, which also marks it ended:
@@ -1117,6 +1158,7 @@ impl Store {
     /// caller (for example a daemon's startup recovery) can observe that a restart
     /// took the clean path.
     pub fn commit_log_is_empty(&self) -> Result<bool, StoreError> {
+        let _lease = self.operation_lease()?;
         Ok(self
             .commit_log()
             .read()

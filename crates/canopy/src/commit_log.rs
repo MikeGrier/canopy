@@ -529,6 +529,13 @@ pub(crate) struct LogDurability {
     empty_synced: AtomicBool,
 }
 
+impl LogDurability {
+    pub(crate) fn invalidate(&self) {
+        self.name_synced.store(false, Ordering::Release);
+        self.empty_synced.store(false, Ordering::Release);
+    }
+}
+
 impl CommitLog {
     /// The commit log at `store_root`'s [`LOG_NAME`] file.
     pub(crate) fn new(vfs: Arc<dyn Vfs>, store_root: &Path) -> CommitLog {

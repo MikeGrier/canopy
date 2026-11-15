@@ -246,7 +246,7 @@ fn a_collision_check_that_cannot_look_fails_rather_than_passing() {
         store.commit_log_is_empty().unwrap(),
         "nothing was journalled"
     );
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn removing_a_name_that_is_a_child_node_is_refused_before_begin() {
         "got {refused:?}"
     );
     assert!(store.commit_log_is_empty().unwrap());
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn a_set_removing_a_name_another_of_its_writes_nests_under_is_refused_before_beg
         "got {refused:?}"
     );
     assert!(store.commit_log_is_empty().unwrap());
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
 }
 
 #[test]

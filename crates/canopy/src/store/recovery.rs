@@ -10,8 +10,6 @@
 //! resolving, and making the coordination state trusted, which a fence alone does not need and a
 //! host restart does. Opening does neither; it reports what it found, and both are the caller's.
 
-use acadia::coord::Trust;
-
 use super::coordinated::Coordinated;
 use super::surface::CLAIMS_DIR;
 use super::*;
@@ -37,6 +35,8 @@ pub enum RecoveryPhase {
     Collection,
     /// Releasing the nonce claims of operations that died.
     Claims,
+    /// Resuming caller-supplied migration units after interrupted journal work has settled.
+    UpgradeBody,
     /// Publishing the even count and the trusted state, and clearing the fence last.
     Completion,
 }
@@ -48,7 +48,8 @@ impl RecoveryPhase {
             RecoveryPhase::Publication => Some(RecoveryPhase::Transactions),
             RecoveryPhase::Transactions => Some(RecoveryPhase::Collection),
             RecoveryPhase::Collection => Some(RecoveryPhase::Claims),
-            RecoveryPhase::Claims => Some(RecoveryPhase::Completion),
+            RecoveryPhase::Claims => Some(RecoveryPhase::UpgradeBody),
+            RecoveryPhase::UpgradeBody => Some(RecoveryPhase::Completion),
             RecoveryPhase::Completion => None,
         }
     }
@@ -115,6 +116,10 @@ pub struct RecoveryNeed {
 }
 
 impl RecoveryNeed {
+    pub(super) fn set_unresolved_work(&mut self, work: Option<bool>) {
+        self.unresolved_work = work;
+    }
+
     pub(super) fn observed(need: acadia::coord::RecoveryNeed) -> Self {
         Self {
             fenced: need.fenced(),
@@ -154,7 +159,7 @@ impl RecoveryNeed {
     /// Whether writers left work on the store root's work list for [`resolve`](Store::resolve) --
     /// directories whose names are not yet durable, a pending document publication, records in the
     /// commit log, or nonce claims -- or `None` when this handle cannot tell work left behind from a
-    /// live operation's: it was opened only to read, or asked from inside one of its own operations.
+    /// live operation's: exclusion was occupied during the observation.
     ///
     /// Work left behind does not by itself require recovery: a write settles a pending publication
     /// and the directory names before it acts, and a claim refuses only its own nonce.
@@ -167,6 +172,9 @@ impl RecoveryNeed {
 /// The units the run knows before it measures anything: the publication, the claims and the
 /// completion each count one.
 const FIXED_UNITS: u64 = 3;
+
+type RecoveryUnit<'callback> =
+    dyn FnMut(&super::MigrationUnit<'_>) -> Result<(), StoreError> + 'callback;
 
 /// A recovery of one store, run a step at a time.
 ///
@@ -191,22 +199,26 @@ pub struct Recovery {
     dir_record: bool,
     /// The commit log as it was when the current phase was entered.
     records: Vec<LogRecord>,
+    completed_txns: Vec<Nonce>,
+    completed_dirs: Vec<PathBuf>,
+    observed_count: u64,
 }
 
 /// Makes the modifications a step begins recovery's, which a state that requires recovery does
 /// not refuse, and ordinary again when the step ends.
-struct RecoveringScope<'a>(&'a Coordinated);
+struct RecoveringScope<'a>(&'a Coordinated, bool);
 
 impl<'a> RecoveringScope<'a> {
     fn enter(coordination: &'a Coordinated) -> Self {
+        let previous = coordination.is_recovering();
         coordination.set_recovering(true);
-        RecoveringScope(coordination)
+        RecoveringScope(coordination, previous)
     }
 }
 
 impl Drop for RecoveringScope<'_> {
     fn drop(&mut self) {
-        self.0.set_recovering(false);
+        self.0.set_recovering(self.1);
     }
 }
 
@@ -225,7 +237,18 @@ impl Recovery {
             dirs: Vec::new(),
             dir_record: false,
             records: Vec::new(),
+            completed_txns: Vec::new(),
+            completed_dirs: Vec::new(),
+            observed_count: 0,
         };
+        let _writer = store.enter_exclusion()?;
+        if store.has_unresolved_work()? && !store.writer.is_unresolved() {
+            let _recovering = RecoveringScope::enter(&store.coordination);
+            store.coordination.begin(&store.root)?;
+            store.coordination.fence_modification()?;
+            store.writer.mark_unresolved();
+        }
+        run.observed_count = store.modifications()?;
         run.settle_position()?;
         Ok(run)
     }
@@ -251,14 +274,72 @@ impl Recovery {
     ///
     /// The failure of the step's own work, which a later step retries.
     pub fn step(&mut self) -> Result<WriteOutcome<RecoveryProgress>, StoreError> {
+        self.step_with_unit(None)
+    }
+
+    /// Supplies the idempotent unit required when recovery reaches an interrupted upgrade body.
+    pub fn step_upgrade(
+        &mut self,
+        mut unit: impl FnMut(&super::MigrationUnit<'_>) -> Result<(), StoreError>,
+    ) -> Result<WriteOutcome<RecoveryProgress>, StoreError> {
+        self.store.refuse_unit_control()?;
+        self.step_with_unit(Some(&mut unit))
+    }
+
+    fn step_with_unit(
+        &mut self,
+        mut unit: Option<&mut RecoveryUnit<'_>>,
+    ) -> Result<WriteOutcome<RecoveryProgress>, StoreError> {
         let store = self.store.clone();
-        let _writer = store.writer.enter();
+        let _lease = store.operation_lease()?;
+        if self.finished {
+            return Ok(WriteOutcome::new(self.progress(), Ok(())));
+        }
+        let _writer = store.enter_exclusion()?;
         let mut changed = false;
         let known_before = self.known;
         self.grew = false;
+        let count = store.modifications()?;
+        if count != self.observed_count {
+            self.phase = RecoveryPhase::DirectorySyncDebt;
+            self.units = None;
+            self.done_in_phase = 0;
+            self.completed_txns.clear();
+            self.completed_dirs.clear();
+            self.known = self.done + FIXED_UNITS;
+            self.observed_count = count;
+        }
+        if _writer.other_holder {
+            if let Some(units) = self.units.take()
+                && matches!(
+                    self.phase,
+                    RecoveryPhase::DirectorySyncDebt
+                        | RecoveryPhase::Transactions
+                        | RecoveryPhase::Collection
+                        | RecoveryPhase::UpgradeBody
+                )
+            {
+                self.known -= units.saturating_sub(self.done_in_phase);
+            }
+            self.done_in_phase = 0;
+        }
         self.settle_position()?;
         if !self.finished {
             let _recovering = RecoveringScope::enter(&store.coordination);
+            if self.phase == RecoveryPhase::UpgradeBody {
+                let callback = unit
+                    .as_mut()
+                    .ok_or_else(|| StoreError::UpgradeBodyRequired {
+                        root: store.root.clone(),
+                    })?;
+                let outcome = store.run_upgrade_unit(|context| callback(context), true)?;
+                self.done += 1;
+                self.done_in_phase += 1;
+                self.settle_position()?;
+                self.grew = self.known > known_before;
+                self.observed_count = store.modifications()?;
+                return Ok(WriteOutcome::new(self.progress(), outcome.agent_stamp));
+            }
             changed = self.run_unit(&store)?;
             self.done += 1;
             self.done_in_phase += 1;
@@ -266,6 +347,7 @@ impl Recovery {
         let settled = self.settle_position();
         self.grew = self.known > known_before;
         settled?;
+        self.observed_count = store.modifications()?;
         Ok(store.stamped(self.progress(), changed))
     }
 
@@ -283,6 +365,7 @@ impl Recovery {
                         self.phase = next;
                         self.units = None;
                         self.done_in_phase = 0;
+                        self.completed_txns.clear();
                     }
                     None => self.finished = true,
                 },
@@ -295,7 +378,8 @@ impl Recovery {
     fn measure(&mut self) -> Result<(), StoreError> {
         let units = match self.phase {
             RecoveryPhase::DirectorySyncDebt => {
-                let (dirs, record) = self.store.unsynced_dirs_to_discharge()?;
+                let (mut dirs, record) = self.store.unsynced_dirs_to_discharge()?;
+                dirs.retain(|dir| !self.completed_dirs.contains(dir));
                 let units = dirs.len() as u64 + u64::from(record);
                 self.dirs = dirs;
                 self.dir_record = record;
@@ -303,13 +387,19 @@ impl Recovery {
                 units
             }
             RecoveryPhase::Transactions | RecoveryPhase::Collection => {
-                let records = self.store.commit_log().read()?;
+                let mut records = self.store.commit_log().read()?;
+                records.retain(|record| !self.completed_txns.contains(record.txn()));
                 let units = group_by_transaction(&records).len() as u64;
                 self.records = records;
                 self.known += units;
                 units
             }
             RecoveryPhase::Publication | RecoveryPhase::Claims | RecoveryPhase::Completion => 1,
+            RecoveryPhase::UpgradeBody => {
+                let remaining = self.store.upgrade_units_remaining()?;
+                self.known = self.known.saturating_add(remaining);
+                remaining
+            }
         };
         self.units = Some(units);
         Ok(())
@@ -320,6 +410,7 @@ impl Recovery {
             RecoveryPhase::DirectorySyncDebt => match self.dirs.last() {
                 Some(dir) => {
                     store.sync_parent_of(dir)?;
+                    self.completed_dirs.push(dir.clone());
                     self.dirs.pop();
                     Ok(true)
                 }
@@ -328,15 +419,17 @@ impl Recovery {
             RecoveryPhase::Publication => store.settle_publication(),
             RecoveryPhase::Transactions => {
                 let txns = group_by_transaction(&self.records);
-                store
-                    .settle_transaction(&txns[self.done_in_phase as usize])
-                    .map(|_| true)
+                let txn = &txns[self.done_in_phase as usize];
+                store.settle_transaction(txn)?;
+                self.completed_txns.push(txn.id.clone());
+                Ok(true)
             }
             RecoveryPhase::Collection => {
                 let txns = group_by_transaction(&self.records);
-                store
-                    .collect_transaction(&txns[self.done_in_phase as usize])
-                    .map(|_| true)
+                let txn = &txns[self.done_in_phase as usize];
+                store.collect_transaction(txn)?;
+                self.completed_txns.push(txn.id.clone());
+                Ok(true)
             }
             RecoveryPhase::Claims => {
                 let changed = match store.vfs.read_dir(&store.root.join(CLAIMS_DIR)) {
@@ -348,7 +441,9 @@ impl Recovery {
                 Ok(changed)
             }
             RecoveryPhase::Completion => {
-                let changed = !self.records.is_empty() || store.writer.is_unresolved();
+                let changed = store.finish_schema_transition()?
+                    || !self.records.is_empty()
+                    || store.writer.is_unresolved();
                 // Every transaction is settled and collected by now, so emptying the log is
                 // best-effort, as at the end of a write: what it holds replays as a no-op.
                 let _ = store.commit_log().reset();
@@ -358,6 +453,9 @@ impl Recovery {
                 }
                 Ok(changed)
             }
+            RecoveryPhase::UpgradeBody => Err(StoreError::UpgradeBodyRequired {
+                root: store.root.clone(),
+            }),
         }
     }
 }
@@ -374,7 +472,7 @@ impl Store {
     /// operation that acts on the namespace settles a pending publication before it acts, since a
     /// replay over a document whose replicas a failed write left disagreeing would strand its vote.
     /// Every claim found is released, which is sound because this handle's writer gate excludes its
-    /// own operations and the root's lock every other writer (`D116`).
+    /// own operations and coordination exclusion every other writer.
     ///
     /// Anything else a recovery does is left to [`recover`](Store::recover): a store whose state
     /// cannot be vouched for stays needing it. A store with nothing to resolve is left as it was.
@@ -384,32 +482,17 @@ impl Store {
     /// [`StoreError::ReadOnly`] for a handle opened only to read, and the failure of the work, which
     /// a later call does again.
     pub fn resolve(&self) -> Result<WriteOutcome<()>, StoreError> {
+        self.refuse_unit_control()?;
+        let _lease = self.operation_lease()?;
         self.refuse_if_read_only()?;
-        let _writer = self.writer.enter();
+        let _writer = self.enter_exclusion()?;
         let changed = self.has_unresolved_work()?
             || (self.writer.is_unresolved() && self.coordination.state_was_vouched());
         {
             let _writer = self.writer.enter();
             let _recovering = RecoveringScope::enter(&self.coordination);
-            let (dirs, record) = self.unsynced_dirs_to_discharge()?;
-            for dir in dirs.iter().rev() {
-                self.sync_parent_of(dir)?;
-            }
-            if record {
-                self.empty_dir_record()?;
-            }
-            self.settle_publication()?;
-            let records = self.commit_log().read()?;
-            let txns = group_by_transaction(&records);
-            for txn in &txns {
-                self.settle_transaction(txn)?;
-            }
-            for txn in &txns {
-                self.collect_transaction(txn)?;
-            }
-            // Best-effort, as at the end of a write: a log of settled transactions replays as a no-op.
-            let _ = self.commit_log().reset();
-            self.release_stale_claims()?;
+            self.resolve_data_work()?;
+            self.finish_schema_transition()?;
         }
         if self.writer.is_unresolved() && self.coordination.state_was_vouched() {
             self.coordination.complete_recovery()?;
@@ -418,31 +501,48 @@ impl Store {
         Ok(self.stamped((), changed))
     }
 
+    pub(crate) fn resolve_data_work(&self) -> Result<(), StoreError> {
+        let (dirs, record) = self.unsynced_dirs_to_discharge()?;
+        for dir in dirs.iter().rev() {
+            self.sync_parent_of(dir)?;
+        }
+        if record {
+            self.empty_dir_record()?;
+        }
+        self.settle_publication()?;
+        let records = self.commit_log().read()?;
+        let txns = group_by_transaction(&records);
+        for txn in &txns {
+            self.settle_transaction(txn)?;
+        }
+        for txn in &txns {
+            self.collect_transaction(txn)?;
+        }
+        let _ = self.commit_log().reset();
+        self.release_stale_claims()?;
+        Ok(())
+    }
+
     /// Whether recovery is required, and why, as one observation of the coordination state that
     /// changes nothing, so any handle -- one opened only to read included -- may ask.
     ///
     /// The observation is consistent: it reads the fence, the restart state and the ownership
     /// record while no writer can come between the readings, or reports from the fence and the
     /// restart state alone when a writer holds exclusion, so a live writer's transaction is never
-    /// reported as abandoned while its holder acquires or releases. A handle that may write also
-    /// reads the work list, under its writer gate, so it waits for an operation in progress.
+    /// reported as abandoned while its holder acquires or releases. The work list is read inside
+    /// that same observation only when exclusion is free, for read-only handles too.
     ///
     /// # Errors
     ///
     /// [`StoreError::Coordination`] if the coordination state cannot be observed, and the failure
     /// to read the work list.
     pub fn recovery_need(&self) -> Result<RecoveryNeed, StoreError> {
-        let need = self.coordination.discover()?;
-        let unresolved_work = if self.coordination.may_write() {
-            let _writer = self.writer.enter();
-            if self.writer.held_depth() == 1 {
-                Some(self.has_unresolved_work()?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let _lease = self.operation_lease()?;
+        let mut work = None;
+        let need = self.coordination.discover_with(&mut || {
+            work = Some(Self::root_has_unresolved_work(&self.vfs, &self.root));
+        })?;
+        let unresolved_work = work.transpose()?;
         Ok(RecoveryNeed {
             fenced: need.fenced(),
             state_untrusted: need.untrusted().is_some(),
@@ -454,15 +554,7 @@ impl Store {
     /// What acquiring writer exclusion found when this handle was opened, with the work list as it
     /// stands: what [`open`](Store::open) reports.
     pub(super) fn found_on_opening(&self) -> Result<RecoveryNeed, StoreError> {
-        let Some(acquired) = self.coordination.acquired() else {
-            return self.recovery_need();
-        };
-        Ok(RecoveryNeed {
-            fenced: acquired.fenced(),
-            state_untrusted: !matches!(acquired.trust(), Trust::Vouched),
-            holder_died: acquired.holder_died(),
-            unresolved_work: Some(self.has_unresolved_work()?),
-        })
+        self.recovery_need()
     }
 
     /// Whether the root's work list holds anything for [`resolve`](Store::resolve). It only reads:
@@ -474,35 +566,44 @@ impl Store {
             .unwrap_or_else(PoisonError::into_inner)
             .dirs
             .is_empty();
+        Ok(remembered || Self::root_has_unresolved_work(&self.vfs, &self.root)?)
+    }
+
+    pub(super) fn root_has_unresolved_work(
+        vfs: &Arc<dyn Vfs>,
+        root: &Path,
+    ) -> Result<bool, StoreError> {
         let holds = |name: &str| -> Result<bool, StoreError> {
-            match self.vfs.read(&self.root.join(name)) {
+            match vfs.read(&root.join(name)) {
                 Ok(bytes) => Ok(!bytes.is_empty()),
                 Err(error) if error.kind() == VfsErrorKind::NotFound => Ok(false),
                 Err(error) => Err(StoreError::Vfs(error)),
             }
         };
-        let claims = match self.vfs.read_dir(&self.root.join(CLAIMS_DIR)) {
+        let claims = match vfs.read_dir(&root.join(CLAIMS_DIR)) {
             Ok(entries) => !entries.is_empty(),
             Err(error) if error.kind() == VfsErrorKind::NotFound => false,
             Err(error) => return Err(StoreError::Vfs(error)),
         };
-        Ok(remembered
-            || claims
+        Ok(claims
             || holds(DIR_SYNC_DEBT_NAME)?
             || holds(PUBLICATION_RECORD_NAME)?
-            || !self.commit_log().read()?.is_empty())
+            || !CommitLog::new(Arc::clone(vfs), root).read()?.is_empty()
+            || vfs.exists(&root.join(super::UPGRADE_INTENT_NAME))?
+            || Self::read_genesis(vfs, root)?.metadata.transition.is_some())
     }
 
     /// Begins a recovery of this store, to be run a step at a time with [`Recovery::step`].
     ///
-    /// Recovery runs under the exclusion this handle holds, and only a handle that may write holds
-    /// it.
+    /// Each unit acquires and releases exclusion; no hold remains across caller calls.
     ///
     /// # Errors
     ///
     /// [`StoreError::ReadOnly`] for a handle opened only to read, and the failure to measure the
     /// first phase's work.
     pub fn recovery(&self) -> Result<Recovery, StoreError> {
+        self.refuse_unit_control()?;
+        let _lease = self.operation_lease()?;
         Recovery::begin(self)
     }
 
@@ -516,6 +617,7 @@ impl Store {
     ///
     /// The failure of a step, after which a later call resumes the same recovery.
     pub fn recover(&self) -> Result<WriteOutcome<()>, StoreError> {
+        let _lease = self.operation_lease()?;
         let mut stamp = Ok(());
         let mut run = self.recovery()?;
         while !run.progress().finished() {

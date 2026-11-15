@@ -25,6 +25,75 @@ fn attach(participant: &FileCoordination, access: Access) -> Box<dyn Attachment>
     participant.attach(access, Waiting::Never).expect("attach")
 }
 
+#[test]
+fn incremental_conversion_keeps_the_gate_until_reader_admission_is_explicit() {
+    on_every_implementation("coord-conversion-gate", &|implementation, backend| {
+        let owner = participant(implementation, backend);
+        let other = participant(implementation, backend);
+        for _ in 0..12 {
+            let mut conversion = attach(&owner, Access::Write).begin_conversion().unwrap();
+            assert!(conversion.poll_gate().unwrap());
+            let mut upgrade = conversion.poll_tiers(ReaderSafety::Safe).unwrap().unwrap();
+            assert!(would_wait(other.attach(Access::Read, Waiting::Never)));
+            upgrade.admit_readers().unwrap();
+            drop(other.attach(Access::Read, Waiting::Never).unwrap());
+            assert!(would_wait(other.attach(Access::Write, Waiting::Never)));
+            drop(upgrade);
+            drop(other.attach(Access::Write, Waiting::Never).unwrap());
+        }
+    });
+}
+
+#[test]
+fn cancelling_a_pending_conversion_releases_its_gate_and_acquired_reader_tier() {
+    on_every_implementation("coord-conversion-cancel", &|implementation, backend| {
+        let owner = participant(implementation, backend);
+        let other = participant(implementation, backend);
+        let owner_attachment = attach(&owner, Access::Write);
+        let other_attachment = attach(&other, Access::Write);
+        let mut conversion = owner_attachment.begin_conversion().unwrap();
+        let attached = other_attachment
+            .upgrade(ReaderSafety::Safe, Waiting::Never)
+            .unwrap();
+        assert!(conversion.poll_gate().unwrap());
+        assert!(
+            conversion
+                .poll_tiers(ReaderSafety::Unsafe)
+                .unwrap()
+                .is_none()
+        );
+        drop(conversion);
+        drop(other.attach(Access::Read, Waiting::Never).unwrap());
+        drop(attached);
+        drop(other.attach(Access::Write, Waiting::Never).unwrap());
+    });
+}
+
+#[test]
+fn an_incremental_conversion_can_be_cancelled_before_it_obtains_the_gate() {
+    on_every_implementation(
+        "coord-conversion-blocked-gate",
+        &|implementation, backend| {
+            let owner = participant(implementation, backend);
+            let other = participant(implementation, backend);
+            let attachment = attach(&owner, Access::Write);
+            let gate = other
+                .take_lock(
+                    &other.layout().gate_lock(),
+                    crate::LockMode::Exclusive,
+                    crate::LockSpan::File,
+                    Waiting::Never,
+                )
+                .unwrap();
+            let mut conversion = attachment.begin_conversion().unwrap();
+            assert!(!conversion.poll_gate().unwrap());
+            drop(conversion);
+            drop(other.release_lock(gate));
+            drop(other.attach(Access::Write, Waiting::Never).unwrap());
+        },
+    );
+}
+
 fn would_wait<T: std::fmt::Debug>(outcome: Result<T, CoordError>) -> bool {
     matches!(outcome, Err(CoordError::WouldWait))
 }

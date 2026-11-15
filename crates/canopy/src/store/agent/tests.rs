@@ -12,6 +12,7 @@ fn registry_payload_uses_named_encoding_tags_and_spoken_values() {
             reader: Some(TierHold::Shared),
             writer: None,
         },
+        false,
     )
     .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -24,6 +25,7 @@ fn registry_payload_uses_named_encoding_tags_and_spoken_values() {
             reader: None,
             writer: Some(TierHold::Exclusive),
         },
+        false,
     )
     .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

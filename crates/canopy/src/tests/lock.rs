@@ -1,6 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! `LOCK-M1`: a store root has exactly one writer (`D116`).
+//! Attached writers take turns under the coordination contract's exclusion.
 //!
 //! These run over [`MemFs`], whose exclusion scope is one process. That is the faithful
 //! scope for that filesystem, but it means **nothing here proves cross-process behaviour**
@@ -11,23 +11,16 @@ use super::*;
 use crate::store::LOCK_NAME;
 use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, VfsErrorKind, When};
 
-/// The lock is what `open` fails on, and it fails by name rather than as a bare
-/// [`StoreError::Vfs`], because a caller can act on this one.
 #[test]
-fn a_second_open_of_a_held_root_is_refused() {
+fn a_second_writer_opens_beside_an_attached_writer() {
     let (vfs, store) = fresh_store();
 
-    let refused = Store::open_unsourced(Arc::clone(&vfs), store.root().to_path_buf())
-        .expect_err("a held root refuses a second writer");
-
-    match refused {
-        StoreError::RootInUse { root } => assert_eq!(root, store.root()),
-        other => panic!("expected RootInUse, got {other:?}"),
-    }
+    let second = Store::open_unsourced(Arc::clone(&vfs), store.root().to_path_buf()).unwrap();
+    assert_eq!(second.store_id(), store.store_id());
 }
 
 #[test]
-fn open_propagates_non_locking_errors_from_lock_acquisition() {
+fn opening_does_not_take_the_legacy_root_lock() {
     let gate = acadia::FaultGate::closed();
     let root = PathBuf::from("store");
     let policy = FaultPolicy::new().inject_gated(
@@ -43,30 +36,17 @@ fn open_propagates_non_locking_errors_from_lock_acquisition() {
     drop(store);
     gate.open();
 
-    match Store::open_unsourced(vfs, root) {
-        Err(StoreError::Vfs(error)) => assert_eq!(error.kind(), VfsErrorKind::Other),
-        other => panic!("expected Vfs(Other), got {other:?}"),
-    }
+    Store::open_unsourced(vfs, root).unwrap();
 }
 
-/// `init` is locked too, not just `open`. An `init` racing an `open` over one root is the
-/// same hazard, and likelier during first-run setup.
 #[test]
-fn init_over_a_held_root_is_refused() {
+fn creation_uses_coordination_rather_than_the_legacy_root_lock() {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
     let root = PathBuf::from("/held");
     vfs.create_dir_all(&root).unwrap();
-    // An empty root another writer holds: the unlocked pre-scan passes, so only the lock
-    // can refuse it.
     let _held = vfs.lock_exclusive(&root.join(LOCK_NAME)).unwrap();
 
-    let refused = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config())
-        .expect_err("a held root refuses an init as well");
-
-    match refused {
-        StoreError::RootInUse { root: reported } => assert_eq!(reported, root),
-        other => panic!("expected RootInUse, got {other:?}"),
-    }
+    Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
 }
 
 /// A root that is plainly occupied is refused before the lock is taken, so `init` leaves
@@ -92,8 +72,7 @@ fn init_over_an_occupied_root_leaves_no_lock_file() {
     );
 }
 
-/// Once the first `init` has released the root, a second one sees its marker -- the check
-/// runs under the lock, so it cannot have been taken before the first store landed.
+/// A completed creation's marker refuses a second creation.
 #[test]
 fn init_after_a_released_init_is_refused_as_already_initialized() {
     let (vfs, store) = fresh_store();
@@ -121,19 +100,15 @@ fn dropping_the_store_releases_the_root() {
     drop(reopened);
 }
 
-/// The lock is released by the **last** handle, not the first. `Store` is `Clone` and a
-/// clone handed to another thread is still a writer, so releasing on the first drop would
-/// hand the root away while a writer was still using it.
 #[test]
-fn a_clone_keeps_the_root_held() {
+fn a_clone_keeps_the_attachment_without_excluding_another_writer() {
     let (vfs, store) = fresh_store();
     let root = store.root().to_path_buf();
     let clone = store.clone();
 
     drop(store);
-    let refused = Store::open_unsourced(Arc::clone(&vfs), root.clone())
-        .expect_err("one handle remains, so the root is still held");
-    assert!(matches!(refused, StoreError::RootInUse { .. }));
+    let second = Store::open_unsourced(Arc::clone(&vfs), root.clone()).unwrap();
+    assert_eq!(second.store_id(), clone.store_id());
 
     drop(clone);
     drop(Store::open_unsourced(Arc::clone(&vfs), root).expect("the last handle released it"));
@@ -199,13 +174,11 @@ fn a_refused_open_drops_no_lock_file_into_a_non_store() {
     );
 }
 
-/// The lock file outlives the lock, and that is deliberate. A successor must take the lock
-/// to learn anything; treating the file's presence as "someone holds this" would wedge the
-/// store forever after the first clean shutdown.
 #[test]
-fn the_lock_file_remains_after_release_and_does_not_wedge_the_root() {
+fn a_legacy_lock_file_does_not_exclude_current_writers() {
     let (vfs, store) = fresh_store();
     let root = store.root().to_path_buf();
+    let legacy = vfs.lock_exclusive(&root.join(LOCK_NAME)).unwrap();
     drop(store);
 
     assert!(
@@ -216,6 +189,7 @@ fn the_lock_file_remains_after_release_and_does_not_wedge_the_root() {
     drop(
         Store::open_unsourced(Arc::clone(&vfs), root).expect("a leftover lock file wedges nothing"),
     );
+    drop(legacy);
 }
 
 /// Clones of one store are one writer: two of them racing a create-if-absent of the same
@@ -344,4 +318,110 @@ fn queued_writers_are_each_admitted_once_the_gate_is_released() {
     for waiter in waiters {
         waiter.join().expect("waiter thread");
     }
+}
+
+#[test]
+fn independent_handles_alternate_logged_and_unlogged_writes() {
+    let (vfs, first) = fresh_store();
+    let second = Store::open_unsourced(Arc::clone(&vfs), first.root().to_path_buf()).unwrap();
+    for index in 0..12 {
+        let (writer, reader) = if index % 2 == 0 {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
+        let document = doc(&format!("document{index}"));
+        let content = body(format!("value{index}").as_bytes());
+        let token = nonce(&format!("turn{index}"));
+        if index % 3 == 0 {
+            assert!(
+                writer
+                    .update_document_as(
+                        Swap::new(name("turns"), document.clone(), content.clone()),
+                        &token
+                    )
+                    .unwrap()
+                    .is_committed()
+            );
+        } else {
+            writer
+                .write_document_replicated_as(name("turns"), &document, &content, &token)
+                .unwrap();
+        }
+        assert_eq!(
+            reader.read_body(name("turns"), &document).unwrap(),
+            Some(content)
+        );
+    }
+}
+
+#[test]
+fn identical_concurrent_creators_never_replace_a_completed_store() {
+    for round in 0..12 {
+        let (vfs, root) = fresh_root();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let creators: Vec<_> = (0..2)
+            .map(|_| {
+                let (vfs, root, barrier) = (Arc::clone(&vfs), root.clone(), Arc::clone(&barrier));
+                thread::spawn(move || {
+                    barrier.wait();
+                    Store::init_unsourced(vfs, root, test_config())
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = creators
+            .into_iter()
+            .map(|creator| creator.join().unwrap())
+            .collect();
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+            1,
+            "round {round}"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, Err(StoreError::AlreadyInitialized { .. })))
+        );
+        let store = outcomes.into_iter().find_map(Result::ok).unwrap();
+        store
+            .update_document_as(
+                Swap::new(name("created"), doc("one"), body(b"original")),
+                &nonce("created"),
+            )
+            .unwrap();
+        assert!(matches!(
+            Store::init_unsourced(vfs, root, test_config()),
+            Err(StoreError::AlreadyInitialized { .. })
+        ));
+        assert_eq!(
+            store.read_body(name("created"), &doc("one")).unwrap(),
+            Some(body(b"original"))
+        );
+    }
+}
+
+#[test]
+fn nested_guards_share_one_generation_even_when_dropped_out_of_order() {
+    let (vfs, store) = fresh_store();
+    let outer = store.exclusive();
+    let generation = store.acquired_exclusion().unwrap().advanced_to();
+    let inner = store.exclusive();
+    assert_eq!(
+        store.acquired_exclusion().unwrap().advanced_to(),
+        generation
+    );
+    drop(outer);
+    assert_eq!(
+        store.acquired_exclusion().unwrap().advanced_to(),
+        generation
+    );
+    drop(inner);
+    assert!(store.acquired_exclusion().is_none());
+    let other = Store::open_unsourced(vfs, store.root().to_path_buf()).unwrap();
+    let _hold = other.exclusive();
+    assert_ne!(
+        other.acquired_exclusion().unwrap().advanced_to(),
+        generation
+    );
 }

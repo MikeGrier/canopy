@@ -151,12 +151,7 @@ pub enum StoreError {
         /// The root that carried no marker.
         root: PathBuf,
     },
-    /// Another process already holds this root open for writing (`D116`).
-    ///
-    /// Named rather than folded into [`StoreError::Vfs`] because it is the one
-    /// failure here a caller can act on without a code change: nothing is
-    /// corrupt or misconfigured, and the usual cause is a second daemon pointed
-    /// at the same store.
+    /// Offline migration could not acquire the legacy root lock, which older writers hold.
     RootInUse {
         /// The root that is already held.
         root: PathBuf,
@@ -197,6 +192,22 @@ pub enum StoreError {
     },
     /// The coordination layer failed.
     Coordination(CoordError),
+    /// The attachment is draining and refuses a new operation.
+    AttachmentDraining { root: PathBuf },
+    /// The caller owns a store operation, so a drain could wait for work the caller holds up.
+    UpgradeFromOperation { root: PathBuf },
+    /// The drain was cancelled; the attachment remains usable.
+    UpgradeCancelled { root: PathBuf },
+    /// Attachment tiers have been released; ordinary admission is required before operations resume.
+    AttachmentDetached { root: PathBuf },
+    /// Conversion cannot start before the attachment's leases have drained.
+    UpgradeOperationsInFlight { root: PathBuf },
+    /// The schema upgrade's declared source or reader floor is invalid.
+    InvalidUpgrade { reason: &'static str },
+    /// Another upgrade or a changed schema invalidated this conversion.
+    UpgradeChanged { root: PathBuf },
+    /// An interrupted migration needs its caller-supplied unit before recovery can advance.
+    UpgradeBodyRequired { root: PathBuf },
     /// The publication record held a complete line that is not a record this store writes, so
     /// the publication it may name cannot be finished.
     MalformedPublicationRecord {
@@ -403,6 +414,36 @@ impl fmt::Display for StoreError {
                     root.display()
                 )
             }
+            StoreError::AttachmentDraining { root } => {
+                write!(f, "attachment to {} is draining", root.display())
+            }
+            StoreError::UpgradeFromOperation { root } => write!(
+                f,
+                "an upgrade of {} cannot wait inside a store operation",
+                root.display()
+            ),
+            StoreError::UpgradeCancelled { root } => {
+                write!(f, "the upgrade drain of {} was cancelled", root.display())
+            }
+            StoreError::AttachmentDetached { root } => {
+                write!(f, "attachment to {} is detached", root.display())
+            }
+            StoreError::UpgradeOperationsInFlight { root } => write!(
+                f,
+                "attachment to {} still has operations in flight",
+                root.display()
+            ),
+            StoreError::InvalidUpgrade { reason } => write!(f, "invalid schema upgrade: {reason}"),
+            StoreError::UpgradeChanged { root } => write!(
+                f,
+                "the schema upgrade of {} no longer matches the store",
+                root.display()
+            ),
+            StoreError::UpgradeBodyRequired { root } => write!(
+                f,
+                "the schema upgrade of {} needs a migration unit",
+                root.display()
+            ),
             StoreError::UnsupportedFormatVersion { found, expected } => write!(
                 f,
                 "store genesis version {found} is unsupported (this build understands {expected})"

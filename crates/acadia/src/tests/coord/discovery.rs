@@ -30,6 +30,50 @@ fn recovered(participant: &FileCoordination) {
     hold.release().expect("release");
 }
 
+#[test]
+fn inspection_runs_only_while_a_probe_excludes_writers_and_changes_no_state() {
+    on_every_implementation("coord-inspection", &|implementation, backend| {
+        let mine = participant(implementation, backend);
+        recovered(&mine);
+        let other = participant(implementation, backend);
+        for _ in 0..12 {
+            let before = state_of(&mine);
+            let mut inspected = false;
+            mine.discover_recovery_with(&mut || {
+                inspected = true;
+                assert!(matches!(
+                    other.acquire(Waiting::Never),
+                    Err(CoordError::WouldWait)
+                ));
+            })
+            .unwrap();
+            assert!(inspected);
+            assert_eq!(state_of(&mine), before);
+            let hold = acquire(&other);
+            inspected = false;
+            mine.discover_recovery_with(&mut || inspected = true)
+                .unwrap();
+            assert!(!inspected);
+            drop(hold);
+        }
+    });
+}
+
+#[test]
+fn an_inspection_that_unwinds_releases_its_probe() {
+    on_every_implementation("coord-inspection-unwind", &|implementation, backend| {
+        let mine = participant(implementation, backend);
+        recovered(&mine);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = mine.discover_recovery_with(&mut || panic!("inspection failed"));
+            }))
+            .is_err()
+        );
+        drop(acquire(&participant(implementation, backend)));
+    });
+}
+
 fn discover(participant: &FileCoordination) -> RecoveryNeed {
     participant.discover_recovery().expect("discover")
 }

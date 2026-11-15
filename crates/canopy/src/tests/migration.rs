@@ -246,7 +246,7 @@ fn a_migration_survives_a_power_loss() {
     faulty.inner().simulate_crash();
     assert_migrated(&vfs, &root);
     let store = Store::open_unsourced(vfs, root).unwrap();
-    assert!(store.recovery_required());
+    assert!(store.recovery_required().unwrap());
     store
         .recover()
         .unwrap()
@@ -570,14 +570,28 @@ fn a_migration_record_this_build_did_not_write_is_refused() {
 fn during_the_lock(
     during: impl Fn(&Arc<dyn Vfs>) + Send + Sync + 'static,
 ) -> (Arc<FaultyFs<MemFs>>, Arc<AtomicUsize>) {
+    during_the_operation(
+        FaultOp::LockExclusive,
+        PathMatcher::file_name(LOCK_NAME),
+        during,
+    )
+}
+
+fn during_the_operation(
+    operation: FaultOp,
+    path: PathMatcher,
+    during: impl Fn(&Arc<dyn Vfs>) + Send + Sync + 'static,
+) -> (Arc<FaultyFs<MemFs>>, Arc<AtomicUsize>) {
     let armed = Arc::new(AtomicUsize::new(0));
     let handle: Arc<OnceLock<Weak<FaultyFs<MemFs>>>> = Arc::default();
     let (fire, reach) = (Arc::clone(&armed), Arc::clone(&handle));
     let policy = FaultPolicy::new().inject_matching(
-        FaultOp::LockExclusive,
-        PathMatcher::file_name(LOCK_NAME),
+        operation,
+        path,
         Fault::observe_with(move |_, _| {
-            if fire.swap(0, Ordering::AcqRel) == 1
+            if fire.fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            }) == Ok(1)
                 && let Some(fs) = reach.get().and_then(Weak::upgrade)
             {
                 let vfs: Arc<dyn Vfs> = fs;
@@ -616,20 +630,24 @@ fn a_migration_reads_the_root_again_under_the_lock() {
 }
 
 #[test]
-fn an_open_reads_the_marker_again_under_the_lock() {
+fn an_open_reads_the_marker_again_under_the_attachment() {
     let root = PathBuf::from("raced");
     let at = root.clone();
-    let (faulty, armed) = during_the_lock(move |vfs| {
-        let marker = at.join(MARKER_NAME);
-        let mut genesis = json(vfs, &marker);
-        genesis["format_version"] = serde_json::Value::from(GENESIS_FORMAT_VERSION + 1);
-        vfs.write(&marker, &serde_json::to_vec_pretty(&genesis).unwrap())
-            .unwrap();
-    });
+    let (faulty, armed) = during_the_operation(
+        FaultOp::Read,
+        PathMatcher::file_name(MARKER_NAME),
+        move |vfs| {
+            let marker = at.join(MARKER_NAME);
+            let mut genesis = json(vfs, &marker);
+            genesis["format_version"] = serde_json::Value::from(GENESIS_FORMAT_VERSION + 1);
+            vfs.write(&marker, &serde_json::to_vec_pretty(&genesis).unwrap())
+                .unwrap();
+        },
+    );
     let vfs: Arc<dyn Vfs> = faulty;
     vfs.create_dir_all(&root).unwrap();
     drop(Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap());
-    armed.store(1, Ordering::Release);
+    armed.store(2, Ordering::Release);
     assert!(matches!(
         Store::open_unsourced(vfs, root),
         Err(StoreError::UnsupportedFormatVersion { .. })

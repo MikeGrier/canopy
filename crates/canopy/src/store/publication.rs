@@ -50,6 +50,12 @@ pub(crate) struct PublicationDurability {
     name_synced: AtomicBool,
 }
 
+impl PublicationDurability {
+    pub(crate) fn invalidate(&self) {
+        self.name_synced.store(false, Ordering::Release);
+    }
+}
+
 impl Store {
     fn publication_path(&self) -> PathBuf {
         self.root.join(PUBLICATION_RECORD_NAME)

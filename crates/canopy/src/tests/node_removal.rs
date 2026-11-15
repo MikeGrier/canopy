@@ -370,7 +370,7 @@ fn a_node_holding_only_an_unrecognized_entry_is_refused_before_begin() {
             current: None,
         }
     );
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
     assert!(node_exists(&vfs, &store, &node));
 }
 

@@ -1,14 +1,12 @@
 // Copyright (c) Michael Grier.
 
-//! `LOCK-M1`/`D116`: a store root has one writer, enforced **across processes**.
+//! Per-operation writer exclusion and process-death handling over the operating system's filesystem.
 //!
 //! The unit tests in `canopy`'s `src/tests/lock.rs` run over `MemFs`, whose exclusion scope is a
-//! single process. They therefore say nothing at all about the property this decision
-//! exists for. These do: every test here spawns a real second process over `OsFs`.
+//! single process. These tests spawn a separate process over `OsFs`.
 //!
 //! The one that matters most is [`a_killed_holder_releases_the_root`]. It is the reason
-//! `D116` chose an OS lock over a marker file recording a pid, and if it ever cannot be
-//! written, the mechanism should be reconsidered rather than the test skipped.
+//! the lock is released by the kernel without any destructor in the holder.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -181,22 +179,35 @@ fn open_within_deadline(root: &Path) -> Result<Store, StoreError> {
     }
 }
 
-/// A live holder in another process excludes this one. This is the property `D116` is
-/// about, and the only test in the tree that actually demonstrates it.
+/// A live exclusion holder delays writes but not attachment or discovery.
 #[test]
-fn a_live_holder_in_another_process_excludes_this_one() {
+fn a_live_holder_in_another_process_excludes_writes_not_opening() {
     let root = TempRoot::new("contend");
     seed_store(root.path());
     let holder = Holder::spawn(root.path());
 
-    let refused = Store::open(vfs(), root.path().to_path_buf(), options())
-        .expect_err("another process holds this root");
-    match refused {
-        StoreError::RootInUse { root: reported } => assert_eq!(reported, root.path()),
-        other => panic!("expected RootInUse, got {other:?}"),
-    }
-
+    let (store, observed) = Store::open(vfs(), root.path().to_path_buf(), options()).unwrap();
+    assert!(!observed.holder_died());
+    assert_eq!(observed.unresolved_work(), None);
+    let (started, arriving) = std::sync::mpsc::channel();
+    let (done, finished) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let result = store.update_document(Swap::new(
+            NodePath::parse("docs").unwrap(),
+            DocumentName::new("one").unwrap(),
+            DocumentBody::new(b"waiting".to_vec()),
+        ));
+        done.send(result).unwrap();
+    });
+    arriving.recv().unwrap();
+    assert!(test_timers::mpsc::recv_timeout(&finished, Duration::from_millis(50)).is_err());
     holder.kill();
+    assert!(matches!(
+        test_timers::mpsc::recv_timeout(&finished, RELEASE_DEADLINE).unwrap(),
+        Err(StoreError::RecoveryRequired { .. })
+    ));
+    writer.join().unwrap();
 }
 
 /// **The test that justifies the mechanism.** The holder is killed outright, so it runs no
@@ -214,13 +225,8 @@ fn a_killed_holder_releases_the_root() {
 
     // Confirm the lock really was held, so a passing test cannot mean "the child never
     // acquired anything".
-    assert!(
-        matches!(
-            Store::open(vfs(), root.path().to_path_buf(), options()),
-            Err(StoreError::RootInUse { .. })
-        ),
-        "the holder must actually hold the lock before we kill it"
-    );
+    let (_, observed) = Store::open(vfs(), root.path().to_path_buf(), options()).unwrap();
+    assert_eq!(observed.unresolved_work(), None);
 
     holder.kill();
 
@@ -238,7 +244,7 @@ fn the_dead_holders_lock_file_does_not_wedge_the_root() {
     let holder = Holder::spawn(root.path());
     holder.kill();
 
-    let lock_file = root.path().join(".lock");
+    let lock_file = root.path().join(".coord").join("exclusion.lock");
     assert!(
         lock_file.is_file(),
         "the dead holder's lock file is still on disk at {lock_file:?}"

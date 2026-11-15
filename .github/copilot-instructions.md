@@ -405,9 +405,28 @@ file-locking issue, unrelated to which toolchain manager is in use).
 There is a WSL2 Ubuntu distribution with a native `cargo`/`rustc` and `gcc`, which is how
 Linux-only paths get **executed** rather than merely cross-checked.
 
+Use the cargo MCP tools for these runs too. On the Windows host, install the opt-in Rustup
+bridge with [setup-cargo-wsl.ps1](../tools/setup-cargo-wsl.ps1):
+
 ```powershell
-wsl -d Ubuntu -- bash -lc "cd /mnt/<drive>/<path-to-repo>; CARGO_HOME=/mnt/c/Users/<user>/.cargo CARGO_TARGET_DIR=/tmp/canopy-linux cargo test -p <crate> --offline"
+pwsh -NoProfile -File tools/setup-cargo-wsl.ps1
 ```
+
+Then select its toolchain on `cargo_test` (or another cargo-running MCP tool):
+
+```json
+{"working_dir":"Q:/github/canopy","toolchain":"canopy-wsl","package":"canopy-lock-holder","offline":true,"timeout_secs":300}
+```
+
+The bridge leaves the project's pinned toolchain unchanged. It uses WSL's login environment,
+unsets the Windows `RUSTC` and the bridge's `RUSTUP_TOOLCHAIN`, and lets the repository choose its
+Linux compiler. Its source is [cargo-wsl.rs](../tools/cargo-wsl.rs); its own unit tests run via
+`cargo_test` with `working_dir` at the repository root and
+`manifest_path: ".scratch/cargo-wsl-tests/Cargo.toml"`, which setup generates. Do not add this
+scratch package to the workspace. `CANOPY_WSL_DISTRO` selects the distribution (default `Ubuntu`),
+and `CANOPY_WSL_TARGET_DIR` selects its Linux artifact directory (default `/tmp/canopy-linux`).
+For a narrowed WSL test call use `test_name`, not `test_filter` or `bisect`: modes that enumerate
+or execute compiled test binaries on the Windows host cannot run Linux executables.
 
 - WSL's own `rustup` must have the `1.98` toolchain installed to resolve
   `rust-toolchain.toml` (`rustup toolchain install 1.98` there if it is missing).

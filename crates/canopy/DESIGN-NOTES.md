@@ -68,6 +68,9 @@ read plus an unconditional write.
 
 ### ...and the serialization that makes them sound stops at the process boundary (`D116`)
 
+> **SUPERSEDED in full, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> Attached writers take turns through coordination exclusion, not a lifetime root lock.
+
 Everything above holds *given a single writer*, and until `D116` nothing made that true
 across processes. `D41`'s monitor is an actor inside one process; two processes opening the
 same root each got their own, and neither knew about the other.
@@ -119,6 +122,10 @@ widened item stays in a module that no longer owns it while looking like it does
 next reader does not re-derive the constraint by attempting the same split again.
 
 ## A store root has one writer, and it is a guarantee you may rely on (`D116`) -- [store/genesis.rs](src/store/genesis.rs)
+
+> **SUPERSEDED in full, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> `D116` is retired as the store's writer protocol. Only offline migration retains the legacy
+> lock file to exclude older binaries; ordinary handles attach without taking it.
 
 > **SUPERSEDED in part, 2026-11-10, by "Several processes may open one store".** The root is to
 > admit several processes, with writers taking turns under a per-write cross-process lock, so
@@ -2169,6 +2176,10 @@ record beside a held lock is a transaction in progress.
 
 ## The schema upgrade's body, modelled in `Coordination.tla`, 2026-11-11
 
+> **SUPERSEDED in part, 2026-11-14, by "Caller-driven migration units have durable intent".**
+> Ordinary journal work and stale claims are settled before an interrupted migration unit is resumed.
+> This ordering protects a unit whose transaction failed before its cursor became durable.
+
 - **The body is behind a switch, and the one-step upgrade stays.** With `UpSteps` zero an upgrade
   completes in one step when its upgrader holds its tiers, as the model of attachment has it,
   and every earlier configuration, with its state space, is unchanged. With it set, the upgrader
@@ -3307,6 +3318,14 @@ checks on a cyclic workload are retired[^mp-4-11].
 
 ## No caller code runs under exclusion but the commit observer, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-14, by "Caller-driven migration units have durable intent".**
+> Idempotent migration callbacks run under the body's exclusion while its writer tier is exclusive.
+> The no-wait and bounded-work rules for ordinary write callbacks remain unchanged.
+
+> **SUPERSEDED in part, 2026-11-14, by "Schema-only upgrades convert tiers and publish admission".**
+> A prepared schema upgrade retains exclusion across its finalization calls while holding the writer
+> tier exclusively; ordinary writers cannot wait on exclusion until that tier is released.
+
 How long writer exclusion is held is the store's to decide, never a caller's. The surface the
 models describe is held to that, and the parts of the API that break it are recorded here with the
 work that brings them into line.
@@ -3465,7 +3484,7 @@ expected to survive a re-run on other hardware because they are stated against t
   half a hold pushes a service at moderate load past saturation.
 
 [^cq-1]: `CQ-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#cq-1) [completed 2026-11-12]
-[^rd-1]: `RD-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-6) [completed 2026-11-14]
+[^rd-1]: `RD-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-6) [completed 2026-11-14; `87a52e7`]
 
 ## A change to the coordination state is delivered as a notification
 
@@ -3494,7 +3513,7 @@ so a spurious or lost notification costs time, never correctness, and the deadli
 lost one costs. The primitive is built with the interface[^mp-5]; the synchronous snapshot waits on
 it until the queues replace it[^rd-1]; the Windows notified form is queued work of its own[^rd-2].
 
-[^rd-2]: `RD-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-7) [completed 2026-11-14]
+[^rd-2]: `RD-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-7) [completed 2026-11-14; `87a52e7`]
 
 ## A client reaches the store through a session and its queue pairs
 
@@ -4148,7 +4167,7 @@ Nothing in the code, the tests or the live documents calls it a Shire.
   the archives and the design sessions say Shire where they did when they were written, and are
   read as saying store.
 
-[^m7-1]: `M7-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-1)
+[^m7-1]: `M7-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-1) [completed 2026-11-14; `87a52e7`]
 
 ## A root is migrated to the coordination layer's format, 2026-11-13
 
@@ -4200,9 +4219,12 @@ A store root records which coordination implementation coordinates it, under the
   reads as untrusted and the first writer to open the root vouches for it (see "The modification
   count is the coordination state's").
 
-[^m7-2]: `M7-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-2)
+[^m7-2]: `M7-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-2) [completed 2026-11-14; `87a52e7`]
 
 ## The modification count is the coordination state's, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> Writer exclusion is held per outermost operation, not for the attachment's lifetime.
 
 > **SUPERSEDED in part, 2026-11-14, by "Store admission holds shared tiers for the handle's lifetime".**
 > The claim that a read-only open takes nothing is superseded: it holds shared reader attachment
@@ -4262,9 +4284,13 @@ handle in any process samples the count a writer in any process raises[^m7-3].
   writer opens the root, and one count shared by several readers. They run on Windows and on Linux
   under WSL.
 
-[^m7-3]: `M7-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-3)
+[^m7-3]: `M7-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-3) [completed 2026-11-14; `87a52e7`]
 
 ## Recovery is a run the caller drives, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> Opening observes without acquiring writer exclusion. Recovery units acquire it separately,
+> and every work-list observation uses a free-exclusion probe, including read-only and diagnostic views.
 
 > **SUPERSEDED in part, 2026-11-14, by "Store admission holds shared tiers for the handle's lifetime".**
 > Opening may change volatile attachment and registry state. It still changes no document,
@@ -4363,11 +4389,15 @@ caller's, and recovery is a run of bounded, idempotent steps[^m7-4].
   told the holder died and left work, and the run it takes settles the count the reader samples. They run on
   Windows and on Linux under WSL.
 
-[^m7-4]: `M7-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-4)
+[^m7-4]: `M7-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-4) [completed 2026-11-14; `87a52e7`]
 
-[^m9-1]: `M9-1` in [CHECKLIST.md](CHECKLIST.md)
+[^m9-1]: `M9-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-1) [completed 2026-11-14]
 
 ## Agent metadata is behind the genesis version-8 barrier, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Caller-driven migration units have durable intent".**
+> Newly created roots use marker format 9 so pre-upgrade binaries cannot clear body recovery state.
+> Offline migration of format 8 preserves its existing metadata rather than reconstructing it.
 
 The version-8 marker contains required `metadata`: the agent's version-independent identifier,
 software version and description, plus `canopy_schema` and `agent_schema`, each carrying `current`
@@ -4400,9 +4430,16 @@ The metadata and barrier work is tracked here[^m8-1]. Per-layer admission and at
 write stamps and the management view remain the dependency-ordered obligations in
 [CHECKLIST.md](CHECKLIST.md); this decision does not implement or narrow them.
 
-[^m8-1]: `M8-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-1) [completed 2026-11-14]
+[^m8-1]: `M8-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-1) [completed 2026-11-14; `87a52e7`]
 
 ## Store admission holds shared tiers for the handle's lifetime, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Attachment operations are leased and drains are cancellable".**
+> Operations and drain guards retain the attachment through their own lifetimes, including after
+> the last external store clone is dropped.
+
+> **SUPERSEDED in part, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> Attachment tiers remain lifetime holds; the root lock and lifetime writer exclusion do not.
 
 Creation and both open modes attach through acadia before a handle is returned[^m8-2]. The
 coordination contract orders acquisition: the shared admission gate, the shared reader tier,
@@ -4435,9 +4472,13 @@ The ordinary admission table is implemented here. Upgrade-time admission and lea
 remain scheduled with the upgrade protocol in [CHECKLIST.md](CHECKLIST.md), and the store-level
 registry listing and diagnostic view remain its management-surface item.
 
-[^m8-2]: `M8-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14]
+[^m8-2]: `M8-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14; `87a52e7`]
 
 ## Successful mutations stamp the agent version independently, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> The cache is refreshed after an intervening holder and rekeyed across consecutive own holds.
+> Its first mutation validates the admitted marker under exclusion rather than trusting open-time bytes.
 
 A mutation returning success carries `WriteOutcome<T>`: its operation value and a separate
 `agent_stamp` result. A failed stamp neither changes that success nor sets the recovery fence,
@@ -4473,9 +4514,12 @@ These result and coverage choices were selected explicitly: a shared last-error 
 per-call association between clones, and returning a stamp failure as the write's error would
 invite duplicate writes. Keeping the metadata outcome beside the successful value preserves both.
 
-[^m8-3]: `M8-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-3) [completed 2026-11-14]
+[^m8-3]: `M8-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-3) [completed 2026-11-14; `87a52e7`]
 
 ## Store management and diagnosis do not borrow document access, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Writer exclusion belongs to an operation".**
+> Diagnostic discovery reports the work list when its probe found exclusion free, and otherwise leaves it unknown.
 
 `Store::properties` reads the current marker, not the handle's open-time copy. Its owned result
 includes the agent identity, recorded version and description, coordination implementation,
@@ -4505,4 +4549,359 @@ the original handle stamps completed pending work; an ordinary same-value call d
 the marker or stamp a new version. Description failures are operation errors; a version-stamp
 failure after a successful description change leaves that change successful.
 
-[^m8-4]: `M8-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-4) [completed 2026-11-14]
+[^m8-4]: `M8-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-4) [completed 2026-11-14; `87a52e7`]
+
+## Writer exclusion belongs to an operation, 2026-11-14
+
+An attachment holds the shared reader tier, and for a writer the shared writer tier, until its
+last clone drops. Writer exclusion belongs to an outermost operation: acquire after those tiers,
+release after its modifications, stamp and claims have ended, then admit the next local waiter.
+The clone-local gate preserves per-thread nesting, so nested write verbs share one acquisition.
+Separate handles in the same process use the same contract as handles in different processes.
+No order between their acquisitions is promised.
+
+Each ordinary acquisition checks the coordination state it found. A fence, untrusted state or a
+dead holder refuses the operation with `StoreError::RecoveryRequired` before replay or effects.
+The local unresolved flag records the current operation's failure; it is not an authority over
+other handles. Recovery completed by another handle lifts refusal on the next acquisition and on
+later queries. Reads remain outside exclusion. The `transform` and `plan_and_apply` callbacks run
+inside their operation's hold and therefore delay writers in every process; waiting for another
+handle's write from either callback is forbidden. Their replacement remains scheduled in
+[CHECKLIST.md](CHECKLIST.md).
+
+An acquisition's `found` generation is compared with this handle's last `advanced_to` generation.
+Equality means consecutive own holds: retain durability knowledge and rekey the stamp cache.
+Inequality discards commit-log name and empty-file durability, publication-name durability,
+directory-sync debt bookkeeping and cached agent metadata; their durable records are read by the
+paths that use them. The first mutation also validates metadata under exclusion. The successful
+mutation's independent `WriteOutcome` stamp stays inside that hold and changes only the recorded
+agent version. It does not move a schema, change a description or turn a successful mutation into
+a failed one.
+
+Opening takes attachment and observes, but acquires no writer exclusion and performs no recovery.
+Discovery's inspection runs only while a read-only probe has found exclusion free and prevents
+an acquirer from coming between the coordination observation and the root-work-list reads. A
+held exclusion leaves the work list unknown, even to its own holder. Store, read-only and
+diagnostic discovery obey the same rule. The probe performs none of acquisition's bookkeeping:
+it advances no generation, replaces no owner and sets no fence.
+
+A driven recovery fences pending work before its first unit. Each step acquires exclusion for
+one unit and releases it before returning control. An intervening holder invalidates cached
+phase work; successful units within a phase are retained so alternating recovery runs progress.
+The modification count distinguishes an unfinished recovery's unchanged odd span from a newer
+operation: a changed count restarts measurement at directory debt and forgets completed-unit
+identities. This prevents a paused completion from clearing a later transaction's log. Completion
+publishes trusted even state and clears the fence last. An interrupted step leaves durable work
+for a subsequent step; no ordinary writer can pass its fence.
+
+Nonce claims drawn by a scrub or backlog drain belong to the current outermost writer hold,
+not the entire pass. They are released before exclusion ends, so a subsequent resolver cannot
+mistake a live pass's claims for abandoned work. A cleanup failure may leave a claim for resolving;
+it does not permit a second writer to overlap the operation that owned it.
+
+Creation first reserves its implementation and inputs, then takes writer exclusion and rechecks
+the root before making artifacts in a modification bracket. An identical concurrent creator
+that finds the completed marker returns `AlreadyInitialized`, even if the winning creator has
+written documents; it never rewrites that store. Offline migration still takes the legacy root
+lock that older binaries hold, with `RootInUse` as its contention result and the operator's
+offline precondition unchanged. Current writer handles neither create nor hold that legacy lock.
+
+The implementation and its regression tests are the turn-taking work[^m9-1]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#operation-owned-exclusion).
+
+## Process tests stop at protocol boundaries, 2026-11-14
+
+The writer fixture exposes named checkpoints for exclusion before effects, unlogged publication,
+logged publication after prepare, and the end of document effects before exclusion is released.
+Parent processes act only after the checkpoint is acknowledged. Session commands permit several
+attached processes to interleave writes and transactions, drive recovery units, resolve, quiesce
+and scrub. Successful commands inspect their independent agent stamp before reporting completion.
+
+Recovery checkpoints are after bounded units, with no exclusion retained across the parent's
+calls. A death before completion leaves the fence for another process to recover; a death after
+completion leaves trusted, settled state and an idempotent recovery. Concurrent runs test that
+phase caches do not erase another holder's work. A reset attempt is acknowledged before checking
+that it waits behind another process's transaction, and a scrub checkpoint between document holds
+allows another resolver to run without confusing the pass's claims with abandoned work.
+
+Damage injection constructs artifact paths from `NodePath::relative_path` and
+`DocumentName::as_str`. Those validated names carry the specified normalization; original input
+spellings are not portable paths on case-sensitive filesystems. These tests execute on the native
+Windows and Linux kernels, because a cross-check cannot demonstrate process-death release or
+cross-process exclusion. The work is the writer and recovery process matrix[^m9-2]; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#process-test-barriers).
+
+[^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14]
+
+## Attachment operations are leased and drains are cancellable, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Schema-only upgrades convert tiers and publish admission".**
+> Starting conversion consumes the drain token and detaches the source. The old drain guard cannot
+> reopen that attachment; cancellation before conversion retains the behavior below.
+
+Every attachment-bound work call holds an operation lease before it waits or reads store data.
+That includes document and blob reads, enumerations, snapshots and their callbacks, mutations,
+repairs, whole scrub passes, management work and recovery convenience calls. A caller-driven
+recovery leases each step, not the interval between calls. Leases retain the coordination
+attachment so its tiers cannot disappear beneath an operation even if external store clones drop.
+In-memory descriptors and telemetry, such as root and layout accessors and epoch bookkeeping,
+do no schema-dependent I/O and remain outside work admission.
+
+Lease admission and drain state share one mutex. A synchronous thread's nested calls reuse its
+already admitted context, so work admitted before a drain can finish its internal calls. A new
+caller on a draining attachment is refused with `AttachmentDraining`, before callbacks or effects.
+A writer's lease starts before the clone-local gate and cross-process exclusion waits, and ends
+after its writer guard releases exclusion. A scrub's lease covers its whole pass while writer
+exclusion still belongs to each document; those are distinct lifetimes and neither substitutes
+for the other.
+
+The caller's operation context is independent of the target attachment's lease count. A thread-local
+synchronous operation depth refuses drain start or wait with `UpgradeFromOperation` whenever the
+caller owns store work, including through a different attachment. This prevents a callback from
+waiting for another handle's work queued behind its own writer hold. Other threads' operations
+are waited for, not a reason to refuse the drain. Operation guards are not transferable between
+threads, and unwinding ends both their attachment lease and their caller context.
+
+`Store::drain_upgrade` returns an `UpgradeDrain` that retains the shared tiers and refuses new work
+on all clones. `wait` waits only for operations to end; `is_ready` reports that state without waiting.
+Cancellation clears only that guard's token and wakes waiters with `UpgradeCancelled`, while all
+shared tiers and in-flight work remain attached. Dropping the guard cancels it. An older cancelled
+guard cannot cancel a later drain. This stage releases no tier, acquires no admission gate and
+advances no schema; tier conversion and the body remain the following checklist obligations.
+
+The registry payload's existing `draining` field follows this state. Updates are serialized through
+the attachment and sample the current state after entering that serialization, so overlapping
+cancellation and a new drain cannot publish an obsolete event value last. Registry I/O holds
+neither the lease-admission mutex nor the agent-state mutex. A stalled registry write therefore
+cannot block operation refusal or access to agent state through those mutexes. Initial registry failure
+is retained on the guard; explicit cancellation reports its update failure but still reopens
+admission. Registry observations can retain a stale payload after an I/O failure, as the
+best-effort registration contract permits; the tiers remain authoritative.
+
+The recovery-status query and observer installation return `Result` because a draining attachment
+must be able to refuse them without inventing a recovery need or silently ignoring installation.
+Diagnostic views take no lease on the handle being drained and remain available for observing its
+properties and registry. These choices implement the lease and drain work[^m9-3]; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#attachment-lease-context).
+
+[^m9-3]: `M9-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-3) [completed 2026-11-14]
+
+## Schema-only upgrades convert tiers and publish admission, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-14, by "Caller-driven migration units have durable intent".**
+> A declared body adds a root intent and unit cursor. Finalization refuses until all units are
+> durable; the schema-only path remains separate and completes without caller units.
+
+An upgrade request names one layer, an expected source, a strictly newer target, and the oldest
+reader that can read the result. After the drain, conversion releases the source attachment's
+registration and shared tiers before asking for the admission gate. It polls locks without waiting:
+gate exclusively, reader exclusively if unsafe, then writer exclusively. Cancellation and failure
+release every acquired hold and leave the source detached. Ordinary reattachment rereads admission
+under newly acquired tiers and installs its agent, nonce source and access only once accepted.
+
+Reader safety is judged under the gate against the selected layer's oldest admissible reader:
+the declared floor must be at or below it. The source and safety are rechecked after acquiring the
+tiers. A safe conversion retains the gate until the admission announcement is durable, then opens
+it to readers; an unsafe one retains it while holding both tiers exclusively. Other layers use
+ordinary admission. In the active layer, a safe announcement admits the existing reader interval
+and the target, while writer admission names only the target for recovery. An unsafe completion
+sets the oldest reader to the target, not to the request's floor; a safe completion preserves it.
+
+The marker's optional `transition` records the request and its safety judgment, atomically with its
+schema metadata. Ordinary roots omit it. Invalid source, target, floor or judgment combinations are
+malformed, not defaults. Management properties expose the active request. The upgrade registers
+its actual held tiers best-effort, independently of its schema outcome.
+
+A prepared upgrade holds writer exclusion with the count odd across its finalization calls.
+This is a narrow exception to caller-independent exclusion duration: it already holds the writer
+tier exclusively, so no ordinary writer can reach exclusion meanwhile. The caller must not wait
+for another writer's operation while holding the guard. Completion reads the marker again and
+changes only the selected layer and its reader floor, clears the announcement, independently stamps
+the performing agent and then settles the count. A failed stamp does not undo schema advancement
+or set the fence. The source handle remains detached after this operation.
+
+A published announcement is never rolled back on cancellation: a safe upgrade may already have
+admitted target readers. Cancellation or an interrupted publication therefore leaves the fence
+and the durable announcement for explicit recovery. The schema-only recovery completion runs after
+directory debt, document publication, transaction settlement and collection, and claims, before
+making the count trusted and even. It advances from the validated descriptor. Migration bodies and
+their caller-supplied units remain scheduled in [CHECKLIST.md](CHECKLIST.md), distinct from this
+schema-only capability.
+
+These rules implement tier conversion and cumulative reader compatibility[^m9-4]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#schema-conversion-and-announcements).
+
+[^m9-4]: `M9-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14]
+
+## Caller-driven migration units have durable intent, 2026-11-14
+
+An agent-schema body is declared with its upgrade request and unit count before conversion.
+The upgrader acquires exclusion after its exclusive writer tier and refuses recovery-required
+state before publishing intent or running a unit. Inside the count's odd bracket it durably
+publishes the root `.schema-upgrade` record: encoding version, layer, source, target, declared
+reader floor, safety judgment, total units and next unit. The marker's admission announcement
+follows that intent and precedes reopening safe readers. Admission reads both records under its
+tiers, so a death between them cannot admit a source-only writer.
+
+`MigrationUnit` is a thread-bound capability for reads and document mutations. Its request and
+unit ordinal identify the idempotent operation the caller must supply again if interrupted.
+The caller owns the unit's boundedness, reader-compatibility promise and idempotence; it must not
+wait for another writer or perform non-idempotent external effects. The engine grants operations
+only within the unit's privileged source-thread context, while the detached source refuses
+unrelated work. Recursive completion or cancellation is refused instead of waiting on its own
+state mutex. Panics fence the body and release its exclusion as failures do.
+
+Every unit first settles directory debt, pending document publication, journal decisions and
+collection, then stale claims. After successful callback return it settles that work again before
+publishing the next cursor. A successful unit with a failed independent agent stamp retains its
+cursor and reports the stamp separately; it is never replayed merely to stamp metadata.
+Body completion refuses an incomplete cursor, advances the selected schema durably, clears the
+intent only afterwards, and settles the count last. Failure after schema publication resumes
+cleanup without repeating units; no intent is cleared before its schema is durable.
+
+Writer exclusion remains held across caller calls for the body, with the writer tier held
+exclusively. This is an explicit exception to caller-independent exclusion duration: other ordinary
+writers wait at the tier and cannot form an exclusion cycle with the callback. The schema-only
+baseline and its finalization remain available; the body is a separate path, not a replacement.
+
+Recovery places `UpgradeBody` after ordinary journal work and claims, before completion.
+`step_upgrade` supplies a remaining unit only in that phase; ordinary `step` or `recover` reports
+`UpgradeBodyRequired` instead of clearing a body it cannot execute. A target-speaking handle
+resumes from the durable cursor and rechecks target admission under exclusion. Competing recoveries
+reload the cursor, and errors or unwinding restore the shared refusal until final completion.
+This ordering is required because a prepared transaction may have committed even though the unit's
+cursor was not published. Its journal must decide that transaction before replaying the unit.
+
+Marker format 9 is the compatibility boundary for this recovery contract. Earlier supported formats
+require offline migration, and format 8's identity, schemas, reader floors, software version and
+description are preserved. Roots with pending format-8 upgrade state must settle it before the
+format migration. The barrier keeps a pre-upgrade version-8 implementation from ignoring intent
+and making recovery appear complete. The document/Canopy schema remains independently versioned.
+
+Store-owned Canopy units require a specified source, target and data or layout transformation.
+Requests without such a supported conversion are refused before detaching. The engineer selected
+that behavior on 2026-11-14 rather than inventing a format change or using validation as a fake
+migration; the concrete units are a blocked obligation in [CHECKLIST.md](CHECKLIST.md).
+The generic body engine is the current work[^m9-5]; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#durable-migration-unit-cursors).
+
+[^m9-5]: `M9-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-5) [completed 2026-11-14]
+
+## Upgrade boundaries are checked across processes, 2026-11-14
+
+Process fixtures drive agent-schema conversion, durable body units and explicit target recovery
+through acknowledged checkpoints. Death after intent, between units or after the last unit leaves
+the intent and source-writer refusal for the target resumer; death after schema advancement but
+before intent removal resumes cleanup without repeating units. A deliberately failed unit is
+distinguished from process death by its fence with no abandoned owner record.
+
+An attached writer prevents exclusive writer-tier conversion even while it is idle. An unsafe
+conversion waits for readers of every admissible schema, not just those below its declared floor.
+The registry identifies those live blockers and ceases listing them once killed. A new reader
+acknowledges its gate-lock attempt before the parent checks that it remains waiting; after unsafe
+completion it is refused by the new reader floor rather than admitted from a pre-wait marker.
+
+Competing upgraders release shared tiers before asking for the gate, so one can finish while the
+other is refused by the source recheck instead of forming a tier/gate cycle. Recovery-required
+state refuses upgrade preparation before any intent or marker announcement. Successful target
+recovery is checked through schema metadata, disappearance of intent, settled recovery status,
+document-batch contents and a subsequent ordinary write.
+
+These are kernel-executed checks, not cross-compilation claims or a simulation of process death.
+The fixtures do not invent a store-owned Canopy transition; that specification dependency remains
+in [CHECKLIST.md](CHECKLIST.md). The process coverage is the current work[^m9-6]; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#upgrade-process-checkpoints).
+
+[^m9-6]: `M9-6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-6) [completed 2026-11-14]
+
+## Bounded process measurements retain censoring, 2026-11-14
+
+The process benchmark preserves the simulation's utilization inputs, arrival rates, burst sizes,
+think times and attachment lifetime distributions. The engineer chose bounded arrival windows
+with explicit evidence limits rather than a real-time minute/hour lifetime campaign. Its records
+retain actual cross-process request clocks and acquisition generations, publication call durations,
+snapshot outcomes and upgrade wait censoring. Cancellation ends observation; it cannot turn an
+unfinished burst or a blocked upgrade into a successful completion. Repeated exclusion acquisitions
+in one recovery are distinct hold samples but do not manufacture additional completed requests.
+
+Default and polled notifications use paired writer/read schedules. A controlled publication case
+acknowledges notice arming before the writer is sent and requires a changed modification count:
+the notification's deadline ring is only a hint, never proof that publication occurred. A real
+prepared-transaction failure and explicit recovery establish the recovery mechanism independently
+of whether a short random window selects a recovery request. Its measured service shape is not
+assumed to match the simulation's synthetic slow-hold multiplier.
+
+Empty-start finite windows have no discarded warm-up and do not establish stationary tails.
+Empirical percentiles remain measurements, not a proof of a service budget; rare writer inputs can
+leave no observations of overlapping writes. A zero-failure Bernoulli bound is conditional on
+independence, which overlapping snapshot reads do not have. Minute/hour attachment drains censored
+by a short window remain lower bounds. Linux runs execute on its kernel, and a Windows-backed WSL
+mount is identified as storage shared with Windows rather than represented as native Linux storage.
+Only a supported contradiction of the simulation's assumptions and prediction reopens the
+unordered-exclusion decision; missing evidence is not a contradictory result.
+
+Benchmark pacing and process watchdogs intentionally use host time: substituting a virtual test
+clock would change the OS workload being measured. Statistical reducer tests remain clock-free.
+The executable and its rerun commands are described in
+[README.md](../canopy-lock-holder/README.md#bounded-contention-campaign). Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#bounded-process-evidence). The comparison is the current
+work[^m9-7].
+
+[^m9-7]: `M9-7` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-7) [completed 2026-11-14]
+
+## Windows finite-window comparison, 2026-11-14
+
+The bounded Windows campaign gives no supported contradiction of the unordered-exclusion
+decision. Its service estimates fit the relative wait budgets, but sparse empty-start samples
+and achieved utilization differing from the calibration input cannot establish CQ-1's stationary
+breach boundary. Callback cases retain the calibrated arrival rate, so their extra hold work is
+paid as added load rather than hidden by recalibrating each case.
+
+Oversized cooperative bursts breach the absolute wait budget even among the operations that
+shutdown permits to finish, consistent with CQ-1's capacity limitation. The processor-scale
+burst cannot adjudicate the predicted ordering penalty: later member writes are censored and
+the empirical tail is near the budget. Acquisition generations show that bypass occurs; they
+do not establish a worst-case bound on it.
+
+With paired metadata arrival schedules, default notification mode lengthens measured count
+publication and snapshot elapsed time beside active readers relative to the polled mode. The
+armed-notice control observes actual count changes in both modes, so a ring without publication
+is not mistaken for success. Finite-window snapshot tail estimates remain inside the simulated wait
+target, but absence of failures does not establish the one-in-a-million failure budget, and the
+rarest writer input has no overlapping-write evidence. Censored long-lifetime tier drains are
+lower bounds, not evidence that an upgrade can reach its body within the monthly-upgrade budget.
+
+The raw and reduced reports are regenerated by the benchmark commands in
+[README.md](../canopy-lock-holder/README.md#bounded-contention-campaign); timings and routine
+tallies remain in the scratch reports rather than becoming checked-in baselines. Linux evidence
+and the final comparison remain part of the current work[^m9-7].
+
+## Linux finite-window comparison, 2026-11-14
+
+The Linux campaign executes the same bounded table on the Linux kernel over the Windows-backed
+WSL mount. That storage path lengthens the measured hold enough that even the smallest observed
+cooperative burst exceeds the absolute wait budget. The slower service shape is a different
+operating condition from CQ-1's measured hold distribution: a queue whose own draining work
+exceeds the budget cannot be repaired by selecting a fairer order. Acquisition generations
+show bypass among the contending processes, but establish no worst-case bound on it.
+
+Calibration preserves the requested utilization by reducing the Poisson arrival rate in
+proportion to the longer hold. A short window then leaves several service cases with no arrivals;
+those cases provide no tail comparison. The sampled service cases fit the relative budgets, but
+neither their sparse samples nor the observed burst breaches establish a stationary contradiction
+that would reopen the unordered-exclusion decision. The actual failed-transaction recovery remains
+separate evidence for the recovery mechanism, not a claim that a rare perturbation is well sampled.
+
+Both notification modes observe count changes in the armed control. Linux has no Windows oplock
+path, so default versus explicitly polled comparisons there do not measure a Windows break cost.
+Sampled snapshots complete inside the simulated wait target, with the dispatch and read-body
+time included, but overlapping snapshots and absent rare writes cannot establish the failure
+probability budget. Upgrade records retain the observed wait or its lower bound and cancellation
+status; long-lived attachments are censored, not represented as completed monthly upgrades.
+
+These results complete the approved bounded comparison, not a native-Linux-filesystem performance
+study. The engineer requested a separate clone on WSL's native filesystem for subsequent work;
+the existing Windows-backed measurement remains identifiable rather than being relabeled or
+silently replaced. The owned budgets remain those in "How long the contract makes a caller wait",
+and neither platform's bounded evidence changes the unordered baseline[^m9-7]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#linux-bounded-comparison).

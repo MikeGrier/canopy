@@ -963,7 +963,7 @@ Revert-probes: reserving without the second reading under the exclusion, without
 root, without comparing the inputs, and with an overwriting publish each failed the cases built for
 them; the first needed the case where a reserver that waited resumes the reservation the holder made.
 
-[^m7-2]: `M7-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-2)
+[^m7-2]: `M7-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-2) [completed 2026-11-14; `87a52e7`]
 
 ## Whether recovery is required is observed with the writer lock tried, 2026-11-14
 
@@ -991,7 +991,7 @@ DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Recovery and its discovery, modelle
 Revert-probes: reporting a record whatever the lock says, not reading the fence, clearing the fence it
 finds and not reading the restart state each failed the cases built for them.
 
-[^m7-4]: `M7-4` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-4)
+[^m7-4]: `M7-4` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-4) [completed 2026-11-14; `87a52e7`]
 
 ## A count notification on Windows is a lock the system breaks, 2026-11-14
 
@@ -1034,7 +1034,7 @@ waits: the break is an I/O completion and the deadline a timer, both on the thre
 Which form a store uses is the caller's, by the factory it gives canopy's `StoreOptions`; nothing
 further is scheduled.
 
-[^m7-7]: `M7-7` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-7)
+[^m7-7]: `M7-7` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m7-7) [completed 2026-11-14; `87a52e7`]
 
 ## A failed first registration records possible incompleteness, 2026-11-14
 
@@ -1050,4 +1050,47 @@ error remains available to its caller. Tests inject failures during directory cr
 and liveness locking, and payload writing while checking both retained tiers and incompleteness.
 This behavior supports store attachment[^m8-2]; it changes neither admission nor registry lock order.
 
-[^m8-2]: `M8-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14]
+[^m8-2]: `M8-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14; `87a52e7`]
+
+## Recovery discovery lends a read-only inspection, 2026-11-14
+
+`RecoveryDiscovery::discover_recovery_with` invokes its inspection only when its probe holds
+free writer exclusion, before releasing that probe. The inspection may read caller-owned
+recovery records but must not mutate or acquire exclusion. Held exclusion skips inspection;
+without a state directory there is no probe to lend, so it skips inspection there too.
+Ordinary discovery uses an empty inspection and retains its existing result and no-mutation
+contract. An inspection that unwinds releases the probe through its guard.
+
+This lets canopy report its root work list in the same observation that establishes no live
+writer owns it. No owner record is written and no generation is advanced by the probe.
+The turn-taking implementation is tracked in canopy's [CHECKLIST.md](../canopy/CHECKLIST.md).
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#discovery-inspection).
+
+## Test support supplies a distinct file coordination implementation, 2026-11-14
+
+The opt-in `test-support` feature makes `FileFactory::alternate` available to process fixtures.
+That factory has its own implementation identity and creation exclusion, while preserving the
+file coordination contract and layout of its other state. `FileFactory::new` retains its canonical
+identity and layout. A root reserved through one factory cannot be attached through the other.
+
+This is a test capability, not an identity override on the canonical factory. The process-level
+refusal is exercised by the writer fixture; the work is tracked in canopy's
+[CHECKLIST.md](../canopy/CHECKLIST.md). Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#alternate-process-factory).
+
+## Incremental upgrade conversion retains the admission gate, 2026-11-14
+
+`Attachment::begin_conversion` unregisters and releases shared tiers, then returns a conversion
+whose gate and tier polls never wait for a lock. Granted holds remain owned until the conversion
+finishes or is dropped; a failed poll releases them. The selected safety judgment cannot change
+after tier acquisition begins. A completed conversion transfers those holds to an upgrade while
+retaining its gate, and `Upgrade::admit_readers` releases it only for reader-safe upgrades.
+
+The blocking `Attachment::upgrade` and the incremental path remain separate specified primitives:
+the blocking baseline uses native waits and reopens safe readers before returning; the incremental
+path lets its consumer publish admission before explicitly reopening them. Both are retained for
+those distinct contracts, not consolidated into polling or retuned for one consumer. This supports
+canopy's schema conversion[^m9-4]; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#incremental-tier-conversion).
+
+[^m9-4]: `M9-4` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14]

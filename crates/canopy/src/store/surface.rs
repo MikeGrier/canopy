@@ -48,6 +48,7 @@ pub(crate) struct Surface {
     agent: Mutex<Option<Agent>>,
     stamp_cache: Mutex<Option<(acadia::coord::Generation, Genesis)>>,
     description_pending: Mutex<Option<String>>,
+    current_claims: Mutex<Vec<Nonce>>,
 }
 
 /// How a store is opened.
@@ -360,22 +361,39 @@ impl Store {
     }
 
     /// Runs `operation` with a minter that draws each nonce from the source and claims it, and
-    /// holds every claim until `operation` returns. Returns the nonces drawn, in order.
+    /// retains every claim until the current outermost writer hold ends. Returns the nonces drawn, in order.
     pub(crate) fn with_claimed_nonces<Output>(
         &self,
         operation: impl FnOnce(
             &mut dyn FnMut() -> Result<Nonce, StoreError>,
         ) -> Result<Output, StoreError>,
     ) -> Result<(Output, Vec<Nonce>), StoreError> {
-        let mut claims = Vec::new();
+        let mut nonces = Vec::new();
         let output = operation(&mut || {
-            let claim = self.claim_fresh_nonce()?;
+            let mut claim = self.claim_fresh_nonce()?;
             let nonce = claim.nonce().clone();
-            claims.push(claim);
+            claim.keep();
+            self.surface
+                .current_claims
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(nonce.clone());
+            nonces.push(nonce.clone());
             Ok(nonce)
         })?;
-        let nonces = claims.iter().map(|claim| claim.nonce().clone()).collect();
         Ok((output, nonces))
+    }
+
+    pub(crate) fn release_current_claims(&self) {
+        for nonce in self
+            .surface
+            .current_claims
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain(..)
+        {
+            let _ = self.vfs.remove_dir(&self.claim_path(&nonce));
+        }
     }
 
     /// Removes every claim. Run by resolving and by recovery under writer exclusion, when no
@@ -414,12 +432,60 @@ impl Store {
     /// waiting -- must not call into this store through any handle, must return without
     /// panicking, and must do work bounded in time. Writes to one document are reported in the
     /// order they were applied; no order is promised between documents.
-    pub fn observe(&self, observer: Arc<dyn CommitObserver>) {
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::AttachmentDraining`] if a new installation is attempted while draining.
+    pub fn observe(&self, observer: Arc<dyn CommitObserver>) -> Result<(), StoreError> {
+        let _lease = self.operation_lease()?;
         *self
             .surface
             .observer
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(observer);
+        Ok(())
+    }
+
+    pub(crate) fn register_draining(&self) -> Result<(), StoreError> {
+        let agent = self
+            .surface
+            .agent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .expect("an admitted handle has its agent")
+            .clone();
+        self.coordination.register_draining(&agent)
+    }
+
+    pub(crate) fn upgrade_registration(
+        &self,
+        tiers: acadia::coord::HeldTiers,
+    ) -> Result<Vec<u8>, StoreError> {
+        let agent = self
+            .surface
+            .agent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .expect("an admitted handle has its agent")
+            .clone();
+        super::agent::registration_payload(&agent, tiers, false)
+    }
+
+    pub(super) fn check_upgrade_admission(
+        &self,
+        metadata: &super::agent::AgentMetadata,
+    ) -> Result<(), StoreError> {
+        let agent = self
+            .surface
+            .agent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        metadata.check_admission(
+            agent.as_ref().expect("an admitted handle has its agent"),
+            acadia::coord::Access::Write,
+        )
     }
 
     /// The installed observer, cloned out so the lock is not held while it runs.
@@ -476,6 +542,7 @@ impl Store {
     /// the commit, so no writer through another handle can land between them; a write made
     /// from inside `transform` itself, through a captured clone of the store, is not excluded,
     /// and the condition then rejects the commit rather than lose that write.
+    /// The callback holds up writers in every process; it must not wait for another handle's write.
     pub fn transform(
         &self,
         node: impl Into<NodePath>,
@@ -504,6 +571,7 @@ impl Store {
     /// to commit. It sees the store through a [`StoreView`]. The swaps may still carry
     /// preconditions, and a rejection is reported in the [`Commit`]. The second element is
     /// `None` when `plan` returned no swaps.
+    /// The callback holds up writers in every process; it must not wait for another handle's write.
     pub fn plan_and_apply<Output>(
         &self,
         plan: impl FnOnce(&StoreView<'_>) -> (Output, Option<SwapSet>),
@@ -535,6 +603,7 @@ impl Store {
         &self,
         mut read: impl FnMut(&StoreView<'_>) -> Output,
     ) -> Result<Output, StoreError> {
+        let _lease = self.operation_lease()?;
         self.refuse_if_unresolved()?;
         let deadline = Instant::now() + self.snapshot_timeout();
         let view = StoreView { store: self };

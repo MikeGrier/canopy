@@ -80,8 +80,8 @@ impl FileFactory {
 
     /// The second implementation the conformance suite uses: the file-based one with another
     /// identity and another creation exclusion, so that the cases between two implementations run.
-    #[cfg(test)]
-    pub(crate) fn alternate() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn alternate() -> Self {
         FileFactory {
             id: ImplementationId::from_static("acadia-file-alternate-1"),
             layout: Layout::alternate,

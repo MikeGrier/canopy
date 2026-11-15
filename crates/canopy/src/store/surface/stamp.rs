@@ -41,11 +41,29 @@ impl<T> std::ops::Deref for WriteOutcome<T> {
 }
 
 impl Store {
+    pub(crate) fn refresh_stamp_generation(
+        &self,
+        acquired: acadia::coord::Acquired,
+        changed: bool,
+    ) {
+        let mut cache = self
+            .surface
+            .stamp_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if changed {
+            *cache = None;
+        } else if let Some((generation, _)) = cache.as_mut() {
+            *generation = acquired.advanced_to();
+        }
+    }
+
     /// Durably changes the agent description; a failed version stamp does not undo that change.
     pub fn set_agent_description(
         &self,
         description: impl Into<String>,
     ) -> Result<WriteOutcome<()>, StoreError> {
+        let _lease = self.operation_lease()?;
         let description = description.into();
         let writer = self.writable()?;
         let mut pending = self

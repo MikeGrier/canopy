@@ -71,13 +71,8 @@ fn a_reader_opens_while_a_writer_holds_the_root() {
     let reader = open_reader(&vfs, writer.root());
 
     assert_eq!(reader.store_id(), writer.store_id());
-    assert!(
-        matches!(
-            Store::open_unsourced(Arc::clone(&vfs), writer.root().to_path_buf()),
-            Err(StoreError::RootInUse { .. })
-        ),
-        "a second writer is still refused"
-    );
+    let second = Store::open_unsourced(Arc::clone(&vfs), writer.root().to_path_buf()).unwrap();
+    assert_eq!(second.store_id(), writer.store_id());
 }
 
 #[test]
@@ -313,7 +308,7 @@ fn every_write_verb_is_refused_to_a_reader_and_changes_nothing() {
         writer.read_body(name("alpha"), &doc("one")).unwrap(),
         Some(body(b"kept"))
     );
-    assert!(!reader.recovery_required());
+    assert!(!reader.recovery_required().unwrap());
 }
 
 #[test]
@@ -385,7 +380,7 @@ fn a_root_whose_coordination_state_is_lost_reads_odd_until_a_writer_recovers() {
 
     let writer = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
     assert!(
-        writer.recovery_required(),
+        writer.recovery_required().unwrap(),
         "an open does not vouch for state nothing has"
     );
     let still = reader.modifications().unwrap();
@@ -593,7 +588,7 @@ fn a_write_whose_closing_raise_fails_leaves_the_count_odd_until_recovery() {
     gate.close();
     armed.close();
 
-    assert!(writer.recovery_required());
+    assert!(writer.recovery_required().unwrap());
     let odd = reader.modifications().unwrap();
     assert_eq!(odd, before + 1);
     assert!(matches!(

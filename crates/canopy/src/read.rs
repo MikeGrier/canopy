@@ -104,7 +104,7 @@ impl Contended {
 /// How many resolutions canopy's own writer-side reads take before reporting they were outrun.
 ///
 /// The precondition check and the read-modify-write transforms run *as* the writer, and
-/// `D116` gives a root one of those. Being superseded there would mean a second writer, which
+/// coordination exclusion admits only one. Being superseded there would mean a second writer, which
 /// is an anomaly worth surfacing rather than spinning on -- so this is small on purpose.
 pub(crate) const WRITER_READ_ATTEMPTS: usize = 2;
 
@@ -125,6 +125,7 @@ pub fn read_settled<F>(
 where
     F: FnMut(&Contended) -> bool,
 {
+    let _lease = store.operation_lease()?;
     let mut attempts = 0usize;
     loop {
         attempts += 1;

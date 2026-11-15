@@ -90,15 +90,17 @@ pub use random::{random_nonce, random_nonce_source};
 pub use read::{Contended, Contention, Read, read_once, read_settled, read_within};
 pub use store::SchemaLayer;
 pub use store::{
-    Agent, AttachedHandle, AttachedHandles, BacklogRepairReport, BlobRead, BlobVerification,
-    CANOPY_SCHEMA_VERSION, COORDINATED_FORMAT_VERSION, Children, Commit, ContentScrubReport,
-    DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT, DEFAULT_SHARD_WIDTH,
-    DEFAULT_SNAPSHOT_TIMEOUT, DiagnosticView, GENESIS_FORMAT_VERSION, GenesisConfig, LOCK_NAME,
-    MARKER_NAME, MAX_REPLICA_COUNT, MAX_SHARD_WIDTH, MIGRATABLE_FORMAT_VERSION,
-    MIGRATION_RECORD_NAME, Migration, PUBLICATION_RECORD_NAME, PointerRead, QUARANTINE_LIMIT,
-    REPAIR_BACKLOG_LIMIT, Recovery, RecoveryNeed, RecoveryPhase, RecoveryProgress,
-    RejectedPrecondition, RepairOutcome, SchemaVersions, Store, StoreError, StoreId, StoreOptions,
-    StoreProperties, StoreView, TransactionOutcome, WriteOutcome,
+    AGENT_FORMAT_VERSION, Agent, AttachedHandle, AttachedHandles, BacklogRepairReport, BlobRead,
+    BlobVerification, CANOPY_SCHEMA_VERSION, COORDINATED_FORMAT_VERSION, Children, Commit,
+    ContentScrubReport, DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT,
+    DEFAULT_SHARD_WIDTH, DEFAULT_SNAPSHOT_TIMEOUT, DiagnosticView, GENESIS_FORMAT_VERSION,
+    GenesisConfig, LOCK_NAME, MARKER_NAME, MAX_REPLICA_COUNT, MAX_SHARD_WIDTH,
+    MIGRATABLE_FORMAT_VERSION, MIGRATION_RECORD_NAME, Migration, MigrationUnit,
+    PUBLICATION_RECORD_NAME, PointerRead, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, Recovery,
+    RecoveryNeed, RecoveryPhase, RecoveryProgress, RejectedPrecondition, RepairOutcome,
+    SchemaUpgrade, SchemaVersions, Store, StoreError, StoreId, StoreOptions, StoreProperties,
+    StoreView, TransactionOutcome, UPGRADE_INTENT_NAME, UpgradeDrain, UpgradeProgress,
+    UpgradeRequest, WriteOutcome,
 };
 pub use transaction::{Effect, Precondition, Swap, SwapSet, SwapSetError};
 

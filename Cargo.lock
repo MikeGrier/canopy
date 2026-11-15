@@ -68,7 +68,12 @@ version = "0.0.0"
 dependencies = [
  "acadia",
  "canopy",
+ "contention-sim",
+ "libc",
+ "serde",
+ "serde_json",
  "test-timers",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

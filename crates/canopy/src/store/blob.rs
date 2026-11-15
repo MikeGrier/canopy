@@ -216,6 +216,7 @@ impl Store {
     /// bad replica surfaces the next time any document resident on it is read, rather than
     /// at the next whole-store scrub.
     pub fn read_blob(&self, reference: &BlobRef) -> Result<BlobRead, StoreError> {
+        let _lease = self.operation_lease()?;
         let replicas = self.genesis.blob_replica_count;
         let name = reference.name();
         let expected = name.digest();

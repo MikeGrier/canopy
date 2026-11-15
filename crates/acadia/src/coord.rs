@@ -53,7 +53,7 @@ mod registry;
 mod restart;
 mod types;
 
-pub use admission::{Admission, Attachment, Registrant, Upgrade};
+pub use admission::{Admission, Attachment, Registrant, Upgrade, UpgradeConversion};
 pub use count::{CountNotification, ModificationCount, Notice};
 pub use creation::{ArtifactMaker, Creation, CreationPlan};
 pub use discovery::RecoveryDiscovery;

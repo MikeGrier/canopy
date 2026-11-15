@@ -74,10 +74,15 @@ impl MigrationRecord {
             && self.inputs.to_version == GENESIS_FORMAT_VERSION
             && matches!(
                 self.inputs.from_version,
-                MIGRATABLE_FORMAT_VERSION | COORDINATED_FORMAT_VERSION
+                MIGRATABLE_FORMAT_VERSION | COORDINATED_FORMAT_VERSION | AGENT_FORMAT_VERSION
             )
             && self.genesis.format_version == GENESIS_FORMAT_VERSION
-            && self.genesis.metadata == super::agent::AgentMetadata::new(agent)
+            && (if self.inputs.from_version == AGENT_FORMAT_VERSION {
+                self.genesis.metadata.check_identity(agent).is_ok()
+                    && self.genesis.metadata.transition.is_none()
+            } else {
+                self.genesis.metadata == super::agent::AgentMetadata::new(agent)
+            })
         {
             return Ok(());
         }
@@ -124,6 +129,7 @@ impl Store {
             (GENESIS_FORMAT_VERSION, false) => Ok(Found::Current(bytes)),
             (MIGRATABLE_FORMAT_VERSION, true) => Ok(Found::Legacy(bytes)),
             (COORDINATED_FORMAT_VERSION, false) => Ok(Found::Legacy(bytes)),
+            (AGENT_FORMAT_VERSION, false) => Ok(Found::Legacy(bytes)),
             (found, _) => Err(StoreError::UnsupportedFormatVersion {
                 found,
                 expected: GENESIS_FORMAT_VERSION,
@@ -185,6 +191,24 @@ impl Store {
                 .open(Arc::clone(vfs), root)?
                 .confirm_created(std::ffi::OsStr::new(MARKER_NAME))?;
         }
+        let metadata = if from_version == AGENT_FORMAT_VERSION {
+            let metadata: super::agent::AgentMetadata =
+                serde_json::from_value(value.get("metadata").cloned().ok_or(
+                    StoreError::MalformedMarker {
+                        root: root.to_path_buf(),
+                        reason: "an agent-format marker has no metadata",
+                    },
+                )?)?;
+            metadata.check_identity(agent)?;
+            if metadata.transition.is_some() || vfs.exists(&root.join(UPGRADE_INTENT_NAME))? {
+                return Err(StoreError::RecoveryRequired {
+                    root: root.to_path_buf(),
+                });
+            }
+            metadata
+        } else {
+            super::agent::AgentMetadata::new(agent)
+        };
         let legacy: LegacyGenesis = serde_json::from_value(value)?;
         let genesis = Genesis {
             format_version: GENESIS_FORMAT_VERSION,
@@ -193,7 +217,7 @@ impl Store {
             shard_width: legacy.shard_width,
             store_id: legacy.store_id,
             created_at_unix_ms: legacy.created_at_unix_ms,
-            metadata: super::agent::AgentMetadata::new(agent),
+            metadata,
         };
         Self::validate_genesis(vfs, root, &genesis)?;
         Ok(MigrationRecord {

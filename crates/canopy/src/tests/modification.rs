@@ -100,6 +100,7 @@ fn an_unlogged_write_reads_as_one_modification_from_ingest_to_collection() {
 #[test]
 fn nested_modifications_move_the_count_only_at_the_outermost_edges() {
     let (_vfs, store) = fresh_store();
+    let _writer = store.exclusive();
     let start = store.modifications().unwrap();
     {
         let _outer = store.begin_modification().unwrap();
@@ -177,7 +178,7 @@ fn a_transaction_that_ends_unresolved_leaves_the_count_odd() {
     gate.open();
     assert!(store.apply_transaction_as(&swaps, &nonce("u1")).is_err());
     gate.close();
-    assert!(store.recovery_required());
+    assert!(store.recovery_required().unwrap());
 
     let after = store.modifications().unwrap();
     assert!(
@@ -185,6 +186,7 @@ fn a_transaction_that_ends_unresolved_leaves_the_count_odd() {
         "an unresolved transaction must not read as settled: {after}"
     );
     // A later modification under the fence is refused, and cannot flip the count back to even.
+    let _writer = store.exclusive();
     assert!(matches!(
         store.begin_modification(),
         Err(StoreError::RecoveryRequired { .. })

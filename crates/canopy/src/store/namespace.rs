@@ -211,6 +211,7 @@ impl Store {
         node: &NodePath,
         document: &DocumentName,
     ) -> Result<PointerRead, StoreError> {
+        let _lease = self.operation_lease()?;
         let replicas = self.genesis.pointer_replica_count;
         let expected = PathHash::of(node, document);
 
@@ -320,6 +321,7 @@ impl Store {
     /// a durable object in its own right, so "no children" and "no such node" are the same
     /// fact, and inventing a distinction would be inventing state the store does not keep.
     pub fn list_children(&self, path: impl Into<NodePath>) -> Result<Children, StoreError> {
+        let _lease = self.operation_lease()?;
         let path = path.into();
         let mut documents = BTreeSet::new();
         let mut nodes = BTreeSet::new();
@@ -368,6 +370,7 @@ impl Store {
     /// Walks the tree from each root-level child downward rather than recursing blindly, so
     /// a cycle cannot arise and depth is bounded by what was actually written.
     pub fn list_documents(&self) -> Result<Vec<(NodePath, DocumentName)>, StoreError> {
+        let _lease = self.operation_lease()?;
         let mut found = BTreeSet::new();
         let mut pending: Vec<NodePath> = self.namespace_roots()?;
 

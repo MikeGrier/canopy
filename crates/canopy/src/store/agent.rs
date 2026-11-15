@@ -100,6 +100,7 @@ pub(super) fn attached_handles(listing: acadia::coord::Listing) -> AttachedHandl
 pub(super) fn registration_payload(
     agent: &Agent,
     tiers: acadia::coord::HeldTiers,
+    draining: bool,
 ) -> Result<Vec<u8>, StoreError> {
     let mode = |tier| match tier {
         Some(acadia::coord::TierHold::Shared) => Some(Cow::Borrowed(registry_tags::SHARED)),
@@ -115,12 +116,13 @@ pub(super) fn registration_payload(
         reader_tier: mode(tiers.reader),
         writer_tier: mode(tiers.writer),
         process_id: std::process::id(),
-        draining: false,
+        draining,
     })?)
 }
 
 /// The schema layer that decided admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variant names are durable upgrade tags; changing them breaks the marker encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchemaLayer {
     /// Canopy's storage and coordination schema.
     Canopy,
@@ -191,6 +193,8 @@ pub(super) struct AgentMetadata {
     pub agent_description: String,
     pub canopy_schema: SchemaVersions,
     pub agent_schema: SchemaVersions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<super::upgrade::Transition>,
 }
 
 impl AgentMetadata {
@@ -207,6 +211,7 @@ impl AgentMetadata {
                 current: agent.schema_version,
                 oldest_reader: agent.schema_version,
             },
+            transition: None,
         }
     }
 
@@ -239,7 +244,19 @@ impl AgentMetadata {
                 &self.agent_schema,
             ),
         ] {
-            let admitted = if writable {
+            let transition = self
+                .transition
+                .as_ref()
+                .filter(|transition| transition.request.layer == layer);
+            let admitted = if let Some(transition) = transition {
+                if writable {
+                    spoken == transition.request.target
+                } else {
+                    transition.safe
+                        && ((schema.oldest_reader..=schema.current).contains(&spoken)
+                            || spoken == transition.request.target)
+                }
+            } else if writable {
                 spoken == schema.current
             } else {
                 (schema.oldest_reader..=schema.current).contains(&spoken)

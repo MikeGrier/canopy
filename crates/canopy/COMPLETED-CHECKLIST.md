@@ -1749,3 +1749,200 @@ and diagnostic views, escaped payloads, unsupported payload versions, registry e
 and a held admission gate. Compile-fail documentation excludes document reads and description
 mutation from the diagnostic surface. The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md)
 "Store management and diagnosis do not borrow document access".
+
+## Moved 2026-11-14 -- Operation-owned writer exclusion
+
+### <a id="m9-1"></a>M9-1 -- Make writer exclusion operation-owned, with shared fencing, generation-aware durability and guarded discovery. *(completed 2026-11-14 15:34:58 -05:00)*
+
+Writer attachments retain their tiers while outermost operations acquire and release coordination
+exclusion. Nested entries share that hold, including guards dropped out of order. The local gate
+serializes clones; independent handles and processes take turns through the contract. Acquisitions
+refuse shared recovery state before effects, and another handle's recovery lifts refusal.
+
+Found and advanced generations distinguish consecutive own holds from an intervening holder,
+invalidating durability knowledge and agent metadata only in the latter case. Stamps remain inside
+the operation. Scrub and backlog claims end with their current hold, so an intervening resolver
+cannot release a live operation's claim. Recovery steps refresh phase records after another holder
+and restart on a changed modification count, preventing a paused completion from clearing a newer
+transaction's log.
+
+Opening performs discovery without acquiring exclusion. Acadia's read-only inspection hook keeps
+root-work-list reads inside a free-exclusion probe; busy observations leave the work list unknown.
+Creation reserves its inputs and rechecks under exclusion; identical concurrent creators return
+`AlreadyInitialized` once one has completed. Offline migration alone retains the legacy root lock.
+
+Regression tests exercise alternating writers, shared fences, interleaved recovery, stale completion,
+agent-version changes, consecutive-hold cache reuse, scrub claim cleanup, concurrent creation and
+probe exclusion. Existing process fixtures explicitly hold coordination exclusion and distinguish
+attachment from a live write and from recovery after process death. The decision is in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion belongs to an operation"; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#operation-owned-exclusion).
+
+## Moved 2026-11-14 -- Writer and recovery process coverage
+
+### <a id="m9-2"></a>M9-2 -- Exercise writer exclusion, recovery and discovery across Windows and Linux processes. *(completed 2026-11-14 16:23:22 -05:00)*
+
+The command-driven writer fixture interleaves logged and unlogged mutations across attached
+processes, checks independent agent stamps, and reports explicit checkpoints before effects,
+after one namespace replica has moved and after document effects before exclusion is released.
+The death matrix verifies actual replica divergence at the publication and transaction checkpoints,
+shared refusal before recovery, and successful convergence driven explicitly by a survivor.
+
+Recovery can be stopped after a unit of every phase and resumed by another process, with two
+processes also driving the same run concurrently. A completed recovery's released attachment is
+distinguished from unfinished recovery: killing after completion does not manufacture a fence.
+Other scenarios cover a failed transaction in a live process, a reset waiting behind another
+transaction, a scrub beside another process's resolver, version stamps and registry membership,
+same-process OS-backed handles, and refusal through a genuinely distinct coordination factory.
+That factory is exposed only through acadia's opt-in test support.
+
+The suite executes on both Windows and Linux kernels. The WSL cargo bridge is an opt-in Rustup
+toolchain selected by the cargo MCP tools, preserving the project compiler and separating artifacts.
+Its tests cover path conversion, unsupported roots and argument quoting. Damage paths use
+validated names so canonicalization cannot be hidden by Windows's case-insensitive filesystem.
+The process decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Process tests stop at protocol
+boundaries" and [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#process-test-barriers); the WSL workflow is
+in [copilot-instructions.md](../../.github/copilot-instructions.md#running-tests-on-linux-via-wsl).
+
+> **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M9` -> `M9-3`
+> (leases and the upgrade drain). See [CHECKLIST.md](CHECKLIST.md).
+
+## Moved 2026-11-14 -- Attachment leases and the upgrade drain
+
+### <a id="m9-3"></a>M9-3 -- Lease attachment work and add a cancellable, tier-retaining upgrade drain with caller-context refusal. *(completed 2026-11-14 17:04:23 -05:00)*
+
+Attachment-bound operations hold leases across reads, callbacks, writer waits, repairs, management
+calls and whole scrub or recovery convenience passes. Caller-driven recovery leases each unit.
+Nested calls continue work already admitted, while a drain refuses new work through every clone.
+Leases retain the attachment independently of external store-clone lifetime.
+
+`Store::drain_upgrade` returns a guard that retains shared tiers, waits for operations to end,
+and cancels on explicit request or drop. Cancellation wakes waiters and leaves the attachment
+usable; stale guards cannot cancel a later drain. Caller context spans synchronous operations
+across attachments, preventing a callback from waiting for another handle's work blocked by the
+caller's own writer hold. Other clones' operations are drained rather than refused as callers.
+
+The existing registry payload records the current draining state without holding operation
+admission or agent state across registry I/O. Initial update errors are retained on the guard;
+cancellation reports an update failure without undoing operation admission. Recovery-status queries
+and observer installation are fallible so a draining attachment can refuse them explicitly.
+
+Regression tests pin work-family refusal before callbacks, nested completion, queued writers,
+read and write callback self-refusal, cross-attachment context, cancellation wakeup, guard identity,
+retained tiers, registry transitions and failures, stalled registry I/O, and context cleanup on
+unwind. The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Attachment operations are leased
+and drains are cancellable"; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#attachment-lease-context).
+
+## Moved 2026-11-14 -- Upgrade conversion and reader compatibility
+
+### <a id="m9-4"></a>M9-4 -- Convert upgrade tiers incrementally, enforce cumulative reader compatibility and restore detached handles through ordinary admission. *(completed 2026-11-14 18:33:06 -05:00)*
+
+After the drain, conversion releases shared attachment before acquiring gate, unsafe reader tier
+and writer tier in order. Pending polls wait on no lock, and cancellation releases partial holds.
+The source remains detached until ordinary reattachment rechecks every layer and installs new
+agent, nonce and access options. The blocking coordination baseline retains its separate native
+wait and reader-reopening contract.
+
+Reader safety is judged against the retained oldest reader, not the current schema. A safe upgrade
+admits existing and target readers after its atomic marker announcement; unrelated layers retain
+ordinary admission. Unsafe conversion drains all readers and sets the completed floor to target.
+Schema-only completion preserves other marker fields and independently stamps the performing agent.
+Publication, cancellation and recovery preserve the target-reader admission guarantee: once an
+announcement is visible it is fenced for explicit recovery, never rolled back beneath target readers.
+Migration bodies remain the following work item.
+
+The prepared schema-only guard holds exclusion across finalization while already holding the
+writer tier exclusively, and this exception is recorded explicitly. Recovery finishes the schema
+descriptor after journal work and claims, before clearing its fence. Properties expose the active
+request and the registry records held upgrade tiers best-effort.
+
+Tests exercise source and target readers, consecutive safe upgrades, cumulative unsafe floors,
+layer isolation, metadata preservation, changed-source refusal, partial acquisition cancellation,
+diagnostic exclusion contention, interrupted announcements, source reattachment, numeric schema
+boundaries and independent stamp failure. The decisions are in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "Schema-only upgrades convert tiers and publish admission" and
+acadia's [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "Incremental upgrade conversion retains the
+admission gate"; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#schema-conversion-and-announcements).
+
+## Moved 2026-11-14 -- Durable caller-driven migration bodies
+
+### <a id="m9-5"></a>M9-5 -- Drive idempotent migration units from durable intent and resume them after journal settlement behind the v9 barrier. *(completed 2026-11-14 19:35:24 -05:00)*
+
+The migration engine declares unit count before intent publication, holds exclusion across calls
+under the exclusive writer tier, and exposes a thread-bound unit capability. Units settle journal
+work before publishing their durable cursor, report independent stamp failures, and fence failures,
+cancellation or panics without losing intent. Finalization refuses unfinished bodies, advances the
+schema durably and clears intent only afterwards. Schema-only upgrades retain their separate path.
+
+Intent-aware admission refuses source-only writers even between intent and marker publication.
+Recovery exposes the upgrade-body callback after ordinary journal and claim work, and refuses
+missing units rather than pretending recovery completed. Cursor reload, refusal restoration and
+callback-control checks protect interrupted and competing recoveries. The version-9 marker barrier
+excludes earlier recovery code; offline version-8 migration preserves its metadata.
+
+Tests pin interrupted cursors, failed intent and cursor writes, post-schema intent cleanup,
+transaction settlement before replay, missing callback refusal, panic cleanup, recursive-control
+refusal, recovery-required start and the metadata-preserving barrier migration. The design is in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "Caller-driven migration units have durable intent"; rationale is
+in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#durable-migration-unit-cursors).
+
+Concrete store-owned Canopy units remain a separate blocked obligation in
+[CHECKLIST.md](CHECKLIST.md): the engineer chose to reject undefined transitions until a concrete
+schema-change specification exists, rather than invent a migration. That is not recorded as done.
+
+> **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy-lock-holder` -> `M9` ->
+> `M9-6` (schema upgrade process coverage). See [CHECKLIST.md](CHECKLIST.md).
+
+## Moved 2026-11-14 -- Schema upgrade process coverage
+
+### <a id="m9-6"></a>M9-6 -- Verify schema upgrade interruption and admission across Windows and Linux processes. *(completed 2026-11-14 19:57:03 -05:00)*
+
+Schema-aware writer fixtures declare source, target, reader floor and units, expose parent-driven
+conversion and body checkpoints, and explicitly resume through target-speaking processes. Unit
+transactions migrate document batches with stable names and values, so an interrupted cursor is
+checked against actual data rather than only metadata progression.
+
+Tests kill upgraders after intent, between units, after the final unit and after schema publication
+but before intent removal. Target recovery converges the schema and data, clears intent and permits
+a subsequent ordinary write; source-only processes are refused. A post-transaction callback failure
+is tested separately from process death, leaving a fence and intent without an abandoned owner.
+
+Other scenarios retain live writer blockers and readers of every admissible schema, identify them
+through the registry, and verify killed processes cease being listed. An acknowledged reader gate
+attempt remains blocked until unsafe completion, then is refused by the new reader floor. Recovery
+required state refuses an upgrader before intent or marker changes. Competing upgraders release
+shared tiers and finish or refuse without a tier/gate deadlock.
+
+The suite executes on the Windows and Linux kernels through the native fixture and the opt-in WSL
+cargo bridge. Its contract is in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Upgrade boundaries are checked
+across processes"; rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#upgrade-process-checkpoints), and fixture commands are in
+[README.md](../canopy-lock-holder/README.md#upgrade-commands).
+
+## Moved 2026-11-14 -- Bounded multi-process contention comparison
+
+### <a id="m9-7"></a>M9-7 -- Compare contended writes, snapshots, publication and upgrade drains across Windows and Linux with explicit bounded-evidence limits. *(completed 2026-11-14 22:06:02 -05:00)*
+
+The benchmark drives actual logged transactions, cooperative bursts, paired metadata arrival
+schedules, armed count notifications and safe/unsafe attachment drains through real processes.
+Acquisition generations identify bypass; an injected prepared-transaction failure exercises
+explicit recovery independently of rare perturbation sampling. Raw and reduced reports retain
+unfinished work, unknown tails and censored waits rather than treating them as successful budgets.
+
+The engineer approved bounded windows with the original workload inputs, not shortened lifetimes
+or a claim of equivalent stationary evidence. Windows notification-mode measurements expose
+publication and snapshot delay beside readers. The Linux kernel executes the same table over the
+Windows-backed WSL mount; its longer holds expose capacity limits, not native-ext4 performance.
+Neither platform provides a supported stationary contradiction that would reopen the unordered
+baseline. Subsequent native-filesystem work has a separate Linux checkout rather than overwriting
+the Windows worktree or relabeling the completed run.
+
+The method and both comparisons are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "Bounded process
+measurements retain censoring", "Windows finite-window comparison" and "Linux finite-window
+comparison"; their rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#bounded-process-evidence).
+Commands and input tables are in [README.md](../canopy-lock-holder/README.md#bounded-contention-campaign).
+
+> **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> `M10` -> `M10-1`
+> (shared-memory coordination state). See [CHECKLIST.md](CHECKLIST.md#m10----a-shared-memory-coordination-implementation).

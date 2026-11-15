@@ -382,7 +382,7 @@ fn a_recovery_required_handle_can_diagnose_but_cannot_set_description() {
             .update_document(Swap::new(name("docs"), doc("one"), body(b"value")))
             .is_err()
     );
-    assert!(writer.recovery_required());
+    assert!(writer.recovery_required().unwrap());
     assert!(matches!(
         writer.set_agent_description("refused"),
         Err(StoreError::RecoveryRequired { .. })
@@ -430,7 +430,10 @@ fn description_and_properties_are_fresh_through_every_read_surface() {
         Err(StoreError::ReadOnly { .. })
     ));
     assert!(!diagnostic.recovery_need().unwrap().required());
-    assert_eq!(diagnostic.recovery_need().unwrap().unresolved_work(), None);
+    assert_eq!(
+        diagnostic.recovery_need().unwrap().unresolved_work(),
+        Some(false)
+    );
     drop(writer);
     let (reopened, _) =
         Store::open(vfs, root, StoreOptions::without_nonce_source(test_agent())).unwrap();
@@ -515,7 +518,7 @@ fn description_success_is_independent_of_a_failed_agent_stamp() {
         writer.properties().unwrap().agent_version,
         test_agent().version()
     );
-    assert!(!writer.recovery_required());
+    assert!(!writer.recovery_required().unwrap());
 }
 
 #[test]

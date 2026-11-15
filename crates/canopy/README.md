@@ -24,28 +24,62 @@ starts no threads.
 - **Self-repair.** Damage seen by reads is queued for repair, and
   `Store::scrub_content` walks every document and rebuilds bad replicas from a
   verified copy.
-- **Single writer.** A store root is guarded by an OS-level exclusive lock, so a
-  second writer cannot open it while the first holds it, and the lock is released
-  by the OS if the holder dies. Within a process, every write through any clone of a
-  `Store` is serialized, which is what makes the read-modify-write `Store::transform`
+- **Writers take turns.** Several writer handles may stay attached. Each outermost write
+  holds coordination exclusion until it ends; the OS releases its lock if the holder dies,
+  and subsequent writers require explicit recovery before making effects. Every write through
+  any clone of a `Store` is serialized, which makes the read-modify-write `Store::transform`
   and `Store::plan_and_apply` lose no update; reads never take the lock, and
   `Store::snapshot` reads a state no write disturbed without excluding writers.
-- **Schema admission.** Read-only handles may coexist with the writer. Every handle holds
+- **Schema admission.** Read-only handles may coexist with writers. Every handle holds
   shared reader attachment; a writer also holds shared writer attachment. After attaching,
   each schema layer admits readers from its oldest reader schema through its current schema,
   and writers only at current. A mismatch reports `StoreError::SchemaMismatch`. Clones share
   the attachment and its best-effort registry entry until the last clone is dropped.
+- **Attachment drains.** Reads, writes, repairs and management work hold operation leases.
+  `Store::drain_upgrade` refuses new work on its clones while its guard waits for existing work
+  to end beneath the shared tiers. Cancelling or dropping the guard restores operation admission;
+  starting or waiting on a drain from inside a store operation is refused.
 - **Pluggable filesystem.** All I/O goes through the [`acadia`](https://crates.io/crates/acadia)
   `Vfs` trait, so the same store runs on the real filesystem (`OsFs`) or fully in
   memory with scripted fault injection (`MemFs`, `FaultyFs`) for tests.
 
+## Schema Upgrades
+
+After `UpgradeDrain::wait`, `begin_conversion(UpgradeRequest)` releases the source attachment's
+tiers. `SchemaUpgrade::poll` acquires the gate and required tiers without waiting for locks;
+once ready, `complete` advances only the selected layer and returns its independent stamp result.
+A safe upgrade admits existing reader schemas and its target; safety is judged against the
+oldest admissible reader, not the current schema. An unsafe upgrade drains all readers and sets
+the completed reader floor to its target.
+
+The source handle remains detached until `Store::reattach` performs ordinary admission with the
+chosen agent and access. Cancelling a pending conversion releases its holds without changing a
+schema. Cancelling after the admission announcement is published leaves it fenced for explicit
+recovery, so target readers already admitted cannot be invalidated by a rollback.
+
+For an agent migration, `begin_migration(request, units)` declares the body before publication.
+Each `SchemaUpgrade::step` supplies an idempotent unit through `MigrationUnit`, whose progress
+identifies the request and durable unit ordinal. The cursor advances only after the unit's journal
+work settles. `complete` refuses unfinished bodies. A failure, cancellation or panic leaves intent
+and a fence; recovery reaches `RecoveryPhase::UpgradeBody` after ordinary journal work and uses
+`Recovery::step_upgrade` for the remaining units. A plain recovery call reports
+`UpgradeBodyRequired` rather than guessing or discarding units.
+
+Canopy-owned migration units require a concrete schema-change specification; undefined requests
+are rejected. That agreed dependency is tracked in [CHECKLIST.md](CHECKLIST.md).
+
 ## Management
+
+`Store::recovery_required` and `Store::observe` return `Result` so a draining attachment can refuse
+the query or installation. `UpgradeDrain::registration_error` reports a failed best-effort registry
+update without undoing the drain, and explicit cancellation reports failure to update it again.
 
 `Store::properties` reads fresh metadata, and `Store::attached_handles` reports live registrations
 plus unknown entries and possible incompleteness. A writable handle can durably update its
 description with `set_agent_description`; read-only and recovery-fenced handles cannot.
 `DiagnosticView::open` offers properties, attached handles and `recovery_need` without an agent or
 attachment tier, so it works while the admission gate is held. It offers no document reads or writes.
+`StoreProperties::schema_upgrade` reports an active per-layer admission announcement.
 
 ## Local filesystems only
 
@@ -60,8 +94,8 @@ losing writes or corrupting the store.
 
 Every `StoreOptions` constructor requires an explicit `Agent`: its version-independent identity,
 software version, description and document-schema version. Opens compare the identity exactly and
-do not rewrite the recorded version or description. Genesis version 8 records that metadata and
-each layer's current schema and oldest reader schema. Version-6 and version-7 roots require
+do not rewrite the recorded version or description. Genesis version 9 protects migration intent
+and each layer's current schema and oldest reader schema. Earlier supported roots require
 `Store::migrate` with the intended agent while the root is offline; a retry must supply identical
 agent inputs. Migration changes the marker, not the document bodies or their layout.
 

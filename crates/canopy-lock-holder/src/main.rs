@@ -1,7 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! Test fixture for `LOCK-M1`/`D116`: a process that opens a store root and holds its
-//! lock until it is killed.
+//! A writer attachment and an explicit hold of coordination exclusion until the process is killed.
 //!
 //! This exists as a real `[[bin]]` rather than a thread or a `#[cfg(test)]` helper because
 //! the property under test is what the **operating system** does when a lock's owner dies
@@ -23,6 +22,8 @@ use std::io::{Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use acadia::coord::file::FileFactory;
+use acadia::coord::{CoordinationFactory, Waiting};
 use acadia::{OsFs, Vfs};
 use canopy::{Store, StoreOptions};
 
@@ -61,12 +62,10 @@ fn main() -> ExitCode {
     };
 
     let vfs: Arc<dyn Vfs> = Arc::new(OsFs::new());
-    // Bound to `_store`, never dropped: holding the handle is the entire job, and the
-    // parent kills this process rather than letting it unwind. It never writes, so it needs
-    // no nonce source.
+    // Attachment precedes exclusion and outlives it, including during orderly teardown.
     let _store = match Store::open(
-        vfs,
-        root,
+        Arc::clone(&vfs),
+        &root,
         StoreOptions::without_nonce_source(canopy::Agent::new(
             "canopy-tests",
             "test",
@@ -76,6 +75,15 @@ fn main() -> ExitCode {
     ) {
         Ok((store, _)) => store,
         Err(e) => return report.fail(format_args!("open failed: {e}")),
+    };
+
+    let participant = match FileFactory::new().open(vfs, std::path::Path::new(&root)) {
+        Ok(participant) => participant,
+        Err(error) => return report.fail(format_args!("coordination failed: {error}")),
+    };
+    let _hold = match participant.acquire(Waiting::Wait) {
+        Ok(hold) => hold,
+        Err(error) => return report.fail(format_args!("exclusion failed: {error}")),
     };
 
     if report.ready().is_err() {

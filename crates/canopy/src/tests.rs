@@ -159,10 +159,7 @@ fn fresh_store() -> (Arc<dyn Vfs>, Store) {
 /// Drops `store` and opens its root again, resolving what it left -- the restart of a writer
 /// these recovery tests mean.
 ///
-/// Since `D116` a root has one writer, so reopening while the first handle is alive is
-/// refused. That is worth honouring rather than working around: a "reopen" that kept the
-/// original handle live was never modelling a restart, and could not have caught a
-/// recovery path that depended on state the old handle still held.
+/// Dropping the original attachment ensures recovery cannot rely on its cached durability state.
 fn reopen(vfs: &Arc<dyn Vfs>, store: Store) -> Result<Store, StoreError> {
     let root = store.root().to_path_buf();
     drop(store);

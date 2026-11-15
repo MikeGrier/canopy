@@ -1,14 +1,10 @@
 // Copyright (c) Michael Grier.
 
-//! The in-process half of "a store root has one writer" (`D41`, `D116`).
-//!
-//! The OS lock excludes a second *process*. Within one process, every `Store` clone shares
-//! this gate, so their writes are serialized too: a check-then-write (a conditional swap, a
-//! read-modify-write `transform`) cannot be interleaved with another writer's. The gate is
-//! re-entrant per thread, because the
-//! public write verbs call one another (a transaction ingests blobs and writes pointers),
-//! and it is granted in arrival order, so a busy writer cannot starve another.
+//! Clone-local serialization and thread nesting around a root's coordination exclusion.
+//! Only the outermost entry acquires exclusion. The gate serializes one attachment's threads
+//! in arrival order, and its last guard releases exclusion before admitting its next waiter.
 
+use super::coordinated::Coordinated;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -83,6 +79,10 @@ impl WriterGate {
         WriterGuard {
             gate: Arc::clone(self),
             publication_settled: false,
+            coordination: None,
+            store: None,
+            other_holder: false,
+            lease: None,
             _not_send: PhantomData,
         }
     }
@@ -90,10 +90,13 @@ impl WriterGate {
 
 /// Holds the [`WriterGate`] until dropped. Not `Send`: the gate is held by a thread, so the
 /// guard must be released on the thread that took it.
-#[derive(Debug)]
 pub(crate) struct WriterGuard {
     gate: Arc<WriterGate>,
     pub(super) publication_settled: bool,
+    pub(super) coordination: Option<Arc<Coordinated>>,
+    pub(super) store: Option<super::Store>,
+    pub(super) other_holder: bool,
+    pub(super) lease: Option<super::coordinated::leases::OperationLease>,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -106,6 +109,18 @@ impl Drop for WriterGuard {
             .unwrap_or_else(PoisonError::into_inner);
         holder.depth -= 1;
         if holder.depth == 0 {
+            drop(holder);
+            if let Some(store) = &self.store {
+                store.release_current_claims();
+            }
+            if let Some(coordination) = &self.coordination {
+                coordination.release();
+            }
+            let mut holder = self
+                .gate
+                .holder
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             holder.owner = None;
             holder.serving += 1;
             drop(holder);

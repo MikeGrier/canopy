@@ -121,6 +121,7 @@ impl Store {
     /// belongs to the caller, layered on top (D54).
     /// The [`WriteOutcome`] keeps any agent-stamp failure separate from the commit result.
     pub fn update_document(&self, swap: Swap) -> Result<WriteOutcome<Commit>, StoreError> {
+        let _lease = self.operation_lease()?;
         self.apply_transaction(&SwapSet::single(swap))
     }
 
@@ -161,7 +162,7 @@ impl Store {
         let _writer = self.writable()?;
         let mut claim = self.claim_fresh_nonce()?;
         let result = self.apply_transaction_as(swaps, claim.nonce());
-        if self.recovery_required() {
+        if self.recovery_required()? {
             claim.keep();
         }
         let outcome = result?;
@@ -261,7 +262,7 @@ impl Store {
         // Phase 1b: node-removal emptiness (`BG-6`). A different *kind* of precondition
         // from the digest CAS above -- it asks what the node will hold once this
         // transaction's own swaps apply, where a CAS asks what a document holds now. The
-        // computation is sound because `D116` gives a store root exactly one writer, so
+        // computation is sound because coordination exclusion admits exactly one writer, so
         // nothing can change the node between this check and phase 4.
         for path in swaps.node_removals() {
             if let Some(rejection) = self.node_removal_rejection(path, swaps)? {

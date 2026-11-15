@@ -384,7 +384,7 @@ fn no_clone_can_erase_or_write_past_another_clones_unfinished_transaction() {
     let swaps = SwapSet::single(Swap::new(name("alpha"), doc("pin"), body(b"committed")));
     assert!(failing.apply_transaction(&swaps).is_err());
     gate.close();
-    assert!(sibling.recovery_required());
+    assert!(sibling.recovery_required().unwrap());
 
     let mut ran = false;
     assert!(matches!(
@@ -410,13 +410,13 @@ fn no_clone_can_erase_or_write_past_another_clones_unfinished_transaction() {
     let (recovered, found) =
         Store::open(vfs, root, StoreOptions::without_nonce_source(test_agent())).unwrap();
     assert!(found.required(), "{found:?}");
-    assert!(recovered.recovery_required());
+    assert!(recovered.recovery_required().unwrap());
     recovered
         .resolve()
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
-    assert!(!recovered.recovery_required());
+    assert!(!recovered.recovery_required().unwrap());
     assert_eq!(
         recovered.read_body(name("alpha"), &doc("pin")).unwrap(),
         Some(body(b"committed"))
@@ -446,7 +446,7 @@ fn a_transaction_failing_before_its_commit_point_is_rolled_back_and_can_be_retri
     .unwrap();
     gate.open();
     assert!(store.apply_transaction(&swaps).is_err());
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
     assert!(store.commit_log_is_empty().unwrap());
     // The first swap's blob was ingested before the second failed; the rollback must not
     // leave it behind once the log that named it is gone.
@@ -563,7 +563,7 @@ impl CommitObserver for Spy {
 fn observed_store() -> (Store, Arc<Spy>) {
     let (_vfs, store) = sourced_store();
     let spy = Arc::new(Spy::default());
-    store.observe(spy.clone());
+    store.observe(spy.clone()).unwrap();
     (store, spy)
 }
 
@@ -676,7 +676,7 @@ fn an_observer_installed_late_hears_only_what_follows() {
         .agent_stamp
         .expect("agent version stamp");
     let spy = Arc::new(Spy::default());
-    store.observe(spy.clone());
+    store.observe(spy.clone()).unwrap();
     store
         .write_document_replicated(name("record"), &doc("record.json"), &body(b"after"))
         .unwrap()
@@ -705,7 +705,7 @@ fn the_observer_runs_on_the_writing_thread() {
 
     let (_vfs, store) = sourced_store();
     let spy = Arc::new(ThreadSpy::default());
-    store.observe(spy.clone());
+    store.observe(spy.clone()).unwrap();
     let writer = store.clone();
     thread::Builder::new()
         .name("the-writer".to_string())

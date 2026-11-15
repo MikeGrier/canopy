@@ -195,6 +195,7 @@ impl Store {
     /// scrub. A read stops as soon as it can answer; a scrub exists precisely to look at what
     /// a read would not have reached.
     pub fn verify_blob(&self, reference: &BlobRef) -> Result<BlobVerification, StoreError> {
+        let _lease = self.operation_lease()?;
         let expected = reference.name().digest();
         let mut verification = BlobVerification {
             intact: Vec::new(),

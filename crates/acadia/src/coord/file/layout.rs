@@ -26,7 +26,7 @@ mod root {
     pub const CREATION_LOCK: &str = ".coord-creation.lock";
     /// The creation exclusion of the second implementation tests use, which differs from the
     /// file-based one in this alone besides its identity.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub const ALTERNATE_CREATION_LOCK: &str = ".coord-alternate-creation.lock";
 }
 
@@ -101,7 +101,7 @@ impl Layout {
     }
 
     /// The second implementation's layout beneath `root`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn alternate(root: &Path) -> Self {
         Layout {
             root: root.to_path_buf(),

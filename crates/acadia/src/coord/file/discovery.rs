@@ -17,7 +17,7 @@ use crate::coord::{
 use super::FileCoordination;
 
 impl RecoveryDiscovery for FileCoordination {
-    fn discover_recovery(&self) -> CoordResult<RecoveryNeed> {
+    fn discover_recovery_with(&self, inspect: &mut dyn FnMut()) -> CoordResult<RecoveryNeed> {
         self.alive()?;
         let layout = self.layout();
         // A root whose state directory is not there has had no holder, so it has no lock to probe.
@@ -33,6 +33,9 @@ impl RecoveryDiscovery for FileCoordination {
         let fenced = self.fence_is_set()?;
         let holder_died = !holder_alive && self.vfs().exists(&layout.owner())?;
         let trust = self.trust()?;
+        if probe.is_some() {
+            inspect();
+        }
         drop(probe);
         Ok(RecoveryNeed::new(
             fenced,

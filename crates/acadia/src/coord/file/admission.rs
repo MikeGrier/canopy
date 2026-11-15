@@ -15,6 +15,8 @@ use super::layout::Layout;
 use super::registry::Entry;
 use super::{FileCoordination, HoldId};
 
+mod conversion;
+
 /// The locks one attachment or upgrade holds: its registry entry, released first, then the rest in
 /// reverse of the order taken.
 #[derive(Debug)]
@@ -84,6 +86,7 @@ pub(crate) struct FileAttachment {
 pub(crate) struct FileUpgrade {
     safety: ReaderSafety,
     held: Held,
+    gate: Option<HoldId>,
 }
 
 impl FileCoordination {
@@ -135,6 +138,15 @@ impl Attachment for FileAttachment {
         }
     }
 
+    fn begin_conversion(
+        mut self: Box<Self>,
+    ) -> CoordResult<Box<dyn crate::coord::UpgradeConversion>> {
+        self.held.release_all();
+        Ok(Box::new(conversion::FileConversion::new(
+            &self.held.participant,
+        )))
+    }
+
     fn upgrade(
         mut self: Box<Self>,
         safety: ReaderSafety,
@@ -169,7 +181,11 @@ impl Attachment for FileAttachment {
         if safety == ReaderSafety::Safe {
             held.release(gate);
         }
-        Ok(Box::new(FileUpgrade { safety, held }))
+        Ok(Box::new(FileUpgrade {
+            safety,
+            held,
+            gate: (safety == ReaderSafety::Unsafe).then_some(gate),
+        }))
     }
 }
 
@@ -197,5 +213,14 @@ impl Upgrade for FileUpgrade {
             reader: (self.safety == ReaderSafety::Unsafe).then_some(TierHold::Exclusive),
             writer: Some(TierHold::Exclusive),
         }
+    }
+
+    fn admit_readers(&mut self) -> CoordResult<()> {
+        if self.safety == ReaderSafety::Safe
+            && let Some(gate) = self.gate.take()
+        {
+            self.held.release(gate);
+        }
+        Ok(())
     }
 }

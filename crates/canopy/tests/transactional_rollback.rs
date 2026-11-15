@@ -150,7 +150,7 @@ fn a_rolled_back_transaction_leaves_no_blob_behind() {
         blobs(&vfs, &store, &abandoned()).is_empty(),
         "the live rollback left the abandoned blob behind"
     );
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
     assert_eq!(resolved(&store, &abandoned()), None);
 
     gate.close();

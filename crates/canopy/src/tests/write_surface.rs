@@ -453,7 +453,7 @@ fn an_ambiguous_failure_fences_the_store_and_keeps_its_claim_until_recovered() {
     );
     gate.close();
 
-    assert!(store.recovery_required());
+    assert!(store.recovery_required().unwrap());
     assert!(vfs.exists(&claim_path(&store, &expected[1])).unwrap());
     assert!(matches!(
         store.update_document(Swap::new(name("alpha"), doc("one"), body(b"later"))),
@@ -597,7 +597,7 @@ fn a_reset_of_a_log_holding_only_finished_work_succeeds() {
 fn the_feed_reports_logged_commits_and_unlogged_writes_in_order() {
     let (_vfs, store) = seeded_store();
     let recorder = Arc::new(Recorder::default());
-    store.observe(recorder.clone());
+    store.observe(recorder.clone()).unwrap();
 
     store
         .apply_transaction(
@@ -642,7 +642,7 @@ fn the_feed_reports_logged_commits_and_unlogged_writes_in_order() {
 fn the_feed_reports_writes_made_through_any_clone_and_the_old_verbs() {
     let (_vfs, store) = seeded_store();
     let recorder = Arc::new(Recorder::default());
-    store.observe(recorder.clone());
+    store.observe(recorder.clone()).unwrap();
     let clone = store.clone();
     clone
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
@@ -665,7 +665,7 @@ fn the_feed_reports_writes_made_through_any_clone_and_the_old_verbs() {
 fn the_feed_reports_nothing_for_a_rejection_or_a_failure() {
     let (_vfs, store, gate) = store_failing_after_prepare("feed-failure");
     let recorder = Arc::new(Recorder::default());
-    store.observe(recorder.clone());
+    store.observe(recorder.clone()).unwrap();
     store
         .update_document(Swap::conditional(
             name("alpha"),
@@ -708,7 +708,7 @@ fn the_feed_does_not_report_repairs() {
     store.note_damaged_blob(reference);
 
     let recorder = Arc::new(Recorder::default());
-    store.observe(recorder.clone());
+    store.observe(recorder.clone()).unwrap();
     let (report, nonces) = store.repair_reported_damage().unwrap().value;
 
     assert_eq!(report.repairs().len(), 1, "{report:?}");
@@ -829,7 +829,7 @@ fn a_transaction_id_the_log_already_holds_is_refused_without_disturbing_it() {
         "the earlier transaction's record is untouched"
     );
     assert!(
-        !store.recovery_required(),
+        !store.recovery_required().unwrap(),
         "a refused begin is not an ambiguous failure"
     );
 }

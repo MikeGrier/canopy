@@ -65,6 +65,10 @@ pub trait Attachment: Registrant + Send + fmt::Debug {
     /// The tiers held.
     fn tiers(&self) -> HeldTiers;
 
+    /// Releases this attachment before returning a nonblocking tier conversion.
+    /// Dropping the conversion releases everything it acquired and leaves the caller detached.
+    fn begin_conversion(self: Box<Self>) -> CoordResult<Box<dyn UpgradeConversion>>;
+
     /// Converts this attachment into an upgrade's: unregisters, releases the shared tiers, then
     /// takes the gate exclusively, then the reader tier exclusively if `safety` is
     /// [`ReaderSafety::Unsafe`], then the writer tier exclusively, waiting as `waiting` allows at
@@ -97,4 +101,17 @@ pub trait Upgrade: Registrant + Send + fmt::Debug {
 
     /// The tiers held.
     fn tiers(&self) -> HeldTiers;
+
+    /// Reopens reader admission for a reader-safe upgrade, after its admission state is published.
+    /// Unsafe upgrades keep the gate; repeating this call changes nothing.
+    fn admit_readers(&mut self) -> CoordResult<()>;
+}
+
+/// Incremental acquisition in gate, reader-if-unsafe, writer order, with no blocking step.
+pub trait UpgradeConversion: Send + fmt::Debug {
+    /// Acquires the gate exclusively, returning false if another holder prevents it.
+    fn poll_gate(&mut self) -> CoordResult<bool>;
+    /// Acquires the required tiers after the gate, retaining it in the returned upgrade.
+    /// A pending result holds acquired tiers; dropping this conversion releases them promptly.
+    fn poll_tiers(&mut self, safety: ReaderSafety) -> CoordResult<Option<Box<dyn Upgrade>>>;
 }

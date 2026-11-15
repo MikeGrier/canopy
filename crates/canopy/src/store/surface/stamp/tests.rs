@@ -99,6 +99,10 @@ fn an_unchanged_version_performs_no_marker_io_after_open() {
             When::Always,
         );
     let (_, vfs, store) = fixture(policy);
+    write(&store, true, b"first acquisition")
+        .unwrap()
+        .agent_stamp
+        .unwrap();
     let read_before = reads.load(Ordering::Relaxed);
     let write_before = writes.load(Ordering::Relaxed);
     for index in 0..10 {
@@ -119,6 +123,91 @@ fn an_unchanged_version_performs_no_marker_io_after_open() {
         .unwrap();
     assert_eq!(reads.load(Ordering::Relaxed), read_before);
     assert_eq!(writes.load(Ordering::Relaxed), write_before);
+}
+
+#[test]
+fn attached_writers_reload_the_agent_stamp_after_another_handles_turn() {
+    let (_, vfs, first) = fixture(FaultPolicy::new());
+    let second = Store::open(Arc::clone(&vfs), first.root.clone(), options("B"))
+        .unwrap()
+        .0;
+    for index in 0..12 {
+        let (store, version) = if index % 2 == 0 {
+            (&first, "A")
+        } else {
+            (&second, "B")
+        };
+        write(store, index % 3 == 0, version.as_bytes())
+            .unwrap()
+            .agent_stamp
+            .unwrap();
+        assert_eq!(metadata(&vfs, store)["metadata"]["agent_version"], version);
+        assert_eq!(
+            metadata(&vfs, store)["metadata"]["agent_description"],
+            "original description"
+        );
+    }
+}
+
+#[test]
+fn a_scrub_releases_each_documents_claims_before_another_handle_resolves() {
+    let gate = FaultGate::closed();
+    let turn = Arc::new(AtomicUsize::new(0));
+    let other: Arc<Mutex<Option<Store>>> = Arc::default();
+    let (turns, target) = (Arc::clone(&turn), Arc::clone(&other));
+    let policy = FaultPolicy::new().inject_gated(
+        FaultOp::Lock,
+        PathMatcher::file_name("exclusion.lock"),
+        Fault::observe_with(move |_, _| {
+            if turns.fetch_add(1, Ordering::Relaxed) == 2 {
+                let store = target.lock().unwrap().as_ref().unwrap().clone();
+                assert!(
+                    store
+                        .vfs
+                        .read_dir(&store.root.join(CLAIMS_DIR))
+                        .unwrap()
+                        .is_empty()
+                );
+                store.resolve().unwrap().agent_stamp.unwrap();
+            }
+        }),
+        When::Always,
+        gate.clone(),
+    );
+    let (_, vfs, store) = fixture(policy);
+    for index in 0..12 {
+        let node = NodePath::parse("docs").unwrap();
+        let document = DocumentName::new(&format!("repair{index}")).unwrap();
+        store
+            .update_document(Swap::new(
+                node.clone(),
+                document.clone(),
+                DocumentBody::new(b"content".to_vec()),
+            ))
+            .unwrap()
+            .agent_stamp
+            .unwrap();
+        vfs.remove_file(&store.pointer_entry_path(0, &node, &document))
+            .unwrap();
+    }
+    *other.lock().unwrap() = Some(
+        Store::open(Arc::clone(&vfs), store.root.clone(), options("A"))
+            .unwrap()
+            .0,
+    );
+    gate.open();
+    let result = store.scrub_content().unwrap();
+    gate.close();
+    result.agent_stamp.unwrap();
+    assert_eq!(result.value.0.pointer_repairs().len(), 12);
+    assert_eq!(result.value.1.len(), 12);
+    assert!(turn.load(Ordering::Relaxed) > 2);
+    assert!(
+        vfs.read_dir(&store.root.join(CLAIMS_DIR))
+            .unwrap()
+            .is_empty()
+    );
+    other.lock().unwrap().take();
 }
 
 #[test]
@@ -170,7 +259,7 @@ fn stamp_failures_preserve_success_and_are_retried_without_recovery() {
             gate.open();
             let outcome = write(&store, logged, b"committed").unwrap();
             assert!(outcome.agent_stamp.is_err());
-            assert!(!store.recovery_required());
+            assert!(!store.recovery_required().unwrap());
             assert_eq!(
                 crate::read_once(
                     &store,
@@ -214,7 +303,7 @@ fn a_directory_sync_failure_after_the_stamp_rename_keeps_the_cache_retryable() {
     armed.open();
     let outcome = write(&store, true, b"committed").unwrap();
     assert!(outcome.agent_stamp.is_err());
-    assert!(!store.recovery_required());
+    assert!(!store.recovery_required().unwrap());
     assert_eq!(metadata(&vfs, &store)["metadata"]["agent_version"], "B");
     assert_eq!(
         store
@@ -353,6 +442,7 @@ fn a_failed_stamp_keeps_the_successful_operation_result() {
 fn a_cache_from_another_generation_is_reloaded_before_comparison() {
     let (_, vfs, store) = fixture(FaultPolicy::new());
     let store = reopen(&vfs, store, "B");
+    let _hold = store.exclusive();
     let acquired = store.coordination.acquired().unwrap();
     let mut stale = store.genesis.clone();
     stale.metadata.agent_version = "B".into();
@@ -379,7 +469,7 @@ fn stamping_preserves_other_metadata_changed_under_the_same_exclusion() {
     let mut current = metadata(&vfs, &store);
     current["metadata"]["agent_description"] = "updated by management".into();
     {
-        let _guard = store.writer.enter();
+        let _guard = store.exclusive();
         Store::publish_durably(
             &vfs,
             &store.root,

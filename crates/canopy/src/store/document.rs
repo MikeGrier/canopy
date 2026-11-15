@@ -151,6 +151,7 @@ impl Store {
         node: impl Into<NodePath>,
         document: &DocumentName,
     ) -> Result<Read, StoreError> {
+        let _lease = self.operation_lease()?;
         let node = node.into();
         let mut resolved: Option<ContentDigest> = None;
 
