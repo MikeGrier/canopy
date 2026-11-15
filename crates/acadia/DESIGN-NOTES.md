@@ -1160,7 +1160,7 @@ vouched for merely by completing a count transition.
 This work is the writer/fence/generation part of the shared-memory milestone[^m10-2]. Rationale is
 in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-writer-evidence).
 
-[^m10-2]: `M10-2` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-2) [completed 2026-11-14]
+[^m10-2]: `M10-2` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-2) [completed 2026-11-14; `e0500f8`]
 
 ## Shared admission and registry retain one resource lifetime, 2026-11-15
 
@@ -1200,7 +1200,7 @@ kill it and require both tier release and refusal to report its old record as li
 work is tracked by canopy's shared-memory milestone[^m10-3], with rationale in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-admission-membership).
 
-[^m10-3]: `M10-3` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-3) [completed 2026-11-15]
+[^m10-3]: `M10-3` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-3) [completed 2026-11-15; `e0500f8`]
 
 ## Shared count sampling and notifications expose the whole contract, 2026-11-15
 
@@ -1244,7 +1244,7 @@ changing its registry lock discipline or replacing the file baseline. This whole
 completion is the count/factory work[^m10-5]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#shared-whole-contract).
 
-[^m10-5]: `M10-5` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-5) [completed 2026-11-15]
+[^m10-5]: `M10-5` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-5) [completed 2026-11-15; `e0500f8`]
 
 ## Coordination cost and independent backends, 2026-11-15
 
@@ -1280,4 +1280,4 @@ process evidence are the final shared-memory milestone work[^m10-6]; commands an
 are in [README.md](../canopy-lock-holder/README.md#coordination-implementation-comparison), and
 rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#coordination-cost-comparison).
 
-[^m10-6]: `M10-6` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-6) [completed 2026-11-15]
+[^m10-6]: `M10-6` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m10-6) [completed 2026-11-15; `e0500f8`]
