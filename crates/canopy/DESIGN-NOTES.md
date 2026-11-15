@@ -4391,7 +4391,7 @@ caller's, and recovery is a run of bounded, idempotent steps[^m7-4].
 
 [^m7-4]: `M7-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m7-4) [completed 2026-11-14; `87a52e7`]
 
-[^m9-1]: `M9-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-1) [completed 2026-11-14]
+[^m9-1]: `M9-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-1) [completed 2026-11-14; `bb46904`]
 
 ## Agent metadata is behind the genesis version-8 barrier, 2026-11-14
 
@@ -4631,7 +4631,7 @@ Windows and Linux kernels, because a cross-check cannot demonstrate process-deat
 cross-process exclusion. The work is the writer and recovery process matrix[^m9-2]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#process-test-barriers).
 
-[^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14]
+[^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14; `bb46904`]
 
 ## Attachment operations are leased and drains are cancellable, 2026-11-14
 
@@ -4684,7 +4684,7 @@ Diagnostic views take no lease on the handle being drained and remain available 
 properties and registry. These choices implement the lease and drain work[^m9-3]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#attachment-lease-context).
 
-[^m9-3]: `M9-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-3) [completed 2026-11-14]
+[^m9-3]: `M9-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-3) [completed 2026-11-14; `bb46904`]
 
 ## Schema-only upgrades convert tiers and publish admission, 2026-11-14
 
@@ -4731,7 +4731,7 @@ schema-only capability.
 These rules implement tier conversion and cumulative reader compatibility[^m9-4]. Rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#schema-conversion-and-announcements).
 
-[^m9-4]: `M9-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14]
+[^m9-4]: `M9-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14; `bb46904`]
 
 ## Caller-driven migration units have durable intent, 2026-11-14
 
@@ -4785,7 +4785,7 @@ migration; the concrete units are a blocked obligation in [CHECKLIST.md](CHECKLI
 The generic body engine is the current work[^m9-5]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#durable-migration-unit-cursors).
 
-[^m9-5]: `M9-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-5) [completed 2026-11-14]
+[^m9-5]: `M9-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-5) [completed 2026-11-14; `bb46904`]
 
 ## Upgrade boundaries are checked across processes, 2026-11-14
 
@@ -4812,7 +4812,7 @@ The fixtures do not invent a store-owned Canopy transition; that specification d
 in [CHECKLIST.md](CHECKLIST.md). The process coverage is the current work[^m9-6]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#upgrade-process-checkpoints).
 
-[^m9-6]: `M9-6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-6) [completed 2026-11-14]
+[^m9-6]: `M9-6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-6) [completed 2026-11-14; `bb46904`]
 
 ## Bounded process measurements retain censoring, 2026-11-14
 
@@ -4847,7 +4847,7 @@ The executable and its rerun commands are described in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#bounded-process-evidence). The comparison is the current
 work[^m9-7].
 
-[^m9-7]: `M9-7` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-7) [completed 2026-11-14]
+[^m9-7]: `M9-7` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m9-7) [completed 2026-11-14; `bb46904`]
 
 ## Windows finite-window comparison, 2026-11-14
 

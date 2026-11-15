@@ -60,4 +60,4 @@ enumeration or bisection cannot execute Linux test binaries on Windows. The invo
 bridge unit-test entry point are in [.github/copilot-instructions.md](.github/copilot-instructions.md)
 "Running tests on Linux via WSL". This tooling supports the process-level kernel checks[^m9-2].
 
-[^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](crates/canopy/COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14]
+[^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](crates/canopy/COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14; `bb46904`]

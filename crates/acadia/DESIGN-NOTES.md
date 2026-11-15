@@ -1093,4 +1093,4 @@ those distinct contracts, not consolidated into polling or retuned for one consu
 canopy's schema conversion[^m9-4]; rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#incremental-tier-conversion).
 
-[^m9-4]: `M9-4` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14]
+[^m9-4]: `M9-4` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m9-4) [completed 2026-11-14; `bb46904`]
