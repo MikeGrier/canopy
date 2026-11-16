@@ -23,11 +23,12 @@ impl Store {
     ///
     /// **A crash between the pointer renames is finished by the publication record.** Before
     /// the first replica moves, the write durably records the pointer it is publishing, and
-    /// the next operation on the store, or the next `open`, rolls every replica forward to it
-    /// before acting. A failed write therefore leaves its document holding at most its old
-    /// version and the recorded one, never a minority on each that no quorum can resolve
-    /// (`STRANDED-VOTE`). The record names that one pointer and is cleared when the write
-    /// completes; it journals nothing else.
+    /// from then on the record decides the outcome: a write that fails after it fails
+    /// unresolved, and the recovery that then requires rolls every replica forward to it. A
+    /// failed write therefore leaves its document holding at most its old version and the
+    /// recorded one, never a minority on each that no quorum can resolve (`STRANDED-VOTE`).
+    /// The record names that one pointer and is cleared when the write completes; it journals
+    /// nothing else.
     ///
     /// **A crash before the pointer moves leaves an unreferenced blob this path cannot
     /// collect.** The transactional path names its targets in `begin` so recovery can find
@@ -74,9 +75,17 @@ impl Store {
         let name = self.ingest_blob(&node, document, Artifact::Body, body.as_bytes(), nonce)?;
         // No replica moves until the record is durable, and the record is cleared only once
         // every replica names the version durably (`STRANDED-VOTE`).
-        self.record_publication(&node, document, name.digest(), nonce)?;
-        self.write_body_pointer(&node, document, name.digest(), nonce)?;
-        self.clear_publication()?;
+        self.append_publication(&node, document, name.digest(), nonce)?;
+        // The record is the write's first effect: a settle finishes it whatever happens next, so
+        // a failure from here fails unresolved and leaves it to recovery, not to the next write.
+        let published = self
+            .publication_durable()
+            .and_then(|()| self.write_body_pointer(&node, document, name.digest(), nonce))
+            .and_then(|()| self.clear_publication());
+        if published.is_err() {
+            self.writer.mark_unresolved();
+        }
+        published?;
 
         // Without this every overwrite would strand the version it replaced, on the success
         // path rather than only after a crash (`D328`). The keep-set is read from the

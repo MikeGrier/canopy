@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "spec": "PointerPublication",
+  "configuration": "PointerPublication-NoCollectSync",
+  "origin": {"defect":"DANGLING-DURABLE","kind":"counterexample"},
+  "constants": {"Control":"\"none\"","Fix":"\"none\"","Initial":"\"A\"","LoggedWrites":"FALSE","Maintenance":"FALSE","MaxCrashes":"1","MaxWrites":"2","NBlob":"2","NPtr":"3","RecordDetail":"FALSE","SyncBeforeCollect":"FALSE","Versions":"{\"A\", \"B\", \"C\"}"},
+  "departs": "#11",
+  "initial": {"blobDur":[["A"],["A"]],"blobLive":[["A"],["A"]],"crashes":0,"fenced":false,"idx":1,"journalled":true,"keep":[],"mode":"up","phase":"none","ptrDur":["A","A","A"],"ptrLive":["A","A","A"],"record":{"dur":"none","live":"none"},"target":"A","task":"none","txPrep":"none","ver":"A","writes":0},
+  "steps": [
+    {"action":"StartWrite(\"B\")","args":["B"],"at":"PointerPublication:267","changes":{"phase":"ingestRename","task":"write","ver":"B","writes":1},"name":"StartWrite","step":"#1"},
+    {"action":"IngestRename","args":[],"at":"PointerPublication:337","changes":{"blobLive":[["A","B"],["A"]],"phase":"ingestSync"},"name":"IngestRename","step":"#2"},
+    {"action":"IngestSync","args":[],"at":"PointerPublication:345","changes":{"blobDur":[["A","B"],["A"]],"idx":2,"phase":"ingestRename"},"name":"IngestSync","step":"#3"},
+    {"action":"IngestRename","args":[],"at":"PointerPublication:337","changes":{"blobLive":[["A","B"],["A","B"]],"phase":"ingestSync"},"name":"IngestRename","step":"#4"},
+    {"action":"IngestSync","args":[],"at":"PointerPublication:345","changes":{"blobDur":[["A","B"],["A","B"]],"idx":1,"phase":"ptrRename"},"name":"IngestSync","step":"#5"},
+    {"action":"PtrRename","args":[],"at":"PointerPublication:385","changes":{"phase":"ptrSync","ptrLive":["B","A","A"]},"name":"PtrRename","step":"#6"},
+    {"action":"PtrSync","args":[],"at":"PointerPublication:393","changes":{"idx":2,"phase":"ptrRename","ptrDur":["B","A","A"]},"name":"PtrSync","step":"#7"},
+    {"action":"PtrRename","args":[],"at":"PointerPublication:385","changes":{"phase":"ptrSync","ptrLive":["B","B","A"]},"name":"PtrRename","step":"#8"},
+    {"action":"Fail","args":[],"at":"PointerPublication:241","changes":{"phase":"none","task":"none"},"name":"Fail","step":"#9"},
+    {"action":"Close","args":[],"at":"PointerPublication:708","changes":{"mode":"down"},"name":"Close","step":"#10"},
+    {"action":"Open","args":[],"at":"PointerPublication:717","changes":{"idx":1,"mode":"recovering","phase":"collRead","task":"recover"},"name":"Open","step":"#11"},
+    {"action":"CollReadIn(FALSE)","args":[{"expr":"FALSE"}],"at":"PointerPublication:640","changes":{"keep":["B"],"phase":"collRemove"},"name":"CollReadIn","step":"#12"},
+    {"action":"CollRemoveIn(FALSE)","args":[{"expr":"FALSE"}],"at":"PointerPublication:667","changes":{"blobLive":[["B"],["A","B"]],"phase":"collFsync"},"name":"CollRemoveIn","step":"#13"},
+    {"action":"CollFsyncIn(FALSE)","args":[{"expr":"FALSE"}],"at":"PointerPublication:677","changes":{"blobDur":[["B"],["A","B"]],"idx":2,"phase":"collRemove"},"name":"CollFsyncIn","step":"#14"},
+    {"action":"CollRemoveIn(FALSE)","args":[{"expr":"FALSE"}],"at":"PointerPublication:667","changes":{"blobLive":[["B"],["B"]],"phase":"collFsync"},"name":"CollRemoveIn","step":"#15"},
+    {"action":"CollFsyncIn(FALSE)","args":[{"expr":"FALSE"}],"at":"PointerPublication:677","changes":{"blobDur":[["B"],["B"]],"phase":"recReset"},"name":"CollFsyncIn","step":"#16"}
+  ]
+}

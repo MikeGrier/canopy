@@ -60,11 +60,16 @@
 (* with the vote's version. Under the "record" guard each begins by        *)
 (* settling a pending record.                                              *)
 (*                                                                         *)
-(* LoggedWrites adds the write a transaction makes: its prepare record in  *)
-(* the log, its pointer swaps, its end record and the collection that      *)
-(* follows, and a recovery that rolls a prepared transaction forward. It   *)
-(* runs the same guard as an unlogged write, and writes no record of its   *)
-(* own.                                                                    *)
+(* LoggedWrites adds the write a transaction makes: its begin record, its  *)
+(* prepare record in the log, its pointer swaps, its end record and the    *)
+(* collection that follows, and a recovery that rolls a prepared           *)
+(* transaction forward. It runs the same guard as an unlogged write, and   *)
+(* writes no record of its own. One that fails after its begin and before  *)
+(* its prepare is rolled back: what it ingested is collected and the log   *)
+(* emptied.                                                                *)
+(*                                                                         *)
+(* A settle that rolls a record forward collects what that superseded      *)
+(* before the operation goes on, and a recovery ends by emptying the log.  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -101,6 +106,8 @@ ASSUME Control \in {"check-skips-the-settle", "collect-skips-the-settle",
 
 None == "none"
 NoMajority == "no-majority"
+\* A transaction whose begin record is in the log, with no prepare record yet.
+Begun == "begun"
 Values == Versions \cup {None}
 Ptr == 1..NPtr
 Blob == 1..NBlob
@@ -117,7 +124,7 @@ VARIABLES
     idx,         \* the replica the current step is at
     keep,        \* the keep-set collection read from the namespace
     journalled,  \* an ended transaction for this document is still in the log
-    txPrep,      \* "LoggedWrites": the version a prepared transaction names, or None
+    txPrep,      \* "LoggedWrites": the version a prepared transaction names, Begun, or None
     target,      \* "resolve": the value every replica is being set to
     record,      \* "record": the durable publication record, a version or None
     fenced,      \* "fence": writes refused until reopen (process memory)
@@ -166,7 +173,7 @@ Maintaining == task \in {"repair", "scrub"}
 \* Where a recovery begins.
 RecoverPhase ==
     IF Settles THEN SettleFirstPhase
-    ELSE IF txPrep # None THEN "txRfRename" ELSE "collRead"
+    ELSE IF txPrep \in Versions THEN "txRfRename" ELSE "collRead"
 
 \* Audience: internal.
 TypeOK ==
@@ -175,12 +182,13 @@ TypeOK ==
     /\ blobLive \in [Blob -> SUBSET Versions]
     /\ blobDur \in [Blob -> SUBSET Versions]
     /\ mode \in {"up", "down", "recovering"}
-    /\ task \in {"none", "write", "txwrite", "recover", "check", "collect", "repair", "scrub"}
+    /\ task \in {"none", "write", "txwrite", "rollback", "recover", "check", "collect", "repair",
+                 "scrub"}
     /\ ver \in Versions
     /\ idx \in Ptr \cup Blob
     /\ keep \in SUBSET Versions
     /\ journalled \in BOOLEAN
-    /\ txPrep \in Values
+    /\ txPrep \in Values \cup {Begun}
     /\ target \in Values
     /\ record \in [live : Values, dur : Values]
     /\ fenced \in BOOLEAN
@@ -215,29 +223,50 @@ Finish ==
     /\ phase' = "none"
     /\ mode' = IF mode = "recovering" THEN "up" ELSE mode
 
+\* How an operation's last step ends it: a recovery and a rollback each empty the log first.
+End ==
+    CASE task = "recover"  -> phase' = "recReset" /\ UNCHANGED <<task, mode>>
+      [] task = "rollback" -> phase' = "rbReset" /\ UNCHANGED <<task, mode>>
+      [] OTHER             -> Finish
+
 Publishing == phase = "ptrSync" \/ (phase = "ptrRename" /\ idx > 1)
 
+\* apply.rs rollback_unprepared: a transaction write that fails after its begin record and before
+\* its prepare record is durable is rolled back, collecting what it ingested and emptying the log.
+RollsBack == task = "txwrite" /\ phase \in {"txBegin", "ingestRename", "ingestSync", "txPrepare"}
+
+\* A failed rollback leaves the store needing recovery, which collects what the begin names. A
+\* recovery empties the log best-effort, so that step cannot fail.
 Fail ==
     /\ task # "none"
-    /\ task' = "none"
-    /\ phase' = "none"
-    /\ mode' = IF mode = "recovering" THEN "down" ELSE mode
+    /\ phase # "recReset"
+    /\ IF RollsBack
+          THEN /\ task' = "rollback" /\ idx' = 1
+               /\ phase' = IF txPrep = Begun THEN "collRead" ELSE "rbReset"
+               /\ UNCHANGED <<mode, txPrep>>
+          ELSE /\ task' = "none" /\ phase' = "none"
+               /\ mode' = IF mode = "recovering" THEN "down" ELSE mode
+               /\ txPrep' = IF task = "rollback" THEN Begun ELSE txPrep
+               /\ UNCHANGED idx
     /\ fenced' = (fenced \/ (Fix = "fence" /\ task = "write" /\ Publishing))
-    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, idx, keep,
-                   journalled, txPrep, target, record, writes, crashes>>
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, keep,
+                   journalled, target, record, writes, crashes>>
 
 -----------------------------------------------------------------------------
 (* document.rs write_document_replicated: guard, ingest, publish, collect. *)
-FirstWritePhase ==
+\* Where a write's own work begins: a transaction's with its begin record.
+IngestStart(k) == IF k = "txwrite" THEN "txBegin" ELSE "ingestRename"
+
+FirstWritePhase(k) ==
     CASE Fix = "resolve"                              -> "resStart"
       [] Fix = "resolve-lazy" /\ ~Unanimous(ptrLive)  -> "resStart"
       [] Settles                                      -> SettleFirstPhase
-      [] OTHER                                        -> "ingestRename"
+      [] OTHER                                        -> IngestStart(k)
 
 StartWrite(v) ==
     /\ mode = "up" /\ task = "none" /\ writes < MaxWrites /\ ~fenced /\ txPrep = None
     /\ task' = "write" /\ ver' = v /\ idx' = 1
-    /\ phase' = IF Control = "write-skips-the-guard" THEN "ingestRename" ELSE FirstWritePhase
+    /\ phase' = IF Control = "write-skips-the-guard" THEN "ingestRename" ELSE FirstWritePhase("write")
     /\ writes' = writes + 1
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, mode, keep, journalled, txPrep,
                    target, record, fenced, crashes>>
@@ -247,7 +276,8 @@ StartTx(v) ==
     /\ LoggedWrites
     /\ mode = "up" /\ task = "none" /\ writes < MaxWrites /\ ~fenced /\ txPrep = None
     /\ task' = "txwrite"
-    /\ phase' = IF Control = "logged-write-skips-the-guard" THEN "ingestRename" ELSE FirstWritePhase
+    /\ phase' = IF Control = "logged-write-skips-the-guard" THEN "txBegin"
+                ELSE FirstWritePhase("txwrite")
     /\ ver' = v /\ idx' = 1
     /\ writes' = writes + 1
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, mode, keep, journalled, txPrep,
@@ -298,7 +328,7 @@ ResSync ==
     /\ ptrDur' = [ptrDur EXCEPT ![idx] = ptrLive[idx]]
     /\ IF idx < NPtr
        THEN idx' = idx + 1 /\ phase' = "resRename"
-       ELSE idx' = 1 /\ phase' = "ingestRename"
+       ELSE idx' = 1 /\ phase' = IngestStart(task)
     /\ UNCHANGED <<ptrLive, blobLive, blobDur, mode, task, ver, keep, journalled, txPrep,
                    target, record, fenced, writes, crashes>>
 
@@ -393,13 +423,13 @@ RecClearSync ==
 \* transaction forward, then goes to collection when a transaction ended, and otherwise it
 \* is over.
 AfterSettle ==
-    CASE Writing        -> phase' = "ingestRename" /\ UNCHANGED <<task, mode>>
+    CASE Writing        -> phase' = IngestStart(task) /\ UNCHANGED <<task, mode>>
       [] task = "check"   -> phase' = "chkRead" /\ UNCHANGED <<task, mode>>
       [] task = "collect" -> phase' = "collRead" /\ UNCHANGED <<task, mode>>
       [] Maintaining    -> phase' = "repRead" /\ UNCHANGED <<task, mode>>
-      [] txPrep # None  -> phase' = "txRfRename" /\ UNCHANGED <<task, mode>>
-      [] journalled     -> phase' = "collRead" /\ UNCHANGED <<task, mode>>
-      [] OTHER          -> Finish
+      [] txPrep \in Versions -> phase' = "txRfRename" /\ UNCHANGED <<task, mode>>
+      [] journalled \/ txPrep = Begun -> phase' = "collRead" /\ UNCHANGED <<task, mode>>
+      [] OTHER          -> End
 
 -----------------------------------------------------------------------------
 (* "record": roll every replica forward to the recorded version, then      *)
@@ -437,19 +467,31 @@ RfClear ==
                /\ phase' = "rfClearSync"
                /\ UNCHANGED <<task, mode>>
           ELSE /\ record' = NoRecord
-               /\ AfterSettle
+               /\ phase' = "rfCollRead"
+               /\ UNCHANGED <<task, mode>>
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, idx, keep, journalled, txPrep,
                    target, fenced, writes, crashes>>
 
 RfClearSync ==
     /\ task # "none" /\ phase = "rfClearSync"
     /\ record' = [record EXCEPT !.dur = None]
-    /\ AfterSettle
+    /\ phase' = "rfCollRead"
+    /\ UNCHANGED <<task, mode>>
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, idx, keep, journalled, txPrep,
                    target, fenced, writes, crashes>>
 
 -----------------------------------------------------------------------------
 (* A transaction's write of the document, and recovery of one.             *)
+
+\* apply.rs apply_transaction_gated: the begin record, appended and fsynced before anything is
+\* ingested, names the document, so that recovery can collect what an unprepared transaction
+\* left (D329).
+TxBegin ==
+    /\ task = "txwrite" /\ phase = "txBegin"
+    /\ txPrep' = Begun
+    /\ phase' = "ingestRename"
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, mode, task, ver, idx, keep, journalled,
+                   target, record, fenced, writes, crashes>>
 
 \* The prepare record is in the log, which is durable once appended.
 TxPrepare ==
@@ -493,6 +535,23 @@ TxRfEnd ==
     /\ phase' = "collRead"
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, mode, task, ver, idx, keep,
                    target, record, fenced, writes, crashes>>
+
+\* recovery.rs Completion: once every transaction is settled and collected the log is emptied,
+\* best-effort, so a recovery's last step cannot fail.
+RecReset ==
+    /\ task = "recover" /\ phase = "recReset"
+    /\ journalled' = FALSE /\ txPrep' = None
+    /\ Finish
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, idx, keep, target, record, fenced,
+                   writes, crashes>>
+
+\* The rollback empties the log (quiesce_commit_log), once what the begin names is collected.
+RbReset ==
+    /\ task = "rollback" /\ phase = "rbReset"
+    /\ journalled' = FALSE /\ txPrep' = None
+    /\ Finish
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, idx, keep, target, record, fenced,
+                   writes, crashes>>
 
 \* A holder that is told recovery is required runs it without reopening the store.
 Recover ==
@@ -558,59 +617,77 @@ Damage(r) ==
                    target, record, fenced, writes, crashes>>
 
 -----------------------------------------------------------------------------
-(* blob.rs collect_document_blobs, shared by a write and by recovery.      *)
+(* blob.rs collect_document_blobs, shared by a write, a rollback, a        *)
+(* recovery, and a settle that has rolled a record forward.                *)
+
+\* A collection is an operation's own (s FALSE), or a settle's (s TRUE), after which the
+\* operation the settle began goes on (publication.rs settle_publication).
+SettleColl == [collRead |-> "rfCollRead", collSync |-> "rfCollSync",
+               collRemove |-> "rfCollRemove", collFsync |-> "rfCollFsync"]
+Coll(s, step) == IF s THEN SettleColl[step] ELSE step
+
+CollDone(s) == IF s THEN idx' = 1 /\ AfterSettle ELSE End /\ UNCHANGED idx
 
 \* Read the keep-set from the live namespace. Every replica absent keeps
 \* nothing; a majority keeps its version; anything else skips collection.
-CollectFrom(k) ==
+CollectFrom(s, k) ==
     /\ keep' = k
     /\ idx' = 1
-    /\ phase' = IF SyncBeforeCollect THEN "collSync" ELSE "collRemove"
+    /\ phase' = Coll(s, IF SyncBeforeCollect THEN "collSync" ELSE "collRemove")
     /\ UNCHANGED <<task, mode>>
 
-CollRead ==
+CollReadIn(s) ==
     /\ task # "none"
-    /\ phase = "collRead"
+    /\ phase = Coll(s, "collRead")
     /\ LET m == Majority(ptrLive)
-       IN  CASE \A r \in Ptr : ptrLive[r] = None -> CollectFrom({})
-             [] m \in Versions                   -> CollectFrom({m})
-             [] OTHER                            -> Finish /\ UNCHANGED <<keep, idx>>
+       IN  CASE \A r \in Ptr : ptrLive[r] = None -> CollectFrom(s, {})
+             [] m \in Versions                   -> CollectFrom(s, {m})
+             [] OTHER                            -> CollDone(s) /\ UNCHANGED keep
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, ver, journalled, txPrep, target, record,
                    fenced, writes, crashes>>
 
 \* namespace.rs sync_pointer_entry: fsync each replica's entry parent.
-CollSync ==
-    /\ task # "none" /\ phase = "collSync"
+CollSyncIn(s) ==
+    /\ task # "none" /\ phase = Coll(s, "collSync")
     /\ ptrDur' = [ptrDur EXCEPT ![idx] = ptrLive[idx]]
     /\ IF idx < NPtr
-       THEN idx' = idx + 1 /\ phase' = "collSync"
-       ELSE idx' = 1 /\ phase' = "collRemove"
+       THEN idx' = idx + 1 /\ phase' = Coll(s, "collSync")
+       ELSE idx' = 1 /\ phase' = Coll(s, "collRemove")
     /\ UNCHANGED <<ptrLive, blobLive, blobDur, mode, task, ver, keep, journalled, txPrep,
                    target, record, fenced, writes, crashes>>
 
 \* blob.rs retain_blobs: per replica, remove every blob not kept, and fsync
 \* the shard only if something was removed.
-NextBlobOrFinish ==
+NextBlobOrDone(s) ==
     IF idx < NBlob
-    THEN idx' = idx + 1 /\ phase' = "collRemove" /\ UNCHANGED <<task, mode>>
-    ELSE Finish /\ UNCHANGED idx
+    THEN idx' = idx + 1 /\ phase' = Coll(s, "collRemove") /\ UNCHANGED <<task, mode>>
+    ELSE CollDone(s)
 
-CollRemove ==
-    /\ task # "none" /\ phase = "collRemove"
+CollRemoveIn(s) ==
+    /\ task # "none" /\ phase = Coll(s, "collRemove")
     /\ IF blobLive[idx] \subseteq keep
-       THEN NextBlobOrFinish /\ UNCHANGED blobLive
+       THEN NextBlobOrDone(s) /\ UNCHANGED blobLive
        ELSE /\ blobLive' = [blobLive EXCEPT ![idx] = @ \cap keep]
-            /\ phase' = "collFsync"
+            /\ phase' = Coll(s, "collFsync")
             /\ UNCHANGED <<task, mode, idx>>
     /\ UNCHANGED <<ptrLive, ptrDur, blobDur, ver, keep, journalled, txPrep, target, record,
                    fenced, writes, crashes>>
 
-CollFsync ==
-    /\ task # "none" /\ phase = "collFsync"
+CollFsyncIn(s) ==
+    /\ task # "none" /\ phase = Coll(s, "collFsync")
     /\ blobDur' = [blobDur EXCEPT ![idx] = blobLive[idx]]
-    /\ NextBlobOrFinish
+    /\ NextBlobOrDone(s)
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, ver, keep, journalled, txPrep, target, record,
                    fenced, writes, crashes>>
+
+CollRead == CollReadIn(FALSE)
+CollSync == CollSyncIn(FALSE)
+CollRemove == CollRemoveIn(FALSE)
+CollFsync == CollFsyncIn(FALSE)
+RfCollRead == CollReadIn(TRUE)
+RfCollSync == CollSyncIn(TRUE)
+RfCollRemove == CollRemoveIn(TRUE)
+RfCollFsync == CollFsyncIn(TRUE)
 
 -----------------------------------------------------------------------------
 (* Process lifecycle.                                                      *)
@@ -659,10 +736,12 @@ Next ==
     \/ IngestRename \/ IngestSync \/ RecWrite \/ RecSync \/ RecClearEarly
     \/ PtrRename \/ PtrSync \/ RecClear \/ RecClearSync
     \/ RfRecSync \/ RfRename \/ RfSync \/ RfClear \/ RfClearSync
-    \/ TxPrepare \/ TxEnd \/ TxRfRename \/ TxRfSync \/ TxRfEnd \/ Recover
+    \/ TxBegin \/ TxPrepare \/ TxEnd \/ TxRfRename \/ TxRfSync \/ TxRfEnd \/ Recover
+    \/ RecReset \/ RbReset
     \/ \E k \in {"check", "collect", "repair", "scrub"} : StartOp(k)
     \/ ChkRead \/ RepRead \/ RepRename \/ RepSync \/ \E r \in Ptr : Damage(r)
     \/ CollRead \/ CollSync \/ CollRemove \/ CollFsync
+    \/ RfCollRead \/ RfCollSync \/ RfCollRemove \/ RfCollFsync
     \/ Fail \/ Crash \/ Close \/ Open \/ Quiesce
 
 Spec == Init /\ [][Next]_vars

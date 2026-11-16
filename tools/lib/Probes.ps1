@@ -7,13 +7,14 @@ function Split-Vars([string]$list) {
     return @($list -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 
-# The modules of the spec $specName in $specDir -- $specName.tla and every $specName*.tla -- as
-# an ordered name -> text map with LF endings.
+# The root and its reachable same-prefix modules, as an ordered name -> text map with LF endings.
 function Get-Chain([string]$specDir, [string]$specName) {
     $chain = [ordered]@{}
-    $files = Get-ChildItem -LiteralPath $specDir -File | Where-Object { $_.Name -like "$specName*.tla" } | Sort-Object Name
-    foreach ($file in $files) {
-        $chain[$file.Name] = [IO.File]::ReadAllText($file.FullName).Replace("`r`n", "`n")
+    $rootFile = "$specName.tla"
+    $chain[$rootFile] = [IO.File]::ReadAllText((Join-Path $specDir $rootFile)).Replace("`r`n", "`n")
+    $dependencies = Get-Dependencies $specDir $chain
+    foreach ($module in ($dependencies.Keys | Where-Object { $_.StartsWith($specName) } | Sort-Object)) {
+        $chain[$module] = [IO.File]::ReadAllText($dependencies[$module]).Replace("`r`n", "`n")
     }
     return $chain
 }

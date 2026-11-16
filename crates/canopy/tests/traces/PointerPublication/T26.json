@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "spec": "PointerPublication",
+  "configuration": "PointerPublication-MaintenanceRecordLostReplica",
+  "origin": {"kind":"timeline","timeline":"T26"},
+  "constants": {"Control":"\"none\"","Fix":"\"record\"","Initial":"\"A\"","LoggedWrites":"TRUE","Maintenance":"TRUE","MaxCrashes":"1","MaxWrites":"2","NBlob":"2","NPtr":"3","RecordDetail":"TRUE","SyncBeforeCollect":"TRUE","Versions":"{\"A\", \"B\", \"C\"}"},
+  "departs": null,
+  "initial": {"blobDur":[["A"],["A"]],"blobLive":[["A"],["A"]],"crashes":0,"fenced":false,"idx":1,"journalled":true,"keep":[],"mode":"up","phase":"none","ptrDur":["A","A","A"],"ptrLive":["A","A","A"],"record":{"dur":"none","live":"none"},"target":"A","task":"none","txPrep":"none","ver":"A","writes":0},
+  "steps": [
+    {"action":"Damage(2)","args":[2],"changes":{"ptrDur":["A","none","A"],"ptrLive":["A","none","A"]},"name":"Damage","step":"LOS"},
+    {"action":"StartWrite(\"B\")","args":["B"],"changes":{"phase":"rfRecSync","task":"write","ver":"B","writes":1},"name":"StartWrite","step":"WRT"},
+    {"action":"RfRecSync","args":[],"changes":{"phase":"ingestRename"},"name":"RfRecSync","step":"WRT"},
+    {"action":"IngestRename","args":[],"changes":{"blobLive":[["A","B"],["A"]],"phase":"ingestSync"},"name":"IngestRename","step":"ING"},
+    {"action":"IngestSync","args":[],"changes":{"blobDur":[["A","B"],["A"]],"idx":2,"phase":"ingestRename"},"name":"IngestSync","step":"ING"},
+    {"action":"IngestRename","args":[],"changes":{"blobLive":[["A","B"],["A","B"]],"phase":"ingestSync"},"name":"IngestRename","step":"ING"},
+    {"action":"IngestSync","args":[],"changes":{"blobDur":[["A","B"],["A","B"]],"idx":1,"phase":"recWrite"},"name":"IngestSync","step":"ING"},
+    {"action":"RecWrite","args":[],"changes":{"phase":"recSync","record":{"dur":"none","live":"B"}},"name":"RecWrite","step":"REC"},
+    {"action":"RecSync","args":[],"changes":{"phase":"ptrRename","record":{"dur":"B","live":"B"}},"name":"RecSync","step":"REC"},
+    {"action":"PtrRename","args":[],"changes":{"phase":"ptrSync","ptrLive":["B","none","A"]},"name":"PtrRename","step":"PRN"},
+    {"action":"Fail","args":[],"changes":{"phase":"none","task":"none"},"name":"Fail","step":"FAI"}
+  ]
+}

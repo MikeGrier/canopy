@@ -3,6 +3,7 @@
     Base = 'Creation-Control-OpenTrustsALiveMarker'
     Overrides = @{ MaxCrashes = '1' }
     Note = 'A is process 1 and O process 2. Step 10 needs a crash, which the control''s constants do not allow.'
+    Departs = 'OPEN'
     Steps = @(
         @{ Id = 'LOOK'; Actions = @('Look(1)') }
         @{ Id = 'LOCK'; Actions = @('Lock(1)') }

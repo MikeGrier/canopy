@@ -76,6 +76,7 @@ EndOpen(p) ==
 
 \* A failed opening publication makes no effect and leaves the count as it was.
 OpenFails(p) ==
+    /\ PublicationsFail
     /\ pc[p] = "opening"
     /\ pc' = Set(pc, p, "closed")
     /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
@@ -205,6 +206,7 @@ EndClose(p) ==
 \* A failed closing publication leaves the count odd and sets the fence, so
 \* recovery, which republishes it, is required.
 CloseFails(p) ==
+    /\ PublicationsFail
     /\ pc[p] = "closing"
     /\ pc' = Set(pc, p, "told")
     /\ fence' = TRUE
@@ -340,7 +342,7 @@ Sweep(p) ==
                    reader, diedIn, counts>>
 
 \* The commit log is reset by a holder with nothing in flight, and only once
-\* everything in it has ended. A reset never discards unresolved work.
+\* no prepare is unresolved. A begun transaction's staging must have been swept.
 QuiesceStates ==
     {"held", "closed"}
     \cup (IF Control = "reset-during-a-transaction"
@@ -350,7 +352,7 @@ QuiesceStates ==
 
 Quiesce(p) ==
     /\ Logs /\ pc[p] \in QuiesceStates /\ log # "empty"
-    /\ (pc[p] \in {"held", "closed"} => (log = "ended" /\ stage = 0))
+    /\ (pc[p] \in {"held", "closed"} => (log # "prepared" /\ stage = 0))
     /\ log' = "empty"
     /\ ptgt' = 0
     /\ Logged(p)
@@ -563,7 +565,7 @@ RecSwap2(p) ==
                    reader, diedIn, counts>>
 
 \* A prepared transaction is ended; one that was only begun has its staging swept
-\* before its log is reset; anything else is already resolved.
+\* and keeps its targets in the log until completion; anything else is resolved.
 RecEnd(p) ==
     /\ pc[p] = "recEnd"
     /\ \/ /\ log = "prepared" /\ Control # "recovery-rolls-back-a-prepared-transaction"
@@ -580,7 +582,7 @@ RecEnd(p) ==
           /\ Logged(p)
        \/ /\ log = "begun"
           /\ stage' = 0
-          /\ pc' = Set(pc, p, "recReset")
+             /\ pc' = Set(pc, p, "recSweep")
           /\ UNCHANGED <<log, ptgt, shared, cache>>
        \/ /\ log \in {"empty", "ended"}
           /\ pc' = Set(pc, p, "recSweep")
@@ -588,19 +590,19 @@ RecEnd(p) ==
     /\ UNCHANGED <<adm, req, eligible, coord, a, b, mygen, reader, diedIn, counts>>
 
 RecReset(p) ==
-    /\ pc[p] = "recReset" /\ log = "begun"
-    /\ log' = "empty"
-    /\ pc' = Set(pc, p, "recSweep")
-    /\ Logged(p)
+     /\ pc[p] = "recReset" /\ log # "prepared"
+     /\ \/ /\ log # "empty" /\ log' = "empty" /\ Logged(p)
+         \/ UNCHANGED <<log, shared, cache>>
+     /\ pc' = Set(pc, p,
+                      IF Control = "count-published-before-the-namespace-is-whole"
+                          THEN "recClear" ELSE "recCount")
     /\ UNCHANGED <<adm, req, eligible, coord, a, b, stage, ptgt, mygen, reader,
                    diedIn, counts>>
 
 RecSweep(p) ==
     /\ pc[p] = "recSweep"
     /\ stage' = 0
-    /\ pc' = Set(pc, p,
-                 IF Control = "count-published-before-the-namespace-is-whole"
-                    THEN "recClear" ELSE "recCount")
+    /\ pc' = Set(pc, p, "recReset")
     /\ UNCHANGED <<adm, req, eligible, coord, a, b, shared, log, ptgt, handle,
                    reader, diedIn, counts>>
 
@@ -632,9 +634,10 @@ RecClear(p) ==
                    handle, reader, diedIn, counts>>
 
 \* A recoverer stops between steps, holding exclusion and leaving the rest for
-\* itself or the next.
+\* itself or the next. It cannot stop between publishing the count and clearing
+\* the fence: the contract completes recovery with both in one call.
 RecStop(p) ==
-    /\ pc[p] \in RecStates
+    /\ pc[p] \in RecStates \ {"recClear"}
     /\ pc' = Set(pc, p, "told")
     /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
 

@@ -285,6 +285,11 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_by_the_next_write()
         .expect_err("the node's parent sync fails and the directory cannot be removed");
     gate.close();
     store
+        .recover()
+        .expect("recovery finishes the write")
+        .agent_stamp
+        .expect("agent version stamp");
+    store
         .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
         .expect("the retry succeeds");
 
@@ -624,7 +629,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
         "the short append left an unterminated tail"
     );
     store
-        .write_document_replicated_as(name("tickets"), &doc("first"), &body(b"a"), &nonce("t2"))
+        .recover()
         .expect_err("the node's parent sync fails and the directory cannot be removed");
     gate.close();
     let record = vfs

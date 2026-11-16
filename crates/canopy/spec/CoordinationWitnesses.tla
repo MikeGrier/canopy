@@ -336,7 +336,7 @@ Witness_ARecoveryFollowsARestartWithNothingHalfApplied ==
     [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] = "recEnd" /\ ~trusted /\ ~Partial)]_vars
 
 Witness_ARecoveryRollsABegunTransactionBack ==
-    [][~(\E p \in Procs : pc[p] = "recReset" /\ log' = "empty")]_vars
+    [][~(\E p \in Procs : pc[p] = "recReset" /\ log = "begun" /\ log' = "empty")]_vars
 
 Witness_ARecoveryCompletes ==
     [][~(\E p \in Procs : pc[p] = "recClear" /\ pc'[p] = "closed")]_vars

@@ -11,8 +11,13 @@ use crate::coord::{CoordError, CoordResult, Trust, Untrusted};
 use crate::{LockMode, LockSpan, Vfs, VfsError, VfsErrorKind, VfsLock};
 
 mod exclusion;
+#[cfg(any(test, feature = "test-support"))]
+mod hook;
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use hook::{SharedStep, SharedWords, StepHook, inspect};
 
 const DIRECTORY: &str = ".coord-shared";
 const WORD_COUNT: usize = 16 * 1024;
@@ -125,6 +130,8 @@ pub struct SharedState {
     live: Arc<Mutex<Option<Box<dyn VfsLock>>>>,
     abandoned: Arc<AtomicBool>,
     holds: Arc<Mutex<HashMap<u64, Box<dyn VfsLock>>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    hook: Option<Arc<dyn StepHook>>,
 }
 
 impl std::fmt::Debug for SharedState {
@@ -146,6 +153,20 @@ fn boot(vfs: &dyn Vfs) -> CoordResult<Option<Vec<u8>>> {
         Err(error) if error.kind() == VfsErrorKind::Unsupported => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+/// The in-process model's name for the state directory `directory`, the same however it is
+/// spelled from the filesystem's root.
+fn model_root(directory: &Path) -> PathBuf {
+    directory
+        .components()
+        .filter(|part| {
+            !matches!(
+                part,
+                std::path::Component::RootDir | std::path::Component::CurDir
+            )
+        })
+        .collect()
 }
 
 fn read_optional(vfs: &dyn Vfs, path: &Path) -> CoordResult<Option<Vec<u8>>> {
@@ -351,15 +372,7 @@ impl SharedState {
                 base,
             }))
         } else {
-            let normalized_root: PathBuf = directory
-                .components()
-                .filter(|part| {
-                    !matches!(
-                        part,
-                        std::path::Component::RootDir | std::path::Component::CurDir
-                    )
-                })
-                .collect();
+            let normalized_root = model_root(&directory);
             let key = (
                 instance,
                 current_boot.clone().unwrap_or_default(),
@@ -428,7 +441,16 @@ impl SharedState {
             live: Arc::new(Mutex::new(Some(live))),
             abandoned: Arc::new(AtomicBool::new(false)),
             holds: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(any(test, feature = "test-support"))]
+            hook: None,
         })
+    }
+
+    /// This participant, announcing each later step that changes the shared words to `hook`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn with_hook(mut self, hook: Option<Arc<dyn StepHook>>) -> Self {
+        self.hook = hook;
+        self
     }
 
     /// Returns the epoch's current diagnostic state. Untrusted epochs are always fenced.

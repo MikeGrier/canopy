@@ -22,6 +22,9 @@ use crate::{LockMode, LockSpan, Vfs, VfsLock};
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use state::{SharedStep, SharedWords, StepHook, inspect};
+
 /// The shared implementation's stable identity. Changing it changes root admission.
 pub static IMPLEMENTATION: ImplementationId = ImplementationId::from_static("acadia-shared-v1");
 
@@ -34,6 +37,44 @@ impl SharedFactory {
     pub const fn new() -> Self {
         Self
     }
+
+    /// A factory whose participants tell `hook` of each step that changes the shared words,
+    /// before it acts.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_hook(self, hook: Arc<dyn StepHook>) -> HookedSharedFactory {
+        HookedSharedFactory { hook }
+    }
+}
+
+/// Makes participants of the shared implementation that announce their steps to a hook.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+pub struct HookedSharedFactory {
+    hook: Arc<dyn StepHook>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl std::fmt::Debug for HookedSharedFactory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HookedSharedFactory")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl CoordinationFactory for HookedSharedFactory {
+    fn implementation(&self) -> &ImplementationId {
+        &IMPLEMENTATION
+    }
+    fn open(&self, vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Box<dyn Coordination>> {
+        Ok(Box::new(SharedParticipant::new(
+            vfs,
+            root,
+            Some(Arc::clone(&self.hook)),
+        )))
+    }
 }
 
 struct ParticipantInner {
@@ -44,6 +85,8 @@ struct ParticipantInner {
     abandoned: AtomicBool,
     creation: Mutex<HashMap<u64, Box<dyn VfsLock>>>,
     next_creation: AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    hook: Option<Arc<dyn StepHook>>,
 }
 
 struct SharedParticipant {
@@ -60,6 +103,26 @@ impl std::fmt::Debug for SharedParticipant {
 }
 
 impl SharedParticipant {
+    fn new(
+        vfs: Arc<dyn Vfs>,
+        root: &Path,
+        #[cfg(any(test, feature = "test-support"))] hook: Option<Arc<dyn StepHook>>,
+    ) -> Self {
+        SharedParticipant {
+            inner: Arc::new(ParticipantInner {
+                vfs,
+                root: root.to_path_buf(),
+                state: OnceLock::new(),
+                initializing: Mutex::new(()),
+                abandoned: AtomicBool::new(false),
+                creation: Mutex::new(HashMap::new()),
+                next_creation: AtomicU64::new(1),
+                #[cfg(any(test, feature = "test-support"))]
+                hook,
+            }),
+        }
+    }
+
     fn alive(&self) -> CoordResult<()> {
         if self.inner.abandoned.load(Ordering::Acquire) {
             Err(CoordError::Abandoned)
@@ -82,6 +145,8 @@ impl SharedParticipant {
         if self.inner.state.get().is_none() {
             self.check_implementation()?;
             let state = SharedState::open(Arc::clone(&self.inner.vfs), &self.inner.root)?;
+            #[cfg(any(test, feature = "test-support"))]
+            let state = state.with_hook(self.inner.hook.clone());
             if self.inner.abandoned.load(Ordering::Acquire) {
                 state.abandon();
                 return Err(CoordError::Abandoned);
@@ -106,17 +171,12 @@ impl CoordinationFactory for SharedFactory {
         &IMPLEMENTATION
     }
     fn open(&self, vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Box<dyn Coordination>> {
-        Ok(Box::new(SharedParticipant {
-            inner: Arc::new(ParticipantInner {
-                vfs,
-                root: root.to_path_buf(),
-                state: OnceLock::new(),
-                initializing: Mutex::new(()),
-                abandoned: AtomicBool::new(false),
-                creation: Mutex::new(HashMap::new()),
-                next_creation: AtomicU64::new(1),
-            }),
-        }))
+        Ok(Box::new(SharedParticipant::new(
+            vfs,
+            root,
+            #[cfg(any(test, feature = "test-support"))]
+            None,
+        )))
     }
 }
 

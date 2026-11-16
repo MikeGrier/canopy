@@ -2,6 +2,7 @@
     Timeline = 'T11'
     Base = 'Creation-Control-PublishReplacesRunsTwoCreations'
     Note = 'A is process 1, of implementation 1, and B process 2, of implementation 2.'
+    Departs = 'PUB2'
     Steps = @(
         @{ Id = 'LOOK1'; Actions = @('Look(1)') }
         @{ Id = 'LOOK2'; Actions = @('Look(2)') }

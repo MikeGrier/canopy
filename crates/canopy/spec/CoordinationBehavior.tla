@@ -41,14 +41,16 @@ Die(p) ==
 \* EXTERNAL: power loss. Every process dies and every lock is released. The
 \* coordination state cannot be vouched for afterwards, and the record, the
 \* fence and the count may or may not have survived: the count may roll back
-\* over a writer that was mid-operation.
+\* over a writer that was mid-operation. The fence may also be found set where
+\* it was clear, as a coordination state rebuilt untrusted is fenced; under
+\* CrashFences it always is.
 Crash ==
     /\ crashes < MaxCrashes
     /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "dead" ELSE pc[p]]
     /\ req' = [p \in Procs |-> IF pc[p] = "waiting" THEN "dead" ELSE req[p]]
     /\ lockHolder' = None
     /\ owner' \in {owner, None}
-    /\ fence' \in {fence, FALSE}
+    /\ fence' \in IF CrashFences THEN {TRUE} ELSE BOOLEAN
     /\ trusted' = FALSE
     /\ count' \in {count, IF Odd(count) THEN count - 1 ELSE count}
     /\ diedIn' = IF owner # None THEN "crash" ELSE diedIn

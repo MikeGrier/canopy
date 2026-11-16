@@ -5,7 +5,7 @@
     Mutants = @(
         @{
             Name      = 'record-recovery-skips-the-record-sync'
-            Base      = 'SharedPublication'
+            Base      = 'SharedPublication-PublicationUnits'
             Kind      = 'INVARIANTS'
             Property  = 'OutcomeIsFixedOnceRecovered'
             Def       = 'RvRecSync'

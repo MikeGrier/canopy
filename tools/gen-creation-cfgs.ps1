@@ -115,7 +115,7 @@ $witnesses = @(
     @('ACreatorWaitsForTheExclusion', 'TwoCreators', 2, 0, 0, 'inv', 'A creator waits for its implementation''s creation exclusion.'),
     @('ACreatorStopsAtAnotherImplementationsReservation', 'TwoImplementations', 2, 0, 0, 'inv', 'A creator finds a reservation that names another implementation and stops.'),
     @('ACreatorStopsAtDifferentInputs', 'DifferentInputs', 2, 0, 0, 'inv', 'A creator finds a reservation made from different inputs and stops.'),
-    @('ACreatorLosesTheRace', 'TwoCreators', 2, 0, 0, 'inv', 'A creator finds a reservation when it publishes its own and stops.'),
+    @('ACreatorLosesTheRace', 'TwoImplementations', 2, 0, 0, 'inv', 'A creator finds, under its exclusion, a reservation of another implementation published since it looked, and stops.'),
     @('ACreatorFindsTheStoreCreated', 'TwoCreators', 2, 0, 0, 'prop', 'A creator that starts after the marker is in place stops.'),
     @('AResumerFindsTheStoreCreatedWhileItWaited', 'TwoCreators', 2, 0, 0, 'prop', 'A resumer waits for the exclusion while the creation finishes, and then stops.'),
     @('AnOpenOpens', 'CreatorAndOpeners', 2, 0, 0, 'inv', 'An opener opens the store.'),

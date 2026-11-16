@@ -7,8 +7,8 @@
 //! Every operation on the store settles first: it makes the record file durable whether or not
 //! the file shows a record, rolls every replica of a recorded document forward to the recorded
 //! version, and clears the record. A write that fails part-way therefore leaves its document
-//! holding at most its old version and the recorded one, and the next operation finishes the
-//! publication, so the replicas never lose their majority. The rules are the ones
+//! holding at most its old version and the recorded one; it fails unresolved, and recovery's
+//! settle finishes the publication, so the replicas never lose their majority. The rules are the ones
 //! `spec/PointerPublication.tla` checks under its record guard (DESIGN-NOTES "`STRANDED-VOTE` is
 //! guarded by a durable publication record").
 
@@ -61,13 +61,14 @@ impl Store {
         self.root.join(PUBLICATION_RECORD_NAME)
     }
 
-    /// Durably records that (`node`, `document`) is being published as the body `digest`
-    /// names, under `nonce`.
+    /// Records that (`node`, `document`) is being published as the body `digest` names, under
+    /// `nonce`: appends the record, which [`publication_durable`](Store::publication_durable) then
+    /// makes durable.
     ///
-    /// **The write moves no pointer unless this returns `Ok`.** A record that reached the file
-    /// and not the disk is made durable by the next settle before it rolls anything forward, so
-    /// a crash can never leave renamed replicas behind a record that is gone (T24).
-    pub(crate) fn record_publication(
+    /// **Once this returns `Ok`, the record decides the write's outcome**: a settle rolls it
+    /// forward whether or not the write goes on, so a failure after it leaves the write
+    /// unresolved. A failure here leaves no complete record.
+    pub(crate) fn append_publication(
         &self,
         node: &NodePath,
         document: &DocumentName,
@@ -92,7 +93,16 @@ impl Store {
             self.publication.name_synced.store(false, Ordering::Release);
         }
         self.vfs.append(&path, &line)?;
-        self.vfs.fsync(&path)?;
+        Ok(())
+    }
+
+    /// Makes the appended record durable, name included.
+    ///
+    /// **The write moves no pointer unless this returns `Ok`.** A record that reached the file
+    /// and not the disk is made durable by the next settle before it rolls anything forward, so
+    /// a crash can never leave renamed replicas behind a record that is gone (T24).
+    pub(crate) fn publication_durable(&self) -> Result<(), StoreError> {
+        self.vfs.fsync(&self.publication_path())?;
         self.sync_publication_name()
     }
 

@@ -29,6 +29,7 @@
         @{ Id = 'ICLR'; Actions = @('UpClear(2)') }
         @{ Id = 'REND'; Actions = @('RecEnd(2)') }
         @{ Id = 'RSWP'; Actions = @('RecSweep(2)') }
+        @{ Id = 'reset-log'; Omitted = $true; Actions = @('RecReset(2)') }
         @{ Id = 'RCNT'; Actions = @('RecCount(2)') }
         @{ Id = 'RCLR'; Actions = @('RecClear(2)') }
     )

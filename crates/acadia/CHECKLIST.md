@@ -21,3 +21,13 @@ store".
 - [x] <a id="ac-4"></a>**AC-4** -- Add `Signal::watch`, which runs a callback on a thread pool each time the signal is found raised, on acadia's own registration of the object. -> [completed 2026-11-13](COMPLETED-CHECKLIST.md#ac-4)
   > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M5+ -> `RG-3`
   > (`Doorbell::watch`). See [CHECKLIST.md](../canopy/CHECKLIST.md).
+
+## M4 -- Stepping the shared implementation for conformance replay
+
+- [x] <a id="ac-5"></a>**AC-5** -- A test-support step hook in the shared coordination implementation, with the step vocabulary and interface agreed with the engineer. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#ac-5)
+  > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M11 -> `M11-5`
+  > (`Coordination`'s writer actions bound to the code). See
+  > [CHECKLIST.md](../canopy/CHECKLIST.md).
+  > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M11 -> `M11-5`
+  > (`Coordination`'s writer actions bound to the code). See
+  > [CHECKLIST.md](../canopy/CHECKLIST.md).

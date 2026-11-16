@@ -147,3 +147,16 @@ integration uses an explicit unsafe extraction with the no-mutation contract. Th
 lifetime is independent of the original owner, and clones share its ownership. Existing unsealed
 owner APIs remain available: sealing the consumer's view does not collapse the platform layer or
 pretend it protects against a caller that already owns an unsealed alias.
+
+## The shared implementation's step hook
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The shared implementation announces
+its steps to a test-support hook". canopy's replay could not see the shared implementation's steps
+any other way: they change atomic words and make no filesystem call. A hook through which each
+step announces itself, compiled only with `test-support`, was chosen over bridging only the
+file-based implementation, which would leave the shared one held to no model, and over running
+each coordination call whole, which would hide every interleaving within a call. A factory of
+hooked participants beside the ordinary one keeps `SharedFactory` a unit value that can be copied,
+as its callers use it. The reading of the words takes no lock so that it changes nothing the
+replay compares, and in particular holds no liveness, which would keep an epoch alive that the
+model lets end.

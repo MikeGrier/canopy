@@ -90,4 +90,28 @@ ReplaySpecT13 == ReplayInit /\ [][ReplayNextT13]_<<vars, tstep>>
 
 \* T13's last action has been taken.
 Witness_T13Replayed == tstep # 10
+
+\* T32, from timelines/Creation/T32.psd1.
+\* Each disjunct is one action, numbered from 0, with the step it belongs to.
+ReplayT32 ==
+    \/ tstep = 0 /\ Look(1)  \* LOOK1
+    \/ tstep = 1 /\ Look(2)  \* LOOK2
+    \/ tstep = 2 /\ Lock(2)  \* LOCK1
+    \/ tstep = 3 /\ Publish(2)  \* PUB
+    \/ tstep = 4 /\ SyncRes(2)  \* SYNR
+    \/ tstep = 5 /\ Die(2)  \* KILL
+    \/ tstep = 6 /\ Lock(1)  \* LOCK2
+    \/ tstep = 7 /\ TakeOver(1)  \* TAKE
+    \/ tstep = 8 /\ SyncRes(1)  \* SYNR2
+    \/ tstep = 9 /\ WriteArt(1)  \* WRA1
+    \/ tstep = 10 /\ SyncArt(1)  \* SYA1
+    \/ tstep = 11 /\ WriteArt(1)  \* WRM
+    \/ tstep = 12 /\ SyncArt(1)  \* SYM
+
+ReplayNextT32 == ReplayT32 /\ tstep' = tstep + 1
+
+ReplaySpecT32 == ReplayInit /\ [][ReplayNextT32]_<<vars, tstep>>
+
+\* T32's last action has been taken.
+Witness_T32Replayed == tstep # 13
 ====

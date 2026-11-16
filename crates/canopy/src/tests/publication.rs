@@ -59,7 +59,7 @@ fn assert_settled_on(store: &Store, node: &NodePath, document: &DocumentName, ex
 }
 
 /// The write of `v2` under `w2` renames replicas 0 and 1 and fails at replica 2, leaving `v2`
-/// the majority and its record pending.
+/// the majority, its record pending and recovery required.
 pub(super) fn write_v2_short_of_replica_2(store: &Store, node: &NodePath, document: &DocumentName) {
     store
         .update_document_as(Swap::new(node, document.clone(), body(b"v1")), &nonce("w1"))
@@ -69,6 +69,25 @@ pub(super) fn write_v2_short_of_replica_2(store: &Store, node: &NodePath, docume
         .expect_err("replica 2's rename fails");
     assert_eq!(store.read_body(node, document).unwrap(), Some(body(b"v2")));
     assert!(!store.read_pointer(node, document).unwrap().is_unanimous());
+    assert!(
+        store.recovery_required().unwrap(),
+        "a write that fails after its record fails unresolved"
+    );
+}
+
+/// Completes the coordination state's recovery without touching a document, as a recovery that
+/// leaves the documents would: whatever the record names stays pending, with no fence. A failed
+/// write cannot leave that state, so it is how a test reaches a settle that has work to do.
+pub(super) fn leave_the_record_pending(vfs: &Arc<dyn Vfs>, store: &Store) {
+    use acadia::coord::file::FileFactory;
+    use acadia::coord::{CoordinationFactory, Waiting};
+    let participant = FileFactory::new()
+        .open(Arc::clone(vfs), store.root())
+        .expect("a participant");
+    let mut hold = participant.acquire(Waiting::Wait).expect("exclusion");
+    hold.complete_recovery().expect("the contract's recovery");
+    hold.release().expect("a clean release");
+    assert!(!store.recovery_required().unwrap());
 }
 
 pub(super) fn v2_fails_at_replica_2() -> FaultPolicy {
@@ -83,27 +102,31 @@ pub(super) fn v2_fails_at_replica_2() -> FaultPolicy {
 // -- STRANDED-VOTE ----------------------------------------------------------------------------
 
 #[test]
-fn two_failed_writes_in_a_row_leave_the_document_a_majority() {
-    // Unguarded, `v3` landing on replica 0 alone leaves v3, v2, v1 across the three replicas:
-    // no majority, so a document every reader saw as `v2` stops being readable. The record
-    // makes `v3`'s write finish `v2` first.
-    let policy = v2_fails_at_replica_2().inject_matching(
-        FaultOp::Rename,
-        replica_rename("p1", "w3"),
-        Fault::io_error(),
-        When::Once,
-    );
-    let (_faulty, _vfs, store) = faulty_store("stranded", policy);
+fn a_write_after_a_failed_one_waits_for_recovery_to_finish_it() {
+    // Unguarded, `v3` landing on replica 0 alone would leave v3, v2, v1 across the three
+    // replicas: no majority, so a document every reader saw as `v2` stops being readable. The
+    // failed write leaves recovery required, and recovery finishes `v2` before `v3` may begin.
+    let (_faulty, _vfs, store) = faulty_store("stranded", v2_fails_at_replica_2());
     let (node, d) = (name("tickets"), doc("record"));
     write_v2_short_of_replica_2(&store, &node, &d);
 
+    let refused = store
+        .write_document_replicated_as(&node, &d, &body(b"v3"), &nonce("w3"))
+        .expect_err("recovery is required");
+    assert!(
+        matches!(refused, StoreError::RecoveryRequired { .. }),
+        "{refused:?}"
+    );
+    assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"v2")));
+
+    store
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
+    assert_settled_on(&store, &node, &d, b"v2");
     store
         .write_document_replicated_as(&node, &d, &body(b"v3"), &nonce("w3"))
-        .expect_err("replica 1's rename fails");
-
-    assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"v2")));
-    store
-        .update_document_as(Swap::new(&node, doc("other"), body(b"x")), &nonce("t1"))
         .unwrap();
     assert_settled_on(&store, &node, &d, b"v3");
 }
@@ -135,10 +158,10 @@ fn a_failed_write_is_finished_after_a_power_loss() {
 }
 
 #[test]
-fn a_write_that_failed_over_a_lost_replica_reads_as_an_error_until_the_next_settle() {
+fn a_write_that_failed_over_a_lost_replica_is_contended_until_recovery_finishes_it() {
     // T26: replica 2 has lost its entry, and a write renames replica 0 and fails at replica 1.
-    // One new, one old and one missing is no majority, and nothing is modifying it, so a read
-    // reports it rather than calling it contention; the next write settles the record.
+    // One new, one old and one missing is no majority. The write failed unresolved, so its
+    // operation is still in progress as a reader sees the count, and recovery settles the record.
     let policy = FaultPolicy::new().inject_matching(
         FaultOp::Rename,
         replica_rename("p1", "w2"),
@@ -156,18 +179,13 @@ fn a_write_that_failed_over_a_lost_replica_reads_as_an_error_until_the_next_sett
         .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .expect_err("replica 1's rename fails");
 
-    assert!(matches!(
-        store.read_document(&node, &d),
-        Err(StoreError::PointerUnavailable {
-            missing: 1,
-            rejected: 0,
-            disagreeing: 2,
-            ..
-        })
-    ));
+    let read = store.read_document(&node, &d);
+    assert!(matches!(read, Ok(crate::Read::Contended(_))), "{read:?}");
     store
-        .write_document_replicated_as(&node, &doc("other"), &body(b"x"), &nonce("w3"))
-        .unwrap();
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_settled_on(&store, &node, &d, b"v2");
 }
 
@@ -253,8 +271,8 @@ fn a_record_that_did_not_reach_the_disk_moves_no_replica() {
 }
 
 #[test]
-fn a_record_left_unsynced_is_made_durable_and_finished_by_the_next_operation() {
-    // T24: the line reached the file but not the disk. The next settle syncs it before acting
+fn a_record_left_unsynced_is_made_durable_and_finished_by_recovery() {
+    // T24: the line reached the file but not the disk. Recovery's settle syncs it before acting
     // on it, so it can never roll replicas forward on a record a crash could still take away.
     let (_faulty, vfs, store, gate) = record_fsync_fails("unsynced", 1);
     let (node, d) = (name("tickets"), doc("record"));
@@ -262,17 +280,20 @@ fn a_record_left_unsynced_is_made_durable_and_finished_by_the_next_operation() {
     store
         .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .expect_err("the record's fsync fails");
+    assert!(store.recovery_required().unwrap());
 
     store
-        .update_document_as(Swap::new(&node, doc("other"), body(b"x")), &nonce("t1"))
-        .unwrap();
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_settled_on(&store, &node, &d, b"v2");
     assert_eq!(record_text(&vfs, &store), "");
 }
 
 #[test]
 fn a_settle_interrupted_by_a_power_loss_is_finished_by_the_reopen() {
-    // T24 continued: the settle's roll-forward moves replica 0 and fails at replica 1. Had it
+    // T24 continued: recovery's roll-forward moves replica 0 and fails at replica 1. Had it
     // acted on the record without syncing it first, the crash would take the record and leave
     // replica 0 ahead of the others with nothing to finish it.
     let gate = FaultGate::closed();
@@ -302,7 +323,7 @@ fn a_settle_interrupted_by_a_power_loss_is_finished_by_the_reopen() {
         .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))
         .expect_err("the record's fsync fails");
     store
-        .update_document_as(Swap::new(&node, doc("other"), body(b"x")), &nonce("t1"))
+        .recover()
         .expect_err("the roll-forward fails at replica 1");
     drop(store);
     faulty.inner().simulate_crash();
@@ -313,9 +334,9 @@ fn a_settle_interrupted_by_a_power_loss_is_finished_by_the_reopen() {
 
 #[test]
 fn a_clear_that_did_not_reach_the_disk_cannot_roll_a_later_write_back() {
-    // T25: the clear's truncation is live but not durable. A later transaction moves the
-    // document on; unless its settle syncs the empty file first, a crash restores the record
-    // and the reopen rolls the document back to the version the record names.
+    // T25: the clear's truncation is live but not durable, and the write fails unresolved.
+    // Recovery and a later transaction move on; unless a settle syncs the empty file, a crash
+    // restores the record and the reopen rolls the document back to the version it names.
     let (faulty, vfs, store, gate) = record_fsync_fails("unsynced-clear", 2);
     let (node, d) = (name("tickets"), doc("record"));
     let root = store.root().to_path_buf();
@@ -325,6 +346,11 @@ fn a_clear_that_did_not_reach_the_disk_cannot_roll_a_later_write_back() {
         .expect_err("the clear's fsync fails");
     assert_settled_on(&store, &node, &d, b"v2");
 
+    store
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     store
         .update_document_as(Swap::new(&node, d.clone(), body(b"v3")), &nonce("t3"))
         .unwrap();
@@ -350,15 +376,16 @@ fn a_settle_that_fails_fails_its_operation_and_leaves_the_record_pending() {
     write_v2_short_of_replica_2(&store, &node, &d);
 
     gate.open();
-    store
-        .write_document_replicated_as(&node, &d, &body(b"v3"), &nonce("w3"))
-        .expect_err("the settle's fsync fails");
+    store.recover().expect_err("the settle's fsync fails");
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"v2")));
     assert!(record_text(&vfs, &store).contains(nonce("w2").as_str()));
+    assert!(store.recovery_required().unwrap());
 
     store
-        .update_document_as(Swap::new(&node, doc("other"), body(b"x")), &nonce("t1"))
-        .unwrap();
+        .recover()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_settled_on(&store, &node, &d, b"v2");
 }
 
@@ -428,9 +455,10 @@ fn a_line_this_store_did_not_write_is_refused() {
 fn a_pointer_repair_settles_first() {
     // A repair never rewrites a stale replica (`D320`), so replica 2 coming level shows the
     // settle, not the repair, moved it.
-    let (_faulty, _vfs, store) = faulty_store("repair-settles", v2_fails_at_replica_2());
+    let (_faulty, vfs, store) = faulty_store("repair-settles", v2_fails_at_replica_2());
     let (node, d) = (name("tickets"), doc("record"));
     write_v2_short_of_replica_2(&store, &node, &d);
+    leave_the_record_pending(&vfs, &store);
     let report = store.read_pointer(&node, &d).unwrap();
     assert_eq!(report.stale(), [2]);
 
@@ -442,13 +470,14 @@ fn a_pointer_repair_settles_first() {
 
 #[test]
 fn a_scrub_settles_first() {
-    let (_faulty, _vfs, store) = faulty_store("scrub-settles", v2_fails_at_replica_2());
+    let (_faulty, vfs, store) = faulty_store("scrub-settles", v2_fails_at_replica_2());
     store.install(StoreOptions::with_nonce_source(
         test_agent(),
         counting_nonce_source(),
     ));
     let (node, d) = (name("tickets"), doc("record"));
     write_v2_short_of_replica_2(&store, &node, &d);
+    leave_the_record_pending(&vfs, &store);
 
     let (report, _) = store.scrub_content().unwrap().value;
     assert!(report.stale().is_empty(), "{:?}", report.stale());
@@ -457,9 +486,10 @@ fn a_scrub_settles_first() {
 
 #[test]
 fn a_rejected_transaction_still_settles() {
-    let (_faulty, _vfs, store) = faulty_store("check-settles", v2_fails_at_replica_2());
+    let (_faulty, vfs, store) = faulty_store("check-settles", v2_fails_at_replica_2());
     let (node, d) = (name("tickets"), doc("record"));
     write_v2_short_of_replica_2(&store, &node, &d);
+    leave_the_record_pending(&vfs, &store);
 
     let outcome = store
         .update_document_as(

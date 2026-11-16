@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "spec": "Coordination",
+  "configuration": "Coordination-Control-StepBeforeTheIntent",
+  "origin": {"kind":"timeline","timeline":"T19"},
+  "constants": {"Callbacks":"FALSE","Control":"\"step-before-the-intent\"","CrashFences":"FALSE","Escapes":"TRUE","MaxCrashes":"0","MaxDeaths":"0","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"0","MaxReads":"0","MaxRequests":"1","MaxUpgrades":"1","MixedWrites":"FALSE","NSlots":"0","Notifications":"FALSE","Procs":"{1, 2}","PublicationsFail":"TRUE","Scenario":"\"SafeAndTargetWriter\"","Txn":"TRUE","UnloggedRecovery":"FALSE","UpSteps":"2"},
+  "departs": null,
+  "initial": {"a":0,"areq":["none","none"],"att":["off","off"],"b":0,"cache":[-1,-1],"cl":[],"count":0,"crashes":0,"current":[2],"deaths":0,"dfloor":[1],"diedIn":"none","disc":["none","none"],"discoveries":0,"edr":[],"eligible":[true,true],"etok":[],"fence":false,"gen":0,"lcur":[1,1],"lease":[0,0],"lfree":[false,false],"lists":0,"ll":[],"lockHolder":0,"log":"empty","lph":["none","none"],"lrep":[[0,0,"none"],[0,0,"none"]],"lres":["none","none"],"ltok":[0,0],"lunk":[false,false],"mygen":[-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new"],"ptgt":0,"rbefore":[-1,-1],"rcur":[0,0],"reads":0,"req":["none","none"],"requests":0,"rpart":[-1,-1],"rphase":["none","none"],"rscan":[[],[]],"rseenA":[-1,-1],"rseenB":[-1,-1],"rst":["out","out"],"rtier":[false,false],"scache":[-1,-1],"shared":0,"stage":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample"]},
+  "steps": [
+    {"action":"BeginAttach(1)","args":[1],"changes":{"areq":["pending","none"],"att":["wGate","off"],"pc":["attaching","new"]},"name":"BeginAttach","step":"before"},
+    {"action":"TakeGateS(1)","args":[1],"changes":{"att":["hasGate","off"]},"name":"TakeGateS","step":"before"},
+    {"action":"TakeReaderS(1)","args":[1],"changes":{"att":["gateRd","off"]},"name":"TakeReaderS","step":"before"},
+    {"action":"DropGate(1)","args":[1],"changes":{"att":["rd","off"]},"name":"DropGate","step":"before"},
+    {"action":"TakeWriterS(1)","args":[1],"changes":{"att":["tiers","off"]},"name":"TakeWriterS","step":"before"},
+    {"action":"Admit(1)","args":[1],"changes":{"areq":["served","none"],"att":["attached","off"],"pc":["idle","new"]},"name":"Admit","step":"before"},
+    {"action":"StartUpgrade(1)","args":[1],"changes":{"areq":["pending","none"],"att":["draining","off"],"pc":["converting","new"],"upgrades":1},"name":"StartUpgrade","step":"before"},
+    {"action":"DrainDone(1)","args":[1],"changes":{"att":["uWGate","off"]},"name":"DrainDone","step":"before"},
+    {"action":"TakeGateX(1)","args":[1],"changes":{"att":["uGate","off"]},"name":"TakeGateX","step":"before"},
+    {"action":"TakeFirstTier(1)","args":[1],"changes":{"att":["uTiers","off"]},"name":"TakeFirstTier","step":"before"},
+    {"action":"BeginUpgrade(1)","args":[1],"changes":{"att":["uBody","off"],"lockHolder":1,"pc":["locked","new"]},"name":"BeginUpgrade","step":"LCK1"},
+    {"action":"Record(1)","args":[1],"changes":{"cache":[0,-1],"gen":1,"mygen":[1,-1],"owner":1,"pc":["held","new"]},"name":"Record","step":"REC1"},
+    {"action":"BeginOpen(1)","args":[1],"changes":{"pc":["opening","new"]},"name":"BeginOpen","step":"OPN"},
+    {"action":"EndOpen(1)","args":[1],"changes":{"count":1,"pc":["open","new"]},"name":"EndOpen","step":"PUB"},
+    {"action":"UpStep(1)","args":[1],"changes":{"ustep":1},"name":"UpStep","step":"STEP1"}
+  ]
+}

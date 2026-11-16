@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "spec": "Coordination",
+  "configuration": "Coordination-UpgradeBody",
+  "origin": {"depth":60,"kind":"simulation","seed":2,"walks":50},
+  "constants": {"Callbacks":"FALSE","Control":"\"none\"","CrashFences":"FALSE","Escapes":"TRUE","MaxCrashes":"0","MaxDeaths":"1","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"0","MaxReads":"0","MaxRequests":"2","MaxUpgrades":"1","MixedWrites":"FALSE","NSlots":"0","Notifications":"FALSE","Procs":"{1, 2}","PublicationsFail":"TRUE","Scenario":"\"SafeAndTargetWriter\"","Txn":"TRUE","UnloggedRecovery":"FALSE","UpSteps":"2"},
+  "departs": null,
+  "initial": {"a":0,"areq":["none","none"],"att":["off","off"],"b":0,"cache":[-1,-1],"cl":[],"count":0,"crashes":0,"current":[2],"deaths":0,"dfloor":[1],"diedIn":"none","disc":["none","none"],"discoveries":0,"edr":[],"eligible":[true,true],"etok":[],"fence":false,"gen":0,"lcur":[1,1],"lease":[0,0],"lfree":[false,false],"lists":0,"ll":[],"lockHolder":0,"log":"empty","lph":["none","none"],"lrep":[[0,0,"none"],[0,0,"none"]],"lres":["none","none"],"ltok":[0,0],"lunk":[false,false],"mygen":[-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new"],"ptgt":0,"rbefore":[-1,-1],"rcur":[0,0],"reads":0,"req":["none","none"],"requests":0,"rpart":[-1,-1],"rphase":["none","none"],"rscan":[[],[]],"rseenA":[-1,-1],"rseenB":[-1,-1],"rst":["out","out"],"rtier":[false,false],"scache":[-1,-1],"shared":0,"stage":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample"]},
+  "steps": [
+    {"action":"BeginAttach(2)","args":[2],"at":"CoordinationAttachment:68","changes":{"areq":["none","pending"],"att":["off","wGate"],"pc":["new","attaching"]},"name":"BeginAttach","step":"#1"},
+    {"action":"BeginAttach(1)","args":[1],"at":"CoordinationAttachment:68","changes":{"areq":["pending","pending"],"att":["wGate","wGate"],"pc":["attaching","attaching"]},"name":"BeginAttach","step":"#2"},
+    {"action":"Die(2)","args":[2],"at":"CoordinationBehavior:13","changes":{"areq":["pending","dead"],"att":["wGate","off"],"deaths":1,"pc":["attaching","dead"]},"name":"Die","step":"#3"},
+    {"action":"Next","args":[],"at":"CoordinationBehavior:167","changes":{"att":["hasGate","off"]},"name":"Next","step":"#4"},
+    {"action":"Next","args":[],"at":"CoordinationBehavior:167","changes":{"att":["gateRd","off"]},"name":"Next","step":"#5"},
+    {"action":"DropGate(1)","args":[1],"at":"CoordinationAttachment:86","changes":{"att":["rd","off"]},"name":"DropGate","step":"#6"},
+    {"action":"Next","args":[],"at":"CoordinationBehavior:167","changes":{"att":["tiers","off"]},"name":"Next","step":"#7"},
+    {"action":"Admit(1)","args":[1],"at":"CoordinationAttachment:128","changes":{"areq":["served","dead"],"att":["attached","off"],"pc":["idle","dead"]},"name":"Admit","step":"#8"},
+    {"action":"Request(1)","args":[1],"at":"CoordinationAttachment:33","changes":{"pc":["waiting","dead"],"req":["pending","none"],"requests":1},"name":"Request","step":"#9"},
+    {"action":"RefuseUpgrade(1)","args":[1],"at":"CoordinationAttachment:187","changes":{"areq":["refused","dead"]},"name":"RefuseUpgrade","step":"#10"},
+    {"action":"Disqualify(1)","args":[1],"at":"CoordinationAttachment:27","changes":{"eligible":[false,true]},"name":"Disqualify","step":"#11"},
+    {"action":"Withdraw(1)","args":[1],"at":"CoordinationAttachment:43","changes":{"pc":["idle","dead"],"req":["withdrawn","none"]},"name":"Withdraw","step":"#12"},
+    {"action":"StartUpgrade(1)","args":[1],"at":"CoordinationAttachment:176","changes":{"areq":["pending","dead"],"att":["draining","off"],"pc":["converting","dead"],"upgrades":1},"name":"StartUpgrade","step":"#13"},
+    {"action":"CancelDrain(1)","args":[1],"at":"CoordinationAttachment:211","changes":{"areq":["withdrawn","dead"],"att":["attached","off"],"pc":["idle","dead"]},"name":"CancelDrain","step":"#14"},
+    {"action":"Exit(1)","args":[1],"at":"CoordinationAttachment:13","changes":{"att":["off","off"],"pc":["exited","dead"]},"name":"Exit","step":"#15"}
+  ]
+}

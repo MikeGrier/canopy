@@ -37,20 +37,45 @@ ReplayT27 ==
     \/ tstep = 15 /\ PtrSync(1)  \* PR1
     \/ tstep = 16 /\ PtrRen(1)  \* PR2
     \/ tstep = 17 /\ SFailUnresolved(1)  \* FAI
-    \/ tstep = 18 /\ Quiet(RecStart(1))  \* REC
-    \/ tstep = 19 /\ Quiet(RecWhole(1))  \* REC
-    \/ tstep = 20 /\ RvBegin(1)  \* REC
-    \/ tstep = 21 /\ SRecEnd(1)  \* REC
-    \/ tstep = 22 /\ Quiet(RecSweep(1))  \* REC
-    \/ tstep = 23 /\ Quiet(RecCount(1))  \* REC
-    \/ tstep = 24 /\ Quiet(RecClear(1))  \* REC
-    \/ tstep = 25 /\ Quiet(Release(1))  \* REL
-    \/ tstep = 26 /\ Quiet(Unlock(1))  \* REL
+    \/ tstep = 18 /\ Quiet(Release(1))  \* REC
+    \/ tstep = 19 /\ Quiet(Unlock(1))  \* REC
+    \/ tstep = 20 /\ Quiet(Request(1))  \* REC
+    \/ tstep = 21 /\ Quiet(Lock(1))  \* REC
+    \/ tstep = 22 /\ Quiet(Record(1))  \* REC
+    \/ tstep = 23 /\ SRunStart(1)  \* REC
+    \/ tstep = 24 /\ RunUnitEnd(1)  \* REC
+    \/ tstep = 25 /\ Quiet(Release(1))  \* REC
+    \/ tstep = 26 /\ Quiet(Unlock(1))  \* REC
+    \/ tstep = 27 /\ Quiet(Request(1))  \* REC
+    \/ tstep = 28 /\ Quiet(Lock(1))  \* REC
+    \/ tstep = 29 /\ Quiet(Record(1))  \* REC
+    \/ tstep = 30 /\ SRunStart(1)  \* REC
+    \/ tstep = 31 /\ Quiet(RecWhole(1))  \* REC
+    \/ tstep = 32 /\ RvBegin(1)  \* REC
+    \/ tstep = 33 /\ RunUnitEnd(1)  \* REC
+    \/ tstep = 34 /\ Quiet(Release(1))  \* REC
+    \/ tstep = 35 /\ Quiet(Unlock(1))  \* REC
+    \/ tstep = 36 /\ Quiet(Request(1))  \* REC
+    \/ tstep = 37 /\ Quiet(Lock(1))  \* REC
+    \/ tstep = 38 /\ Quiet(Record(1))  \* REC
+    \/ tstep = 39 /\ SRunStart(1)  \* REC
+    \/ tstep = 40 /\ RunUnitEnd(1)  \* REC
+    \/ tstep = 41 /\ Quiet(Release(1))  \* REC
+    \/ tstep = 42 /\ Quiet(Unlock(1))  \* REC
+    \/ tstep = 43 /\ Quiet(Request(1))  \* REC
+    \/ tstep = 44 /\ Quiet(Lock(1))  \* REC
+    \/ tstep = 45 /\ Quiet(Record(1))  \* REC
+    \/ tstep = 46 /\ SRunStart(1)  \* REC
+    \/ tstep = 47 /\ SRecReset(1)  \* REC
+    \/ tstep = 48 /\ Quiet(RecCount(1))  \* REC
+    \/ tstep = 49 /\ Quiet(RecClear(1))  \* REC
+    \/ tstep = 50 /\ Quiet(Release(1))  \* REL
+    \/ tstep = 51 /\ Quiet(Unlock(1))  \* REL
 
-ReplayNextT27 == ReplayT27 /\ Kinds /\ tstep' = tstep + 1
+ReplayNextT27 == ReplayT27 /\ SpStepFrame /\ tstep' = tstep + 1
 
 ReplaySpecT27 == ReplayInit /\ [][ReplayNextT27]_<<spvars, tstep>>
 
 \* T27's last action has been taken.
-Witness_T27Replayed == tstep # 27
+Witness_T27Replayed == tstep # 52
 ====

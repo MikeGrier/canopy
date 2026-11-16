@@ -117,7 +117,7 @@ $layered = @{
     TwoLayerUpgradesFloor = @{ Name = 'TwoLayerUpgradesFloor'; Procs = 3; Upgraders = 2 }
 }
 
-function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false, $notifications = $false) {
+function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false, $notifications = $false, $publicationsFail = $true, $crashFences = $false) {
     $n = $s.Procs
     $procs = '{' + ((1..$n) -join ', ') + '}'
     $lines = @(
@@ -136,6 +136,8 @@ function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $dead
         "    Txn = $(if ($txn) { 'TRUE' } else { 'FALSE' })",
         "    UnloggedRecovery = $(if ($unloggedRecovery) { 'TRUE' } else { 'FALSE' })",
         "    MixedWrites = $(if ($mixedWrites) { 'TRUE' } else { 'FALSE' })",
+        "    PublicationsFail = $(if ($publicationsFail) { 'TRUE' } else { 'FALSE' })",
+        "    CrashFences = $(if ($crashFences) { 'TRUE' } else { 'FALSE' })",
         "    UpSteps = $upSteps",
         "    Callbacks = $(if ($callbacks) { 'TRUE' } else { 'FALSE' })",
         "    Notifications = $(if ($notifications) { 'TRUE' } else { 'FALSE' })",

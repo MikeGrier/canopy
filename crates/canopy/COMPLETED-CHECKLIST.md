@@ -2081,3 +2081,128 @@ sealed protocol. The canonical decisions are in
 [DESIGN-NOTES.md](DESIGN-NOTES.md#native-wait-lending-matches-the-sealed-safety-profile-2026-11-15)
 and acadia's [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md#sealed-native-wait-capabilities-on-both-platforms-2026-11-15),
 with rationale in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#native-wait-safety-parity).
+
+## Moved 2026-11-15 -- TLC trace corpus
+
+### <a id="m11-1"></a>M11-1 -- Export TLC behaviours as a JSON trace corpus: every timeline's replay, random walks of the protocol as built, and the named defects' counterexamples. *(completed 2026-11-15 10:07:58 -05:00)*
+
+[export-trace-corpus.ps1](../../tools/export-trace-corpus.ps1) writes `tests/traces/<Spec>/` from
+TLC: each timeline's replay with its scenario table's step ids, the longest of a seed's random
+walks of the configurations [corpus.psd1](spec/corpus.psd1) lists, and the error traces of the
+configurations that reproduce `DANGLING-DURABLE` and `STRANDED-VOTE`. A second whole export
+rewrote no file, so the corpus is reproduced from the specs, tables and seeds alone. Scenario
+tables gained an optional `Departs`, which the replay generator ignores and the exporter carries
+into the corpus. The canonical decisions are in
+[DESIGN-NOTES.md](DESIGN-NOTES.md#the-trace-corpus-2026-11-15) and
+[DESIGN-NOTES.md](DESIGN-NOTES.md#replaying-a-trace-against-the-code-2026-11-15), with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#trace-corpus).
+
+Executing the item restructured the milestone with the engineer: the replay harness became one
+item per spec bridge, and the bite check moved to a trace of the protocol as built, since the
+model shows the record guard alone prevents `DANGLING-DURABLE`.
+
+## Moved 2026-11-15 -- PointerPublication replay against the store
+
+### <a id="m11-2"></a>M11-2 -- The replay harness and `PointerPublication`'s bridge: every `PointerPublication` trace replays against `Store` on `MemFs` + `FaultyFs`, with the model refined to the store's commit-log handling. *(completed 2026-11-15 11:11:28 -05:00)*
+
+The harness under `src/tests/conformance/` reads the corpus, routes the store's calls through a
+recording `Vfs` over `FaultyFs<MemFs>`, groups them into runs, and compares each run's change of
+the document's pointer, blob, record and log state, live and durable, with the trace's next
+change. Failures and crashes land at the first call of the model's next step once both sides have
+made the same changes. Control traces are accepted only where their `departs` step falls in the
+range in which the store left them, and tests altering a trace or its mark confirm the harness
+refuses each kind of mismatch.
+
+The first replays found the store handling the commit log in four ways the model did not; the
+engineer chose to refine [PointerPublication.tla](spec/PointerPublication.tla), every
+configuration still came out as its header requires, and T25 was superseded by T31. Canonical
+decisions:
+[DESIGN-NOTES.md](DESIGN-NOTES.md#the-publication-model-describes-the-stores-commit-log-2026-11-15)
+and [DESIGN-NOTES.md](DESIGN-NOTES.md#the-pointerpublication-replay-2026-11-15), with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#publication-replay).
+
+## Moved 2026-11-15 -- Creation replay against the coordination contract
+
+### <a id="m11-3"></a>M11-3 -- `Creation`'s bridge and the step scheduler: every `Creation` trace replays against acadia's creation contract through both implementations, with the model refined to the code's decisions. *(completed 2026-11-15 14:37:31 -05:00)*
+
+Each model process is a participant of its own -- the file-based implementation or the shared one
+-- in a thread of its own over its own simulated process of one `MemFs`, held before the first
+call of each step until the replay lets it take that step. The root's reservation, artifacts and
+intruder, live and durable, are compared after every step, and every outcome the model gives a
+process is compared with what its call returned. A death abandons the process's locks; a crash
+settles the model's choice of survivors before the power goes. The exporter gained a `derived`
+header field so each trace carries its scenario's roles, implementations and inputs, and the
+corpus gained simulations of every creation scenario.
+
+All four control timelines left the model exactly where their broken rule acts, and are marked so.
+The simulations found the code deciding in two places otherwise than the model: a creator's
+reading under the exclusion, and an opener's order. With the engineer, a scratch copy of the spec
+making the code's decisions was model-checked first and held every property; the engineer then
+chose to refine [Creation.tla](spec/Creation.tla), whose configurations, replays and probes all
+came out as required, and T32 pins the takeover the refinement admits. Executing the item also
+found that `Store::init` does not create through the contract, which is queued as `M12-4`.
+Canonical decisions:
+[DESIGN-NOTES.md](DESIGN-NOTES.md#the-creation-model-describes-the-coordinations-decisions-2026-11-15)
+and [DESIGN-NOTES.md](DESIGN-NOTES.md#the-creation-replay-2026-11-15), with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#creation-decisions) and
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#creation-replay).
+
+## Moved 2026-11-15 -- The contract's writer actions mapped to the code
+
+### <a id="m11-4"></a>M11-4 -- Map `Coordination`'s writer actions to the code, and agree the step hook with the engineer: the inventory, the hook's interface, the abstract write's binding, and the writer-only corpus. *(completed 2026-11-15 18:00:04 -05:00)*
+
+Each writer action's first call in each implementation is recorded, and the actions that make no
+call of their own are taken within the step before them. The engineer chose to bind
+`Coordination` to acadia's contract with the replay as the contract's client, approved the shared
+implementation's step hook as proposed, and moved escapes to the item that binds eligibility and
+upgrades. Two generated configurations, `Coordination-Writers` and `Coordination-WritersTxn`, are
+writers alone with a death and a host crash; their simulations keep the walk with the most kinds
+of action, an exporter option added because their longest walks repeated one recovery loop. The
+inventory found that the shared implementation's count publication cannot fail. Canonical
+decision: [DESIGN-NOTES.md](DESIGN-NOTES.md#the-contracts-writer-actions-in-the-code-2026-11-15),
+with rationale in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#writer-action-binding).
+
+## Moved 2026-11-15 -- The contract's writer actions bound to the code
+
+### <a id="m11-5"></a>M11-5 -- `Coordination`'s writer actions bound to the code: every writer trace replays against acadia's contract through each implementation whose behaviour it is, with the model refined to the code's recovery and crash. *(completed 2026-11-15 21:08:09 -05:00)*
+
+Each model writer is a thread making the client's calls on a participant of its own, held before
+each step's first call or, for the shared implementation, its hook's announcement, while a keeper
+participant keeps the shared state alive across deaths. The first replay left the code in two
+places: `complete_recovery` publishes the count and clears the fence in one call, and the shared
+implementation's state rebuilt after a crash is fenced. A scratch copy of the spec making both
+held every item-tier configuration, and the engineer chose to refine `RecStop` and `Crash` in
+[Coordination.tla](spec/Coordination.tla). Few of the walks were the shared implementation's
+behaviour, so the engineer chose two constants, `PublicationsFail` and `CrashFences`, and a
+generated `Coordination-WritersShared` configuration whose walks all are. The bridge's self-tests
+alter traces -- a count, a told acquisition, a mark -- and each leaves the trace at the altered
+step. Verify: `-Filter 'Coordination-Writers*'`, the `ReplayCoordination` and `SharedPublication`
+item tiers. Canonical decision:
+[DESIGN-NOTES.md](DESIGN-NOTES.md#the-coordination-writer-replay-2026-11-15), with rationale in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#coordination-writer-replay).
+
+## Moved 2026-11-16 -- Shared publication conformance
+
+### <a id="m11-6"></a>M11-6 -- The SharedPublication Store replay binds document and recovery steps to both coordination implementations. *(completed 2026-11-16 14:17:30 UTC-05:00)*
+
+The bridge infers actions from consecutive model states, pauses independent Store processes
+at their I/O or shared-atomic boundaries, and compares document, record, directory-debt and
+coordination projections after each step. Concrete traces cover file-backed and shared-backed
+coordination, live and recovered collection, partial durable clears, and stale recovery runs.
+An altered pointer expectation is rejected at the affected transition; removing the recovery
+record sync and bypassing staging cleanup are caught by their named model properties.
+
+The store fails unresolved after an unlogged record append. The model retains rolled-back
+transaction targets through collection, attempts reset before count publication and fence clear,
+and gives each recovery unit a fresh exclusion hold. The checker uses a documented
+over-approximation and state view while concrete traces retain the unreduced state. The
+experimental Units models and corpus were merged and removed. The full model sweep remains
+the M11 milestone gate; this item uses its focused concurrency, reference, control and witness
+configurations.
+
+Canonical decisions are in [DESIGN-NOTES.md](DESIGN-NOTES.md) "The SharedPublication Store
+replay", "State-space reduction for recovery-unit verification", and "Directory-debt units in
+the publication composition", with the reduction argument in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#recovery-quotient-argument). An intermittent creation
+test observation unrelated to the changed creation code is recorded in
+[UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md).

@@ -77,3 +77,15 @@ finds them all, a drop waits for a running callback, a dropped watch is not run,
 its own callback returns and is not run again, and many watches of many signals each run. Removing
 the Windows re-arm failed the run-again and no-overlap tests; skipping the condition-variable
 watch's join failed the drop-waits test.
+
+## Moved 2026-11-15 -- Stepping the shared implementation for conformance replay (M4 of [CHECKLIST.md](CHECKLIST.md))
+
+### <a id="ac-5"></a>AC-5 -- A test-support step hook in the shared coordination implementation, with the step vocabulary and interface agreed with the engineer. *(completed 2026-11-15 18:07:11 -05:00)*
+
+`SharedFactory::with_hook` gives participants that announce each step changing the shared words
+before it acts, and `inspect` reads the words without a lock. Tests drive a hooked participant
+through a new state's recovery, a clean release, settled, nested and unresolved operations, a
+holder found dead and a host restart, and check each announcement's order and that the words a hook
+reads at each are those from before the step. Writing them showed that a dead holder's record
+outlives it only while another participant keeps the words' epoch. Decision:
+[DESIGN-NOTES.md](DESIGN-NOTES.md#the-shared-implementation-announces-its-steps-to-a-test-support-hook-2026-11-15).

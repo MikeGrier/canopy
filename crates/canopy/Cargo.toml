@@ -29,6 +29,8 @@ sha2 = "0.11"
 tracing = "0.1"
 
 [dev-dependencies]
+# The conformance replay steps the shared coordination implementation through its step hook.
+acadia = { workspace = true, features = ["test-support"] }
 getrandom = "0.4"
 test-timers = { path = "../test-timers" }
 komorebi = { path = "../komorebi" }

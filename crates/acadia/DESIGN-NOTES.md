@@ -1309,3 +1309,31 @@ This is the native-wait capability work[^g-2], with rationale in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#sealed-native-wait-capabilities).
 
 [^g-2]: `G-2` in canopy's [COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#g-2) [completed 2026-11-15]
+
+## The shared implementation announces its steps to a test-support hook, 2026-11-15
+
+canopy's conformance replay holds each process before each step of the coordination model and
+compares the contract's state after it ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md)
+"The contract's writer actions in the code"). The file-based implementation's steps are
+filesystem calls, which the replay sees through its `Vfs`; the shared implementation's change
+shared words, which it does not. So, with the `test-support` feature, the shared implementation
+announces each such step before it acts[^ac-5]:
+
+- **`SharedFactory::with_hook(hook)`** makes participants that call `StepHook::before` with a
+  `SharedStep` before each step that changes the words, named for the model step it begins:
+  setting the fence on acquiring, replacing the ownership record, reading and publishing the
+  opening raise, reading and publishing the closing raise, the fence an unresolved operation sets,
+  publishing the recovered count, clearing the fence, and clearing the record on release. A nested
+  operation announces nothing, as it changes nothing. A hook may hold a step for as long as it
+  likes. The announcements compile to nothing without the feature, and a factory without a hook
+  is the ordinary one.
+- **`inspect(vfs, root)`** reads the trust, fence, owner, generation and count words as one
+  reading finds them, taking no lock and changing nothing, and finds none while no participant of
+  the current boot has made them. On `MemFs` it finds the in-process words a participant of the
+  same boot made; over the operating system's filesystem it reads the mapped file.
+- **An epoch ends with its last participant.** A participant that dies or detaches while no other
+  is attached ends the words' epoch, and the next participant begins an untrusted, fenced one. A
+  dead holder's record therefore outlives it only while another participant keeps the epoch, which
+  the replay must take into account wherever every process of a trace has ended.
+
+[^ac-5]: `AC-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-5) [completed 2026-11-15]

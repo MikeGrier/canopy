@@ -500,6 +500,18 @@ fn maintenance_that_settles_a_pending_publication_is_not_a_noop() {
         gate.open();
         assert!(write(&store, false, b"after").is_err());
         assert_eq!(metadata(&vfs, &store)["metadata"]["agent_version"], "A");
+        // The failed write fails unresolved. Completing the contract's recovery without touching
+        // a document leaves its record for the maintenance below to settle.
+        {
+            use acadia::coord::file::FileFactory;
+            use acadia::coord::{CoordinationFactory, Waiting};
+            let participant = FileFactory::new()
+                .open(Arc::clone(&vfs), &store.root)
+                .unwrap();
+            let mut hold = participant.acquire(Waiting::Wait).unwrap();
+            hold.complete_recovery().unwrap();
+            hold.release().unwrap();
+        }
         match mode {
             0 => {
                 store.quiesce().unwrap().agent_stamp.unwrap();

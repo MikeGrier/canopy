@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "spec": "Coordination",
+  "configuration": "Coordination-Control-UpgraderKeepsTiers",
+  "origin": {"kind":"timeline","timeline":"T5"},
+  "constants": {"Callbacks":"FALSE","Control":"\"upgrader-keeps-tiers\"","CrashFences":"FALSE","Escapes":"FALSE","MaxCrashes":"0","MaxDeaths":"0","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"0","MaxReads":"0","MaxRequests":"0","MaxUpgrades":"0","MixedWrites":"FALSE","NSlots":"0","Notifications":"FALSE","Procs":"{1, 2}","PublicationsFail":"TRUE","Scenario":"\"TwoSafe\"","Txn":"FALSE","UnloggedRecovery":"FALSE","UpSteps":"0"},
+  "departs": null,
+  "initial": {"a":0,"areq":["none","none"],"att":["off","off"],"b":0,"cache":[-1,-1],"cl":[],"count":0,"crashes":0,"current":[2],"deaths":0,"dfloor":[1],"diedIn":"none","disc":["none","none"],"discoveries":0,"edr":[],"eligible":[true,true],"etok":[],"fence":false,"gen":0,"lcur":[1,1],"lease":[0,0],"lfree":[false,false],"lists":0,"ll":[],"lockHolder":0,"log":"empty","lph":["none","none"],"lrep":[[0,0,"none"],[0,0,"none"]],"lres":["none","none"],"ltok":[0,0],"lunk":[false,false],"mygen":[-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new"],"ptgt":0,"rbefore":[-1,-1],"rcur":[0,0],"reads":0,"req":["none","none"],"requests":0,"rpart":[-1,-1],"rphase":["none","none"],"rscan":[[],[]],"rseenA":[-1,-1],"rseenB":[-1,-1],"rst":["out","out"],"rtier":[false,false],"scache":[-1,-1],"shared":0,"stage":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample"]},
+  "steps": [
+    {"action":"BeginAttach(1)","args":[1],"changes":{"areq":["pending","none"],"att":["wGate","off"],"pc":["attaching","new"]},"name":"BeginAttach","step":"BGN1"},
+    {"action":"TakeGateS(1)","args":[1],"changes":{"att":["hasGate","off"]},"name":"TakeGateS","step":"GTS1"},
+    {"action":"TakeReaderS(1)","args":[1],"changes":{"att":["gateRd","off"]},"name":"TakeReaderS","step":"RDS1"},
+    {"action":"BeginAttach(2)","args":[2],"changes":{"areq":["pending","pending"],"att":["gateRd","wGate"],"pc":["attaching","attaching"]},"name":"BeginAttach","step":"BGN2"},
+    {"action":"TakeGateS(2)","args":[2],"changes":{"att":["gateRd","hasGate"]},"name":"TakeGateS","step":"GTS2"},
+    {"action":"TakeReaderS(2)","args":[2],"changes":{"att":["gateRd","gateRd"]},"name":"TakeReaderS","step":"RDS2"},
+    {"action":"DropGate(1)","args":[1],"changes":{"att":["rd","gateRd"]},"name":"DropGate","step":"DRP1"},
+    {"action":"TakeWriterS(1)","args":[1],"changes":{"att":["tiers","gateRd"]},"name":"TakeWriterS","step":"WRS1"},
+    {"action":"Admit(1)","args":[1],"changes":{"areq":["served","pending"],"att":["attached","gateRd"],"pc":["idle","attaching"]},"name":"Admit","step":"ADM1"},
+    {"action":"StartUpgrade(1)","args":[1],"changes":{"areq":["pending","pending"],"att":["draining","gateRd"],"pc":["converting","attaching"]},"name":"StartUpgrade","step":"SUP1"},
+    {"action":"DrainDone(1)","args":[1],"changes":{"att":["uWGateT","gateRd"]},"name":"DrainDone","step":"SUP1"},
+    {"action":"DropGate(2)","args":[2],"changes":{"att":["uWGateT","rd"]},"name":"DropGate","step":"DRP2"},
+    {"action":"TakeWriterS(2)","args":[2],"changes":{"att":["uWGateT","tiers"]},"name":"TakeWriterS","step":"WRS2"},
+    {"action":"TakeGateX(1)","args":[1],"changes":{"att":["uGate","tiers"]},"name":"TakeGateX","step":"GTX1"},
+    {"action":"Admit(2)","args":[2],"changes":{"areq":["pending","served"],"att":["uGate","attached"],"pc":["converting","idle"]},"name":"Admit","step":"ADM2"},
+    {"action":"StartUpgrade(2)","args":[2],"changes":{"areq":["pending","pending"],"att":["uGate","draining"],"pc":["converting","converting"]},"name":"StartUpgrade","step":"SUP2"},
+    {"action":"DrainDone(2)","args":[2],"changes":{"att":["uGate","uWGateT"]},"name":"DrainDone","step":"SUP2"}
+  ]
+}

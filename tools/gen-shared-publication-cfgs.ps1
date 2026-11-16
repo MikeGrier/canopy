@@ -5,16 +5,31 @@
 #
 # Usage:
 #   pwsh tools/gen-shared-publication-cfgs.ps1
+#   pwsh tools/gen-shared-publication-cfgs.ps1 -RecoveryUnits
 #
 # Each configuration states in its header what TLC must report, which tools/run-tlc-all.ps1 reads.
-# It removes every existing SharedPublication*.cfg first, so a configuration dropped from a table
-# leaves the spec directory. Change a configuration by changing its table, never the generated file;
+# It replaces only the selected family's configurations; scans and copies must not overlap a run.
+# Change a configuration by changing its table, never the generated file;
 # regenerating changes no file when the tables have not changed. Output is LF and 7-bit ASCII.
 
+param(
+    [switch]$RecoveryUnits,
+    [switch]$RawUnits,
+    [string]$SpecDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'crates/canopy/spec')
+)
+
 $ErrorActionPreference = 'Stop'
-$spec = Join-Path (Split-Path -Parent $PSScriptRoot) 'crates/canopy/spec'
+$spec = $SpecDirectory
+if ($RecoveryUnits -and $RawUnits) { throw 'Select the checked or raw unit family, not both.' }
+$unitModel = $true
+$RawUnits = -not $RecoveryUnits
+$family = if ($RecoveryUnits) { 'SharedPublicationCheck' } else { 'SharedPublication' }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-Get-ChildItem $spec -Filter 'SharedPublication*.cfg' | Remove-Item
+Get-ChildItem $spec -File | Where-Object { $_.Name -eq "$family.cfg" -or $_.Name.StartsWith("$family-") -and $_.Extension -eq '.cfg' } | Remove-Item
+Get-ChildItem $spec -File -Filter 'SharedPublicationUnits*.cfg' | Where-Object {
+    $_.BaseName -eq 'SharedPublicationUnits' -or $_.BaseName.StartsWith('SharedPublicationUnits-') -or
+    $_.BaseName -eq 'SharedPublicationUnitsCheck' -or $_.BaseName.StartsWith('SharedPublicationUnitsCheck-')
+} | Remove-Item
 
 # Configurations that take about a minute or more: the sweep keeps them out of the work-item loop.
 $milestoneTier = @('SharedPublication-ThreeDocs', 'SharedPublication-ThreeRequests', 'SharedPublication-ResolveThreeRequests',
@@ -26,14 +41,23 @@ $milestoneTier = @('SharedPublication-ThreeDocs', 'SharedPublication-ThreeReques
 function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn,
                       [string[]]$invariants, [string[]]$properties = @(), [string]$control = 'none',
                       [int]$procs = 2, [int]$docs = 2, [int]$requests = 2, [int]$deaths = 1,
-                      [int]$crashes = 1, [string]$coordControl = 'none', [bool]$mixed = $false) {
+                      [int]$crashes = 1, [string]$coordControl = 'none', [bool]$mixed = $false,
+                      [string]$recoverySchedule = 'all', [bool]$reference = $false,
+                      [int]$directoryDebt = 0, [bool]$shared = $false) {
+    $baseName = $name
+    $name = $name -replace '^SharedPublication', $family
     $lines = @('\* Copyright (c) Michael Grier.')
     foreach ($h in $header) { $lines += '\* ' + $h }
-    if ($milestoneTier -contains $name) { $lines += '\* Tier: milestone.' }
+    if ($milestoneTier -contains $baseName) { $lines += '\* Tier: milestone.' }
     $flag = { param($b) if ($b) { 'TRUE' } else { 'FALSE' } }
     $lines += 'CONSTANTS'
     $lines += "    Procs = {$((1..$procs) -join ', ')}"
-    $lines += "    MaxRequests = $requests"
+    $lines += "    MaxRequests = $(if ($unitModel) { 9 * $requests } else { $requests })"
+    if ($unitModel) {
+        $lines += "    MaxWrites = $requests"
+        $lines += "    RecoverySchedule = `"$recoverySchedule`""
+        $lines += "    InitialDirectoryDebt = $directoryDebt"
+    }
     $lines += "    MaxDeaths = $deaths"
     $lines += "    MaxCrashes = $crashes"
     $lines += '    MaxReads = 0'
@@ -46,6 +70,8 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
     $lines += "    Txn = $(& $flag $txn)"
     $lines += "    UnloggedRecovery = $(& $flag (-not $txn))"
     $lines += "    MixedWrites = $(& $flag $mixed)"
+    $lines += "    PublicationsFail = $(& $flag (-not $shared))"
+    $lines += "    CrashFences = $(& $flag $shared)"
     $lines += '    UpSteps = 0'
     $lines += '    Callbacks = FALSE'
     $lines += '    Notifications = FALSE'
@@ -56,9 +82,17 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
     $lines += '    NBlob = 1'
     $lines += "    Fix = `"$fix`""
     $lines += "    PubControl = `"$control`""
-    $lines += 'SPECIFICATION SpSpec'
+    $lines += $(if ($RecoveryUnits -and -not $reference) { 'SPECIFICATION QuotientSpec' } elseif ($RawUnits -and $shared) { 'SPECIFICATION SpSharedSpec' } elseif ($RawUnits) { 'SPECIFICATION SpFileSpec' } else { 'SPECIFICATION SpSpec' })
+    if ($unitModel) {
+        $lines += 'CONSTRAINT WritesBounded'
+        if ($RecoveryUnits -and -not $reference) { $lines += 'VIEW QuotientView' }
+    }
     $lines += 'INVARIANTS'
-    $lines += ($invariants | ForEach-Object { "    $_" })
+    $lines += ($invariants | ForEach-Object {
+        if ($RecoveryUnits -and -not $reference -and $_ -eq 'SpTypeOK') { '    QuotientTypeOK' }
+        else { "    $_" }
+    })
+    if ($RecoveryUnits -and -not $reference) { $lines += '    OnlyOrdinaryRequestsConsumeTheBudget' }
     if ($properties.Count -gt 0) { $lines += 'PROPERTIES'; $lines += ($properties | ForEach-Object { "    $_" }) }
     $lines += 'CHECK_DEADLOCK FALSE'
     $text = ($lines -join "`n") + "`n"
@@ -68,6 +102,35 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
 $all = @('SpTypeOK', 'DurablePointerHasBlob', 'LivePointerHasBlob', 'EveryDocumentHasAMajority',
          'OutcomeIsFixedOnceRecovered', 'AHealthyHolderFindsEveryDocumentSettled')
 $props = @('OnlyAHolderChangesADocument')
+
+if ($unitModel) {
+    if ($RecoveryUnits) { $all += @('DocumentWorkUsesCurrentGeneration', 'SavedRecoveryCountNeverLeads', 'StoredVersionsNeverLeadTheGeneration') }
+    Write-Config 'SharedPublication-HealthyPublication' @('Two writers publish without host or process loss: every invariant and property holds.') 'record' $false $all $props 'none' 2 2 2 0 0
+    Write-Config 'SharedPublication-HealthyTransactions' @('Two writers transact without host or process loss: every invariant and property holds.') 'record' $true $all $props 'none' 2 2 2 0 0
+    Write-Config 'SharedPublication-SharedPublication' @('Shared coordination publications cannot fail and restart fenced: every invariant and property holds.') 'record' $false $all $props 'none' 2 2 2 1 1 -shared $true
+    Write-Config 'SharedPublication-SharedTransactions' @('Shared coordination with transactions: every invariant and property holds.') 'record' $true $all $props 'none' 2 2 2 1 1 -shared $true
+    Write-Config 'SharedPublication-UnitMultiWriterPublication' @('Two writers and two documents with recovery units: every invariant and property holds.') 'record' $false $all $props 'none' 2 2 1 1 1
+    Write-Config 'SharedPublication-UnitMultiWriterTransaction' @('Two transaction writers and two documents with recovery units: every invariant and property holds.') 'record' $true $all $props 'none' 2 2 1 1 1
+    Write-Config 'SharedPublication-UnitMultiWriterResolve' @('Two writers with the resolve guard and recovery units: every invariant and property holds.') 'resolve' $false $all $props 'none' 2 2 1 1 1
+    Write-Config 'SharedPublication-UnitControlNoGuard' @('TLC must report EveryDocumentHasAMajority violated.') 'none' $false @('EveryDocumentHasAMajority') @() 'none' 1 1 2 0 0
+    Write-Config 'SharedPublication-DirectoryDebt' @('Directory-debt units precede publication recovery: every invariant and property holds.') 'record' $false $all $props 'none' 2 1 1 0 2 -directoryDebt 1
+    Write-Config 'SharedPublication-Witness-DirectoryDebtUnitRuns' @('TLC must report Witness_ADirectoryDebtUnitRuns violated.') 'record' $false @('Witness_ADirectoryDebtUnitRuns') @() 'none' 2 1 1 0 1 -directoryDebt 1
+    Write-Config 'SharedPublication-Witness-DirectoryClearSurvivesOnlyLive' @('TLC must report Witness_ADirectoryClearSurvivesOnlyLive violated.') 'record' $false @('SpTypeOK') @('Witness_ADirectoryClearSurvivesOnlyLive') 'none' 2 1 1 0 2 -directoryDebt 1
+    Write-Config 'SharedPublication-ReferencePublication' @('The bounded unreduced publication reference: every invariant and property holds.') 'record' $false $all $props 'none' 1 1 1 0 0 -reference $true
+    Write-Config 'SharedPublication-ReferenceTransaction' @('The bounded unreduced transaction reference: every invariant and property holds.') 'record' $true $all $props 'none' 1 1 1 0 0 -reference $true
+    Write-Config 'SharedPublication-PublicationUnits' @('Publication recovery in separate exclusion units: every invariant and property holds.') 'record' $false ($all + @('CountIsOddWhileAnOperationIsUnresolved', 'AFinishedOperationLeavesTheStoreSettled')) $props 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-TransactionUnits' @('Transaction recovery in separate exclusion units: every invariant and property holds.') 'record' $true $all $props 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-RecoveryCompletesAllUnits' @('TLC must report Witness_ARecoveryCompletesAllUnits violated.') 'record' $true @('Witness_ARecoveryCompletesAllUnits') @() 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-AWriteCollects' @('TLC must report Witness_AWriteCollects violated.') 'record' $false @('SpTypeOK') @('Witness_AWriteCollects') 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-WriterRefusedBetweenUnits' @('TLC must report Witness_AWriterIsRefusedBetweenRecoveryUnits violated.') 'record' $false @('Witness_AWriterIsRefusedBetweenRecoveryUnits') @() 'none' 2 1 2 0 0
+    Write-Config 'SharedPublication-StaleRecoverySchedule' @('The resumed recovery settles the new record: every invariant and property holds.') 'record' $false $all $props 'none' 2 1 3 0 0 -recoverySchedule 'stale-completion'
+    Write-Config 'SharedPublication-Control-StaleRecoverySchedule' @('TLC must report OutcomeIsFixedOnceRecovered violated.') 'record' $false @('OutcomeIsFixedOnceRecovered') @() 'resume-stale-recovery' 2 1 3 0 0 -recoverySchedule 'stale-completion'
+    Write-Config 'SharedPublication-Witness-StaleRecoveryRestarts' @('TLC must report Witness_AStaleRecoveryRestarts violated.') 'record' $false @('SpTypeOK') @('Witness_AStaleRecoveryRestarts') 'none' 2 1 3 0 0 -recoverySchedule 'stale-completion'
+    foreach ($witness in @('ALiveRollbackCollects', 'ARecoveryCollectsARolledBackTransaction',
+                          'ARecoveryCollectsACommittedTransaction', 'ARollbackCollectionFailureRequiresRecovery')) {
+        Write-Config "SharedPublication-Witness-$witness" @("TLC must report Witness_$witness violated.") 'record' $true @('SpTypeOK') @("Witness_$witness") 'none' 1 1 1 0 0
+    }
+}
 
 # Both guards, each with unlogged and with logged writes, two writers, a death and a host crash:
 # name, guard, logged, what it is.
@@ -122,4 +185,4 @@ foreach ($w in $witnesses) {
     Write-Config ('SharedPublication-Witness-' + $w[0]) @("Witness: $($w[3])", "TLC must report Witness_$($w[0]) violated, which shows it is reachable.") $w[1] $w[2] @("Witness_$($w[0])")
 }
 
-'wrote {0} configurations' -f (Get-ChildItem $spec -Filter 'SharedPublication*.cfg').Count
+'wrote {0} configurations' -f @(Get-ChildItem $spec -File | Where-Object { $_.Name -eq "$family.cfg" -or $_.Name.StartsWith("$family-") -and $_.Extension -eq '.cfg' }).Count

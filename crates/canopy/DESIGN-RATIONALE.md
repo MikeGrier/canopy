@@ -174,3 +174,302 @@ family became available and then asked for Linux's types to match that unsafe pr
 therefore gains a safe sealed accessor while keeping its existing unsafe borrow for compatible
 custom integration. No mutable lower-layer signal API is removed, and no formal doorbell rule
 changes: producer/consumer ordering and signal control stay owned by the protocol.
+
+## Trace corpus
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The trace corpus". TLC's own JSON
+error trace repeats both states of every transition and names nothing but the action, so the
+corpus has a format of its own: the configuration's constants and the trace's origin, which the
+harness needs and TLC does not record, and each action with only the variables it changes. Full
+states per action were the alternative; the delta keeps a `Coordination` behaviour, with its
+several dozen variables, small enough to review in a diff.
+
+Simulation was first exported through an invariant bounding the walk's length with
+`TLCGet("level")`, so that TLC would dump the walk as an error trace. For `Coordination` TLC
+reported the same seven-state behaviour whatever the bound, while its printed levels showed walks
+reaching it. Rather than depend on that, the exporter reads the walks TLC's simulation mode writes
+as modules and replays the chosen one state by state, a second pass that costs a second or two and
+yields exactly the walk TLC took in the encoding the other traces use. Many walks end within a
+handful of steps -- a process gives up or dies early -- so a seed keeps the longest of several.
+
+## Trace replay
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Replaying a trace against the code".
+Three questions arose before any replay ran, and the engineer decided each.
+
+**Controls.** Of the timelines, all but three are read from configurations that break a rule.
+Replaying only the configurations that match the code would have left those timelines checked
+against the model alone. Requiring the code to agree up to the broken rule and depart there keeps
+them as evidence: the prefix pins the code to the timeline's setting, and the departure shows the
+code does not do what the control does.
+
+**Scope.** The single-process spec can run each store operation whole, injecting a failure or a
+crash at a chosen filesystem call and comparing every intermediate state. The other specs
+interleave processes, and `Coordination`'s actions -- attachment, admission, the count, the fence
+-- happen inside the coordination implementations, one of which keeps its state in mapped memory
+rather than files. One item for all of them would have been an item of unbounded size, so the work
+was split by bridge.
+
+**The bite check.** The plan was to remove collection's namespace sync and watch the replay of the
+`DANGLING-DURABLE` counterexample fail. That counterexample is read from a model with no record
+guard, and model checking the configuration as built without the sync showed the record guard
+alone prevents `DANGLING-DURABLE`. Three alternatives were considered: catch the removal as a
+mismatch at the `CollSync` step of a trace of the protocol as built (chosen); additionally break a
+record-guard rule and replay that control's counterexample; or add a test-only switch that
+disables the record guard in production code. The third was rejected because it would put a fault
+mode into the store to serve a test.
+
+## Publication replay
+
+The canonical decisions are [DESIGN-NOTES.md](DESIGN-NOTES.md) "The publication model describes
+the store's commit log" and "The PointerPublication replay".
+
+**Which side moves.** The first replay found the store emptying the commit log where the model did
+not: a rolled-back transaction and every recovery. Changing the store to match would have made
+recovery leave records for the next open to replay and a failed transaction leave its ingested
+blob, both behaviours the store had chosen for good reasons. Annotating the traces as expected
+departures would have left most simulated behaviours unreplayable past their first failed
+transaction. The engineer chose to refine the model, which is meant to describe the protocol as
+built; refining it then exposed the settle's collection and the begin record, which the same
+reasoning covered.
+
+**Why the begin is a step of its own.** Folding the begin record into the step that enters the
+ingest would have kept the existing timelines replaying, but that step can also be the end of a
+settle, whose clearing sync the store makes before the begin. Comparing runs of calls needs each
+change the store makes in order to be a step the model takes in the same order, so the begin
+became a step and the one timeline that passed through it was superseded.
+
+**Placing faults by position.** Counting calls of a kind would have failed the wrong call whenever
+the store makes a call the model does not name -- a settle that finds no record file makes no
+sync at all, and a record append looks at the file first. Placing a fault after the changes both
+sides have made, at the first call of the kind the model's next step begins with, follows the
+store through the calls the model leaves out.
+
+## Creation decisions
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The creation model describes the
+coordination's decisions".
+
+**Validity before choice.** The first replay of `Creation`'s simulations found a creator that had
+looked at an empty root ending `occupied` or `exists` under the exclusion where the model said it
+lost the race, and an opener refused for another implementation where the model said the root was
+not yet a store. Choosing between the model and the code was put second: the first question was
+whether the model accepts what the code does. A copy of the spec that made the code's decisions
+was checked in every configuration before anything was chosen. Every property held, every control
+still broke the property it targets, and one witness -- a creator losing the race between two
+creators of one implementation with the same inputs -- was no longer reached, which is the takeover
+itself. With validity established, refining the model kept the code's behaviour, which finishes a
+dead creator's work rather than leaving it for a later creator to resume.
+
+**Separate actions.** The fresh creator's reading under the exclusion became three actions --
+`LoseRace`, `TakeOver` and `CreatedUnderExclusion` -- rather than one action with branches, so a
+trace names which conclusion was reached and a timeline can cite the takeover by name.
+
+## Creation replay
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The Creation replay".
+
+**Which code.** The model describes the coordination contract, and canopy's `Store::init` does not
+create through it: it reserves, then works under writer exclusion. Driving `Store::init` would
+have checked a creation the model does not describe, and driving the contract leaves `Store::init`
+unchecked. The engineer chose to drive the contract, through both implementations, and to queue
+the question of `Store::init` as a decision rather than settle it inside the harness.
+
+**Scheduling by the model's state.** The step a process takes next is a function of its state in
+the model, so the replay stops each process before the first call of that step without consulting
+the trace's next action. A trace that ends with a process mid-creation therefore still leaves that
+process stopped where the model has it, and the comparison after the last step is as exact as the
+others.
+
+**Settling a crash's choices.** The model's crash chooses which files that are not durable
+survive, while the filesystem's crash keeps exactly what is durable. Making the survivors durable
+and removing the lost before the crash makes the filesystem's outcome the model's, which a random
+crash could not, so a trace with a crash replays deterministically.
+
+## Contract bridge order
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The contract is bridged before the
+documents above it, and the shared implementation announces its steps".
+
+**Order.** The checklist first had `SharedPublication`'s bridge before `Coordination`'s, as if the
+documents could be replayed with the step scheduler alone. Its behaviours are the contract's with
+documents added, so that order would have bound most of the contract inside the documents' bridge,
+where a mismatch in the contract shows only as a document gone wrong. Two orders were weighed:
+widening the documents' item to bind the part of the contract it needs, or binding the contract's
+writer actions first, on its own traces. The engineer chose the second, with the rest of the
+contract -- the registry, the upgrade, clones, reads and discovery -- as an item after the
+documents.
+
+**Stepping the shared implementation.** Its contract state is shared words, not files, so the
+scheduler, which holds a process at a filesystem call, cannot hold it at those steps. Three ways
+were weighed: a test-support hook in acadia through which each step announces itself and its words
+can be read (chosen); bridging the file-based implementation now and queuing the shared one, which
+would narrow the platform to the implementation the harness happens to reach; and running each
+coordination call whole, which would lose every interleaving inside a call, the very interleavings
+the model checks.
+
+## Writer action binding
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The contract's writer actions in the
+code".
+
+**What the abstract write stands for.** `Coordination`'s write changes two cells in turn, and with
+`Txn` on is a transaction over a commit log; none of that is the contract's. Three bindings were
+weighed: the replay as the contract's own client, keeping the cells, the log and staging itself
+(chosen); the same for an unlogged write but a `Store` transaction of two documents for a logged
+one; and every write through `Store`, which has no unlogged write of two cells. Binding each model
+to the layer it describes keeps a mismatch where it lives: a fault in acadia shows in
+`Coordination`'s replay, and one in canopy's transactions or recovery in `SharedPublication`'s.
+
+**Escapes later.** The model lets a waiting writer withdraw even while the lock is free, while the
+code's nearest equivalent, an acquisition that does not wait, fails only while the lock is held;
+and a refusal follows eligibility, which upgrades change. Binding them with the writer actions
+would have mixed a likely mismatch into the first replay of the contract, so the engineer moved
+them to the item that binds eligibility and upgrades.
+
+**New configurations rather than the old.** Of the existing configurations only two are writers
+alone, and neither has a host crash, unlogged recovery or mixed writes. Two generated
+configurations cover those, and are checked by the sweep like any other.
+
+**Choosing walks.** The longest walk of a writer configuration was a death, a crash and then a
+recovery started and stopped until the depth ran out, which exercises almost nothing. Keeping the
+walk with the most kinds of action, from many more walks, is a selection a corpus entry opts into,
+so the existing entries keep the walks they had.
+
+
+## Coordination writer replay
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The Coordination writer replay".
+
+**Two divergences, both settled in the model.** The first replay left five file-based traces where
+a recoverer stopped between publishing the count and clearing the fence, which `complete_recovery`
+does in one call, and two shared traces where the fence was set after a crash that the model had
+clear. A scratch copy of the spec with `RecStop` not enabled at `recClear` and `Crash` free to set
+the fence passed every item-tier configuration, so the model accepts both; the engineer chose to
+refine the spec to describe the code rather than split `complete_recovery`, start a rebuilt shared
+state unfenced, or mark the traces as departures.
+
+**Fabricating a fence was rejected.** The replay's crash keeps or loses the file-based records as
+the model's crash chooses. Making it create a fence the model's crash set would have replayed a
+behaviour the file-based implementation cannot have, so each implementation replays only the
+traces that are its behaviours instead.
+
+**Walks of the shared implementation's own.** Most walks chosen for coverage take a failing
+publication, which the shared implementation cannot, so it replayed few of them. Three ways were
+weighed: two constants stating an implementation's narrower behaviour and a configuration that
+sets them (chosen, since TLC then checks every property under that behaviour too); having the
+exporter keep only walks that avoid the actions and crashes the shared implementation cannot take,
+which leaves the model unchecked under it; and leaving it at the few walks there were.
+
+
+## Failed unlogged write
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "An unlogged write that fails after
+its record fails unresolved".
+
+**How it was found.** Mapping the store's unlogged write to `SharedPublication`'s steps found that
+a write failing after its record's append closed its modification settled, and the next
+operation's settle finished it. A scratch copy of the model with that behaviour violated
+`OutcomeIsFixedOnceRecovered`: a settled-looking store with a publication pending.
+
+**Alternatives weighed.** Fixing the store to fail unresolved (chosen), which restores the
+guarantee at the cost of refusing writes until recovery; and weakening the model to accept
+closing settled, which keeps writes available but lets a document change after a "settled" read
+with no write to it. Correctness first decided it.
+
+
+## Recovery and rollback order
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The model recovers and rolls back as
+the store does". The analysis is
+[DESIGN-SESSION-2026-11-15-store-recovery-order.md](design-sessions/DESIGN-SESSION-2026-11-15-store-recovery-order.md).
+
+**Judged by what each does to the system.** The first framing asked only which side changes to
+make the store and the model agree. The engineer asked instead what each behaviour does for the
+system -- writes while recovery is finishing, whether the log can be reset, crashes part-way,
+performance -- and on those terms every one of the store's choices was the sounder: keeping a
+rolled-back transaction's `begin` keeps the list of what to collect, emptying the log before the
+fence clears closes a window with stale records, and collecting on rollback and after a
+roll-forward prevents a leak.
+
+**Alternatives weighed.** Refining `Coordination`'s client-side recovery and abort and modelling
+recovery in units in the composition (chosen), which checks every property against the recovery
+the store runs and adds two checks the model lacked; giving the composition client steps of its
+own, which would restate `Coordination`'s commit log and break the rule that the composition
+restates nothing; and keeping the model's order with the affected traces marked as departures,
+which would leave the store's recovery of transactions unchecked by the replay. Changing the store
+to the model's order would make the system worse in each case.
+
+## Recovery-unit verification cost
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "State-space reduction for recovery-unit
+verification". On 2026-11-16, the unreduced two-writer transaction candidate had explored
+more than 30 million distinct states after roughly an hour, with its queue still growing.
+The acquisition budget allowed the separate holds that complete recovery; raising that
+budget also retained many different acquisition histories. Focused witnesses established
+completion, between-unit refusal and restart of stale progress. Removing the count-restart
+guard produced the expected publication-safety violation, so the guard has discriminating
+evidence, but those focused checks do not discharge the broader safety obligation.
+
+The engineer chose to establish a behavior-preserving state-space reduction. Continuing the
+unreduced exhaustive runs avoids a new abstraction argument but pays the enumeration cost
+on every model revision. Restricting verification to selected schedules would be cheaper,
+but cannot establish safety for interleavings excluded by those schedules. A justified
+reduction costs model work and reference comparisons once, while preserving the behavior
+the broad checks must cover. No particular discarded distinction is justified by this
+choice alone; the argument and checks are part of implementing it.
+
+### Recovery quotient argument
+
+The candidate separates the finite budget for ordinary requests from recovery reacquisition.
+A recovery request has the same eligibility, pending-request and exclusion steps as an
+ordinary request; only the bookkeeping counter ceases to consume its budget. Every bounded
+reference behavior therefore remains possible after erasing the recovery contributions to
+that counter. Unlimited recovery retries add behaviors rather than remove them. Safety in
+this over-approximation covers the bounded reference; liveness is not inferred from it.
+
+The fingerprint retains ordinary-request budgets, process and admission state, ownership,
+fence, trust, failures, log phase, staging, document versions, collection position and keep
+set, and each recovery run's progress. It omits the cached log revision, which the composition
+does not use to choose an action or check a result. Abstract transaction cells keep their
+relative offsets and explicit staging/prepare presence, preserving both the equality tests
+and next-version arithmetic without preserving irrelevant absolute revision numbers.
+
+Document versions and the current generation are ranked together, preserving zero, equality,
+order and fresh-generation allocation. No stored version may be ahead of the generation,
+and active document work must use the current holder's generation; these are explicit checks.
+Remembered generations retain whether they equal the current generation, because acquisition
+uses that distinction to detect an intervening holder. An absent and an older generation are
+equivalent for that test. The count
+keeps its parity, and each recovery run keeps whether its saved count is absent, current or
+stale. A saved count must never lead the current count: completed recovery and writes move
+it forward, and a host crash discards every run. Therefore a stale saved count cannot become
+current without the run refreshing it. The view changes state identity for checking, not the
+variables or concrete traces that the replay consumes.
+
+This argument is scoped to the composition without reads, upgrades, callbacks or notifications;
+the view asserts those restrictions. Coordination's independent checks retain those features
+and their original state. Extending the composition to one of them requires extending this
+argument before reusing the view. Matching small unreduced runs and the collection, refusal,
+completion and stale-progress controls are necessary checks, not a substitute for the argument.
+
+Per-acquisition request intent and readiness are retained only while that acquisition can use
+them. A new request replaces its intent, and recording the acquired hold replaces readiness
+and the intervening-holder result. Values left behind after release therefore cannot choose a
+future action. The checker omits those inactive values but retains the recovery cursor, saved
+count and remembered-generation equality that a later acquisition actually reads.
+
+## Directory-debt recovery boundaries
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Directory-debt units in the publication
+composition". A real Store replay returned directory-debt work before publication recovery.
+The fixture's record was empty live but retained durable text, so a crash exposed it again.
+Repeated recovery was not a substitute for identifying which state survived the crash.
+
+The engineer chose to add the recovery boundaries without pulling the entire namespace model
+forward. Keeping each sync and the clear under its own exclusion hold preserves the acquisition
+behavior the bridge checks. A fixed document set already supplies the shard directories its
+future versions use; an explicit pending-debt fixture exercises the recovery boundaries without
+pretending to verify directory creation or torn appends. Those broader rules remain separately
+scheduled. Ignoring the returned phase would let a replay pass while the Store performs a
+different sequence of exclusion holds, and was rejected.

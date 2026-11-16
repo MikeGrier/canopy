@@ -569,6 +569,15 @@ configuration is a new table entry.
 [tools/trace-to-scenario.ps1](../tools/trace-to-scenario.ps1) drafts one from the counterexample
 it was read from.
 
+**Traces are exported.** [tools/export-trace-corpus.ps1](../tools/export-trace-corpus.ps1) writes
+the trace corpus the replay harness runs against the code, `crates/canopy/tests/traces/`, from
+TLC: every timeline's replay, random walks of the configurations
+[corpus.psd1](../crates/canopy/spec/corpus.psd1) lists, and the counterexamples it names. Re-run it
+whenever a spec, a scenario table or the corpus table changes, and commit what it writes; run whole
+it deletes the corpus files nothing wrote, and `-Filter '<Spec>/<name>'` exports a part. A full run
+takes several minutes, so start it in a terminal of its own and run nothing else there until it
+ends.
+
 [tools/check-run-tlc-all.ps1](../tools/check-run-tlc-all.ps1) checks that the sweep can fail, and
 is run when the sweep tool changes. [tools/trace-summary.ps1](../tools/trace-summary.ps1) prints a
 counterexample as each state's action and the variables that changed in it, and
@@ -647,6 +656,18 @@ TLC also refuses to compare values of different kinds, so a "no process" sentine
 numbered processes is a number, not a string.
 
 WSL has no JDK installed, so TLC runs on the Windows host only.
+
+**Narrow TLC filters include the separator.** Use `*-PublicationUnits`, not
+`*PublicationUnits`: the latter can also match a default spec named
+`SharedPublicationUnits` and start its exhaustive reference run. Use `-List` before
+a new filter whose suffix can also match the spec name.
+
+**Stopping a terminal may leave TLC descendants running.** Inspect the `java.exe`
+and `pwsh.exe` command lines with `Get-CimInstance Win32_Process`. Stop only launcher
+trees whose spec/configuration paths identify the superseded run; on Windows,
+`taskkill /PID <verified-launcher-pid> /T /F` stops that launcher and its Java children.
+Never stop every Java process by name. Verify those descendants ended before starting
+replacement checks, and never count an interrupted log as a pass.
 
 ## Scratch directory for temporary files
 

@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "spec": "Creation",
+  "configuration": "Creation-Four",
+  "origin": {"depth":40,"kind":"simulation","seed":3,"walks":50},
+  "constants": {"Control":"\"none\"","Intrusion":"TRUE","MaxCrashes":"1","MaxDeaths":"2","NArt":"3","Procs":"{1, 2, 3, 4}","Scenario":"\"FourCreators\""},
+  "derived": {"scenario":{"impls":[1,1,1,2],"ins":[1,1,2,1],"roles":["creator","creator","creator","creator"]}},
+  "departs": null,
+  "initial": {"adur":[false,false,false],"ainp":[0,0,0],"ak":[0,0,0,0],"aliv":[false,false,false],"crashes":0,"cx":[0,0],"deaths":0,"everPub":false,"foreign":false,"out":["none","none","none","none"],"path":["none","none","none","none"],"pc":["new","new","new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}]},
+  "steps": [
+    {"action":"Look(1)","args":[1],"at":"Creation:249","changes":{"path":["fresh","none","none","none"],"pc":["wantX","new","new","new"]},"name":"Look","step":"#1"},
+    {"action":"Die(1)","args":[1],"at":"Creation:454","changes":{"deaths":1,"path":["none","none","none","none"],"pc":["dead","new","new","new"]},"name":"Die","step":"#2"},
+    {"action":"Look(3)","args":[3],"at":"Creation:249","changes":{"path":["none","none","fresh","none"],"pc":["dead","new","wantX","new"]},"name":"Look","step":"#3"},
+    {"action":"Look(2)","args":[2],"at":"Creation:249","changes":{"path":["none","fresh","fresh","none"],"pc":["dead","wantX","wantX","new"]},"name":"Look","step":"#4"},
+    {"action":"Die(3)","args":[3],"at":"Creation:454","changes":{"deaths":2,"path":["none","fresh","none","none"],"pc":["dead","wantX","dead","new"]},"name":"Die","step":"#5"},
+    {"action":"Lock(2)","args":[2],"at":"Creation:287","changes":{"cx":[2,0],"pc":["dead","holdsX","dead","new"]},"name":"Lock","step":"#6"},
+    {"action":"Look(4)","args":[4],"at":"Creation:249","changes":{"path":["none","fresh","none","fresh"],"pc":["dead","holdsX","dead","wantX"]},"name":"Look","step":"#7"},
+    {"action":"Lock(4)","args":[4],"at":"Creation:287","changes":{"cx":[2,4],"pc":["dead","holdsX","dead","holdsX"]},"name":"Lock","step":"#8"},
+    {"action":"Publish(4)","args":[4],"at":"Creation:297","changes":{"everPub":true,"pc":["dead","holdsX","dead","syncRes"],"res":{"impl":2,"inp":1,"nonce":4,"st":"whole"}},"name":"Publish","step":"#9"},
+    {"action":"SyncRes(4)","args":[4],"at":"Creation:382","changes":{"ak":[0,0,0,1],"pc":["dead","holdsX","dead","writeArt"],"rdur":true},"name":"SyncRes","step":"#10"},
+    {"action":"LoseRace(2)","args":[2],"at":"Creation:319","changes":{"cx":[0,4],"out":["none","lostRace","none","none"],"pc":["dead","done","dead","writeArt"]},"name":"LoseRace","step":"#11"},
+    {"action":"Crash","args":[],"at":"Creation:468","changes":{"ak":[0,0,0,0],"crashes":1,"cx":[0,0],"path":["none","none","none","none"],"pc":["dead","done","dead","dead"]},"name":"Crash","step":"#12"},
+    {"action":"Intrude","args":[],"at":"Creation:486","changes":{"foreign":true},"name":"Intrude","step":"#13"}
+  ]
+}

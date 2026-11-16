@@ -1738,6 +1738,12 @@ the listing may be incomplete, and no handle is reported live that is not.
 
 ## Creating a store root, modelled in `Creation.tla`, 2026-11-11
 
+> **SUPERSEDED in part, 2026-11-15, by "The creation model describes the coordination's
+> decisions".** What a creator concludes when it reads the root again under the exclusion, in the
+> second bullet below, is the full decision of its first look: a creator that finds a reservation
+> for its implementation and inputs published since it looked takes that creation over. An opener
+> looks at the reservation before the marker. Read that section before acting on either.
+
 - **Creation is a model of its own, and the marker is what it hands to the rest of the
   contract.** [Creation.tla](spec/Creation.tla) ends where [Coordination.tla](spec/Coordination.tla)
   begins: a root with its marker in place. Creation needs a file's existing and its being
@@ -2811,6 +2817,11 @@ step 3's failure then repeats and fails the reopen with the record pending.
 
 ### T25 -- a logged write follows a failed clear, collects the version the stale record names, and a crash replays the record
 
+> **SUPERSEDED, 2026-11-15, by T31** in "The publication model describes the store's commit log"
+> below. The model's transaction now appends its begin record before it ingests, a step this
+> timeline predates, so its replay stops at step 6. T31 is the same scenario with that step; read
+> it before acting on this one. This timeline's scenario table is retired.
+
 Status: `[verified]`, the shortest trace of
 `PointerPublication-Control-SettleLooksOnlyAtTheFile-LivePointerHasBlob.cfg`, which runs the
 record guard with a settle that fsyncs only when the file shows a record. The pointer replicas are
@@ -3802,6 +3813,10 @@ the probes can run only what the edit can affect, and a scheduled run keeps the 
 
 ## `STRANDED-VOTE` is guarded by a durable publication record, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-15, by "An unlogged write that fails after its record fails
+> unresolved".** A write that fails once its record is appended is finished by recovery, not by
+> the next operation's settle; the settle before every operation stays, as defence in depth.
+
 canopy guards against `STRANDED-VOTE` with a durable publication record. Both guards that hold were
 checked in every model -- one document's publication, the composition with the coordination
 contract, logged and unlogged writes mixed, several processes, deaths and crashes -- and the
@@ -3845,6 +3860,11 @@ modelled in `PointerPublication.tla`".
   counterexample is kept as the negative control `PointerPublication-Control-Unguarded.cfg`.
 
 ## A pointer vote nothing was modifying reports its disagreement, 2026-11-12
+
+> **SUPERSEDED in part, 2026-11-15, by "An unlogged write that fails after its record fails
+> unresolved".** A write that fails part-way over a lost replica (T26) leaves the count odd, so a
+> read of its document is contended until recovery finishes it, and the next ordinary operation
+> is refused rather than settling it.
 
 `read_document` brackets its pointer vote with two samples of the modification count, and when the
 vote finds no majority -- for a pointer or for absence -- and `Store::undisturbed` holds of the
@@ -4936,3 +4956,518 @@ tracked by the native-wait item[^g-2], with rationale in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#native-wait-safety-parity).
 
 [^g-2]: `G-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#g-2) [completed 2026-11-15]
+
+## The trace corpus, 2026-11-15
+
+The behaviours the replay harness runs against the code are checked in under `tests/traces/<Spec>/`,
+one JSON file per behaviour, written from TLC by
+[export-trace-corpus.ps1](../../tools/export-trace-corpus.ps1)[^m11-1]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#trace-corpus).
+
+- **What it holds.** Every timeline's replay, so that the timelines in this file are replayed
+  against the code as well as the model; random walks of the configurations of the protocol as
+  built that [corpus.psd1](spec/corpus.psd1) lists, for breadth; and the error trace of each
+  configuration that reproduces a named defect.
+- **It is generated, never edited.** A run writes a file only when its text changes and, run
+  whole, deletes what nothing wrote, so a diff in the corpus is a change in what the model allows
+  or in what the tables ask for. TLC runs single-worker, so every behaviour is reproduced from the
+  spec, its configuration and, for a walk, its seed.
+- **The format is ours, not TLC's.** A file names its spec, the configuration it was read from and
+  that configuration's constants, its origin, the step at which the code as built is expected to
+  leave it (`departs`), the initial state, and each action: its step id, its TLA+ text, its
+  operator and arguments, and the variables it changes. Values keep TLC's JSON encoding -- a
+  sequence or a function on `1..n` as an array, a set as an array in TLC's order, a record as an
+  object -- and recording only the variables an action changes keeps a behaviour of the largest
+  spec to a few kilobytes.
+- **A timeline's actions carry its step ids.** A replay that fails then names the step a reader of
+  the timeline knows. A walk's or a counterexample's actions are numbered (`#n`) and carry the
+  module and line of the action TLC named, since TLC names a step through a disjunct that is not an
+  operator of its own -- `SharedPublication`'s `SpNext`, the conjunction among `Coordination`'s
+  `Next` -- by the enclosing operator.
+- **A walk is TLC's own, replayed for its JSON.** TLC's simulation mode writes each random walk as
+  a module of numbered states; the exporter keeps the longest of a seed's walks, since many end
+  early when a process gives up or dies, and replays it state by state so that TLC dumps it in the
+  same JSON as the rest. The error trace simulation mode itself reports did not serve: bounding a
+  walk with an invariant over `TLCGet("level")` reported the same seven-state behaviour of
+  `Coordination` whatever the bound.
+
+[^m11-1]: `M11-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-1) [completed 2026-11-15]
+
+## Replaying a trace against the code, 2026-11-15
+
+Decided with the engineer as the conformance work began. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#trace-replay).
+
+- **A trace from a configuration that breaks a rule is followed to the step at which that rule
+  acts.** Most timelines are read from controls -- models that break one rule on purpose -- and the
+  code does not break it. Such a trace must agree with the code on every step before the one at
+  which the rule acts; the code must depart there, and must never reach the state the trace
+  violates. That step is the trace's `departs`, from its scenario table's `Departs` or its entry in
+  [corpus.psd1](spec/corpus.psd1); a trace without one is followed to its end.
+- **Each spec has a bridge of its own, built in order of what it asks of the harness.**
+  `PointerPublication` is one process, so its bridge runs each store operation whole and fails or
+  crashes it at the filesystem call the trace names. `Creation`, `SharedPublication` and
+  `Coordination` interleave processes, so their bridges need a scheduler that suspends each
+  process at every step the model names. `Creation`'s comes first; `SharedPublication` extends
+  `Coordination`, so the contract's writer actions are bound to the code before its documents are,
+  and the rest of `Coordination` after them[^m11-2].
+- **With the record guard, the model reaches no `DANGLING-DURABLE` state even without collection's
+  namespace sync.** TLC on the constants of [PointerPublication.cfg](spec/PointerPublication.cfg)
+  with `SyncBeforeCollect = FALSE` finds `DurablePointerHasBlob` holds. A pointer replica whose
+  live value is ahead of its durable one is left only by a write whose durable record names that
+  value, which the next operation's settle rolls forward and syncs before anything collects, or by
+  a repair, which writes only the vote's version. The code keeps the sync, and this finding
+  schedules no change to it.
+- **So the harness is shown to catch the sync's removal on a trace of the protocol as built.** The
+  `DANGLING-DURABLE` counterexample is read from a model without the record guard, whose writes and
+  recovery the code cannot follow. The check removes the sync and replays a trace of the
+  protocol as built in which collection's sync changes the durable namespace -- a repair that
+  renamed a replica and failed before syncing it, followed by a collection -- and requires the
+  replay to fail at that `CollSync` step[^m11-8].
+
+[^m11-2]: `M11-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-2) [completed 2026-11-15]
+
+[^m11-8]: `M11-8` in [CHECKLIST.md](CHECKLIST.md)
+
+## The publication model describes the store's commit log, 2026-11-15
+
+Replaying `PointerPublication`'s traces against the store found it handling the commit log in
+four ways the model did not, none of them a safety difference. The engineer chose to refine the
+model to describe the store rather than change the store, so
+[PointerPublication.tla](spec/PointerPublication.tla) now has each of them[^m11-2]:
+
+- **A transaction appends its begin record before it ingests** (`TxBegin`), naming the document,
+  so that recovery collects what an unprepared transaction left (`D329`). `txPrep` is `Begun` from
+  then until the prepare record.
+- **A transaction that fails after its begin and before its prepare is rolled back**: what it
+  ingested is collected and the log is emptied (`RbReset`), as `rollback_unprepared` does. A
+  rollback that fails leaves the store needing recovery, which the model shows as `Begun`.
+- **A recovery ends by emptying the log** (`RecReset`). The store does that best-effort and
+  succeeds whatever the reset does, so the step cannot fail.
+- **A settle that rolls a record forward collects what that superseded** before the operation it
+  began goes on, through the collection's own steps under their own phase names.
+
+Every `PointerPublication` configuration still comes out as its header requires. Timeline T25's
+replay stopped at the new begin step and is superseded by T31.
+
+### T31 -- a logged write follows a failed clear, collects the version the stale record names, and a crash replays the record
+
+Status: `[verified]`, replayed by TLC from its scenario table in the constants of
+`PointerPublication-Control-SettleLooksOnlyAtTheFile-LivePointerHasBlob.cfg`, which runs the
+record guard with a settle that fsyncs only when the file shows a record. The pointer replicas are
+written `[1, 2, 3]`, and all three hold `A` at the start.
+
+| Step | Actor | Event | Durable effect |
+|---|---|---|---|
+| 1 `WR1` | writer 1 | ingests the blob, then writes the record naming `A` and syncs it | the record names `A` |
+| 2 `SW1` | writer 1 | swaps and syncs each replica, which stay `A` | -- |
+| 3 `CLR` | writer 1 | truncates the record file | -- |
+| 4 `CLF` | writer 1 | the fsync of the truncation fails, and the write ends with an error | the file is empty and the durable record still names `A` |
+| 5 `TX` | transaction | begins; the settle looks at the empty file and finds nothing | -- |
+| 6 `BEG` | transaction | appends its begin record, naming the document, to the log | the begin record |
+| 7 `ING` | transaction | ingests the blob for `B`, renaming and syncing it | the blob for `B` |
+| 8 `PRP` | transaction | appends its prepare record to the log | the prepare record |
+| 9 `SW2` | transaction | swaps and syncs replicas 1, 2 and 3 to `B` | the replicas are `B, B, B` |
+| 10 `END` | transaction | appends its end record | the end record |
+| 11 `COL` | transaction | removes the blob for `A` and syncs | the blob for `A` is gone |
+| 12 `PWR` | EXTERNAL | power is lost | the file reverts to the durable record, which names `A` |
+| 13 `OPN` | process | reopens, and settles the record naming `A` | -- |
+| 14 `RFA` | settle | renames replica 1 to `A` | replica 1 names `A`, whose content step 11 removed |
+
+The corrected settle fsyncs at step 5, finds the stale record, and rolls it forward, which does
+no harm because the pointers still name `A`, and then clears it durably before the transaction
+begins. Replayed against the store, the trace is left at step 5 for that reason.
+
+## The PointerPublication replay, 2026-11-15
+
+The harness that replays `PointerPublication`'s traces against the store (its tests are in
+`src/tests/conformance/`) rests on these choices[^m11-2]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#publication-replay).
+
+- **What is compared is the document's files.** Each pointer replica and blob replica live and
+  durable, the publication record live and durable, and whether the commit log holds an ended,
+  a begun or a prepared transaction of the document. The durable side is what a crash would
+  leave, read by crashing a copy of the filesystem. A configuration without the record guard
+  compares no record, since its model has none while the store writes one.
+- **A store operation runs whole, and its calls are judged as steps.** Its calls are grouped into
+  runs of one kind -- a rename on one replica, a sync of one shard -- and each run that changes
+  what is compared must make the trace's next change. A model step that takes several calls,
+  such as removing every superseded blob of a replica, is one run.
+- **A fault lands by position, not by count.** A `Fail` fails the first call of the step the model
+  was about to take once the store has made the changes the model made before it, and a `Crash`
+  kills the process at the first call after them; the calls the model leaves out -- staging,
+  directory creation -- then cannot decide where a fault lands.
+- **A departure is placed in a range.** A step that changes nothing compared cannot be seen, so
+  the store is known to have left a trace after the last change both made and no later than the
+  step whose change it did not make. A trace's `departs` must fall in that range.
+- **The model's verbs map to the store's at the level the model has them.** A write and a
+  transaction run through the variants that leave the commit log as they wrote it, and `Quiesce`
+  is the log's reset, since the public verbs end in a quiescence the model takes as a step of its
+  own. A check, a collection and a repair each begin under the writer gate, which settles first.
+
+## The creation model describes the coordination's decisions, 2026-11-15
+
+Replaying `Creation`'s traces against acadia's two implementations of the creation contract found
+them deciding in two places otherwise than the model. The engineer asked first whether the model
+accepts the code's decisions: a copy of [Creation.tla](spec/Creation.tla) that made them held every
+property in every configuration. The engineer then chose to refine the model to describe the
+code, so [Creation.tla](spec/Creation.tla) now makes them[^m11-3]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#creation-decisions).
+
+- **A creator decides again in full under the exclusion, in the order of its first look.** A
+  marker stops it, then something creation does not make, then a reservation it may not use. A
+  creator that looked at a root with no reservation and finds one under the exclusion takes it
+  over when it names the creator's implementation and inputs (`TakeOver`): a creator of the same
+  implementation that published it would still hold the exclusion, so that creator has died, and
+  its creation is the one this creator set out to make. A reservation of another implementation
+  or other inputs still stops it (`LoseRace`), and a marker put in place while it waited stops it
+  at the store that now exists (`CreatedUnderExclusion`). T32 below is the takeover.
+- **An opener looks at the reservation before the marker.** With none the root is not a store; one
+  that names another implementation refuses the opener whether or not the marker is there; and
+  with its own implementation's it opens the root if there is a marker, and otherwise the root is
+  not yet a store.
+- **Every property holds with these decisions.** Every configuration comes out as its header
+  requires, and every probe is caught as before. The witness that a creator loses the race runs
+  with two implementations, since two creators of one implementation with the same inputs no
+  longer lose it to each other.
+
+### T32 -- a creator takes over the creation of one that died
+
+Status: `[verified]`, replayed by TLC from its scenario table in the constants of
+[Creation-TwoCreators.cfg](spec/Creation-TwoCreators.cfg) with two artifacts and neither crash
+nor intrusion, and replayed against the file-based implementation. A and B are creators of one
+implementation with the same inputs; the marker is the second artifact.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LOOK1` | A | reads the root and finds nothing, and decides to create | -- |
+| 2 `LOOK2` | B | reads the root and finds nothing, and decides to create | -- |
+| 3 `LOCK1` | B | takes the creation exclusion | creation exclusion: B |
+| 4 `PUB` | B | publishes its reservation | reservation: B's, complete, not durable |
+| 5 `SYNR` | B | makes the reservation durable | reservation: durable |
+| 6 `KILL` | EXTERNAL | B's process dies | creation exclusion: none |
+| 7 `LOCK2` | A | takes the creation exclusion, which is now free | creation exclusion: A |
+| 8 `TAKE` | A | reads the root again, finds B's reservation for its implementation and inputs and no marker, and takes B's creation over | -- |
+| 9 `SYNR2` | A | makes the reservation durable, which it already is | -- |
+| 10 `WRA1` | A | makes the first artifact | artifact 1: exists |
+| 11 `SYA1` | A | makes it durable | artifact 1: durable |
+| 12 `WRM` | A | makes the marker | marker: exists |
+| 13 `SYM` | A | makes the marker durable and lets go of the exclusion | marker: durable; creation exclusion: none |
+
+A's creation ends resumed: the store is B's creation, under B's nonce, finished by A.
+
+## The Creation replay, 2026-11-15
+
+The harness that replays `Creation`'s traces against acadia's creation contract (its tests are in
+`src/tests/conformance/creation.rs`) rests on these choices[^m11-3]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#creation-replay).
+
+- **Each model process is a participant of its own, in a thread of its own, over its own
+  simulated process of one filesystem.** The model's implementation 1 is the file-based
+  implementation and 2 the shared one. A creator calls `create` with its scenario's inputs, a
+  nonce of its process number and the model's artifacts, the last of which is the marker; an
+  opener calls `confirm_created`. The scenario's roles, implementations and inputs are carried in
+  each trace, evaluated by the exporter, since a configuration names them only through the spec.
+- **A process is held before the first call of each step.** The step it takes next is read from
+  its state in the model -- its process state, whether it creates or resumes, and the artifact it
+  is making -- and each step begins with a call of its own kind: reading the root's names, taking
+  a creation exclusion, syncing the root or the reservation, or touching an artifact. The replay
+  lets one process at a time run to the first call of its next step, so the processes interleave
+  as the trace does, and compares after every step.
+- **What is compared is the root.** The reservation as the model reads it -- complete, cut short
+  or absent, with the implementation, inputs and nonce it names -- and whether it is durable; each
+  artifact, its inputs, and whether it is durable; and whether something creation does not make
+  is there. A process the model ends must have returned the outcome it ended with. The code
+  refuses every reservation it may not use alike, so the model's four names for that refusal are
+  one.
+- **A death abandons the process's holds; a crash settles the model's choices first.** A death
+  fails the process's every later call and releases its locks as the operating system releases a
+  dead process's. A crash kills every process, then removes what the model's crash loses and
+  makes durable what it keeps, before discarding what is not durable, so that the root after the
+  crash is the one the trace chose.
+- **Finding: `Store::init` is not a creation of the contract's shape.** It reserves the root with
+  `Creation::reserve`, then takes writer exclusion rather than the creation exclusion, reads the
+  root again under it, makes its partitions and publishes its marker durably; it neither calls
+  `create` nor takes over an interrupted creation. This replay holds acadia's `create` and
+  `confirm_created` to [Creation.tla](spec/Creation.tla); holding `Store::init` to a model depends
+  on a decision queued with the engineer, between `Store::init` following the contract and the
+  model gaining canopy's creation[^m12-4].
+
+[^m11-3]: `M11-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-3) [completed 2026-11-15]
+
+[^m12-4]: `M12-4` in [CHECKLIST.md](CHECKLIST.md)
+
+## The contract is bridged before the documents above it, and the shared implementation announces its steps, 2026-11-15
+
+Decided with the engineer when the `SharedPublication` bridge began. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#contract-bridge-order).
+
+- **The contract's writer actions are bound to the code first.** `SharedPublication` extends
+  `Coordination`, so every step of its behaviours that is not a document's is one of the
+  contract's -- attaching and admission, writer exclusion, the fence and the ownership record, the
+  count, transactions, recovery, death and restart -- and its bridge cannot run until those are
+  bound. They are bound first, and replayed on `Coordination`'s own traces, so a mismatch in the
+  contract is found where it lives rather than as a mismatch in a document; the documents follow,
+  then the rest of the contract. Before any is bound, the actions are mapped to the calls that
+  perform them and the step hook's interface is agreed[^m11-4][^m11-5].
+- **The shared implementation announces each of its steps to a replay.** The replay holds a process
+  before the first call of each step, which is enough for the file-based implementation, whose
+  contract state is files. The shared implementation keeps that state in shared words changed by
+  atomic operations, which make no filesystem call, so neither the replay's scheduler nor its
+  projection would see them. acadia therefore gives the shared implementation a hook, for tests
+  only, through which each step announces itself before it acts and the words can be read, so both
+  implementations are stepped and compared alike[^ac-5].
+
+[^m11-4]: `M11-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-4) [completed 2026-11-15]
+
+[^m11-5]: `M11-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-5) [completed 2026-11-15]
+
+[^ac-5]: `AC-5` in [acadia's COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#ac-5)
+    [completed 2026-11-15]
+
+## The contract's writer actions in the code, 2026-11-15
+
+How `Coordination`'s writer actions are bound to the two implementations of the contract, which
+the replay of its writer traces rests on[^m11-4]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#writer-action-binding).
+
+- **The replay is the contract's client.** `Coordination`'s two cells, its commit log, its staging
+  and its recovery's swaps are data a client of the contract keeps; the contract coordinates the
+  client and holds none of it. So the replay drives acadia's participants directly -- attach,
+  acquire, begin and end a modification, complete recovery, release -- and keeps the cells, the log
+  and the staging in files of its own beside the root. Each model is bound to the layer it
+  describes: `Coordination` to acadia's contract, and `SharedPublication` to `Store`, whose own
+  transactions and recovery that bridge checks (decided with the engineer).
+- **Each action begins with a call of its own, or with none.** The table gives the first call of
+  each writer action in each implementation. The replay holds a process before that call until the
+  trace lets it take the action.
+
+  | action | file-based | shared |
+  |---|---|---|
+  | `TakeGateS` | lock `.coord/gate.lock` shared | lock `.coord-shared/gate.lock` shared |
+  | `TakeReaderS` | lock `.coord/tiers.lock`, byte 0, shared | lock `reader-tier.lock` shared |
+  | `TakeWriterS` | lock `.coord/tiers.lock`, byte 1, shared | lock `writer-tier.lock` shared |
+  | `Lock` | lock `.coord/exclusion.lock` | lock `exclusion.lock` |
+  | `SetFence` | write `.coord/fence` | the hook's `SetFence` |
+  | `Record` | write the generation's staging file | the hook's `Record` |
+  | `EndOpen`, `OpenFails` | write the count's staging file | the hook's `PublishRaise` |
+  | `FailUnresolved` | write `.coord/fence` | the hook's `Unresolved` |
+  | `EndClose`, `CloseFails` | write the count's staging file | the hook's `PublishClose` |
+  | `Release` | remove `.coord/owner` | the hook's `ClearRecord` |
+  | `RecCount` | write the count's staging file | the hook's `PublishRecovered` |
+  | `RecClear` | remove `.coord/fence` | the hook's `ClearFence` |
+  | the cells, the log, staging and recovery's swaps | the client's own files | the same |
+
+  `BeginAttach`, `DropGate`, `Admit`, `Exit`, `Request`, `BeginOpen`, `BeginClose`, `Unlock` and
+  `RecStop` make no call of their own: a guard is dropped, a check is made, or a request begins
+  with the call of the step after it. Each is taken within the run of the step before it, so the
+  replay checks it only through the state the next step finds. That is sound because none of
+  them changes what another process can observe before that process's next step, apart from
+  `Unlock`, which frees the lock only for a `Lock` the trace places after it.
+- **What is compared is each implementation's contract state, read as the model's.** The ownership
+  record is compared as present or absent, since both implementations name the holder by
+  something the model does not -- a process id, which every simulated process shares, or a
+  generation. The fence, the count's parity and its advances, the generation's advances, and
+  whether the state is trusted are compared as they are. The file-based implementation's state is
+  read from its files, live and durable; the shared implementation's from its words, through the
+  hook's `inspect`.
+- **Finding: the shared implementation's count publication cannot fail.** It is an atomic store,
+  where the file-based implementation's is a write and a rename, either of which can fail. A trace
+  in which an opening or closing publication fails is therefore a behaviour of the file-based
+  implementation only, and is replayed against it alone. That narrows nothing the contract
+  requires: the model allows such a failure and requires neither implementation to have one.
+- **The step hook, for the shared implementation, is `acadia::coord::shared`'s test-support
+  `StepHook`.** Its `before(SharedStep)` is called before each step that changes the shared words,
+  each named for the model step it begins: `SetFence`, `Record`, `BeginRaise`, `PublishRaise`,
+  `BeginClose`, `PublishClose`, `Unresolved`, `PublishRecovered`, `ClearFence`, `ClearRecord`.
+  `SharedFactory::with_hook` gives participants that call it, and `inspect(vfs, root)` reads the
+  fence, owner, generation, count and trust words without attaching (agreed with the
+  engineer)[^ac-5].
+- **The writer traces are `Coordination-Writers` and `Coordination-WritersTxn`.** They are
+  writers alone: no read, discovery, registry, upgrade or escape, with a death and a host crash,
+  and each write choosing to be a transaction or not, or a transaction always. The other
+  configurations exercise actions bound after these. Withdrawing, being refused and giving up are
+  bound with eligibility and upgrades, after the documents (decided with the engineer)[^m11-7].
+- **Their walks are chosen for coverage.** A death and a crash are as likely as any process's step,
+  so the longest random walks of these configurations die early and then repeat a recovery that is
+  started and stopped. Their corpus entries keep, of two thousand walks per seed, the one that
+  takes the most kinds of action, and the longest of those. TLC names some steps by the enclosing
+  `Next`, and the replay recovers those from the states, as it does for `SharedPublication`.
+
+[^m11-7]: `M11-7` in [CHECKLIST.md](CHECKLIST.md)
+
+## The Coordination writer replay, 2026-11-15
+
+The harness that replays `Coordination`'s writer traces against acadia's contract, through both of
+its implementations (its tests are in `src/tests/conformance/coordination.rs`), rests on these
+choices, and the model was refined to the code where they met it[^m11-5]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#coordination-writer-replay).
+
+- **Each model writer is a participant of its own, in a thread of its own, over its own simulated
+  process of one filesystem.** The thread makes each of the client's calls -- attach, acquire,
+  begin and end a modification, complete recovery, release, detach -- when the trace's next step
+  for it is one, and is held before the first call of each step within a call: a filesystem call
+  for the file-based implementation, and for the shared one a step its hook announces. A death
+  abandons the process's participant and handles, as a dead process's are never dropped, and
+  releases its locks as the operating system releases a dead process's.
+- **A participant of the replay's own stays attached for the life of the model's state.** The
+  shared implementation's state lives as long as some participant is attached to it, where the
+  model's survives every process's death until a crash. The replay's keeper recovers the state
+  first, as the model's starts recovered, lets go of exclusion, and stays attached until a crash,
+  after which it attaches again.
+- **What a call returns is compared with where the model's process ends it.** An acquisition must
+  report recovery required exactly when the model's holder is told, an operation that opens or
+  closes must succeed or fail as the model's does, and a call the model ends must have returned
+  while one it continues must be held before its next step.
+- **Each implementation replays the traces that are its behaviours.** The file-based
+  implementation's crash cannot set a fence that was clear, and the shared implementation's
+  publication of the count cannot fail and its crash always leaves the state fenced. A trace is
+  replayed against each implementation whose behaviour it is, and `Coordination-WritersShared`
+  gives the shared implementation walks of its own.
+- **Recovery cannot stop between publishing the count and clearing the fence (decided with the
+  engineer).** `complete_recovery` does both in one call. `RecStop` is therefore not enabled at
+  `recClear`; a recoverer may still die there. Every item-tier configuration held with the
+  refinement before it was made.
+- **A host crash may leave the fence set where it was clear (decided with the engineer).** The
+  shared implementation's state ends with a crash, and the state it rebuilds is untrusted and
+  fenced. `Crash` lets the fence be either, and under `CrashFences` always set. Every item-tier
+  configuration held with the refinement before it was made.
+- **An implementation's narrower behaviour is stated by constants, so TLC checks it.**
+  `PublicationsFail` says whether a publication of the count can fail, and `CrashFences` whether a
+  crash always leaves the fence set. Every configuration but `Coordination-WritersShared` keeps
+  the model's wider behaviour, which covers both implementations (decided with the engineer).
+
+## An unlogged write that fails after its record fails unresolved, 2026-11-15
+
+Once an unlogged write has appended its publication record, the record decides the write's
+outcome: any later failure -- the record's fsync, a replica's rename or sync, the clear -- marks the
+write unresolved, so its modification ends with the fence set and the count odd, and recovery
+finishes the publication. A failure of the append itself leaves no complete record and closes
+settled. Decided with the engineer when the `SharedPublication` replay mapped the store to the
+model[^m11-6].
+
+- **Closing settled breaks a client guarantee.** With the fence clear and the count even, a reader
+  sees a settled store that still has a publication pending: it reads the old version, and a later
+  operation's settle moves the document to the new one with no write to it. A scratch copy of
+  [SharedPublication.tla](spec/SharedPublication.tla) in which such a write closes settled violates
+  `OutcomeIsFixedOnceRecovered`. The model's rule, that a failure after the first effect fails
+  unresolved ("Composing the publication model with the coordination contract"), is what the
+  store now does.
+- **The cost is availability after such a failure.** Writes are refused with
+  `StoreError::RecoveryRequired` until a recovery runs, where the next write used to finish the
+  publication itself. Recovery's settle does the same work.
+- **The settle before every operation stays.** Under the contract a holder that is not told
+  recovery is required finds no record pending; the settle is defence in depth, and its tests
+  reach a pending record by completing the contract's recovery without touching the documents.
+- **The split is in the store, not the caller.** `Store::append_publication` is the first effect
+  and `Store::publication_durable` makes it durable, so the write knows which side of its first
+  effect a failure is on.
+
+[^m11-6]: `M11-6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-6) [completed 2026-11-16]
+
+## The model recovers and rolls back as the store does, 2026-11-15
+
+Mapping `Store::recover` to [SharedPublication.tla](spec/SharedPublication.tla) found the store's
+recovery and rollback ordered differently from the client-side recovery
+[Coordination.tla](spec/Coordination.tla) models, which the composition reuses. Each difference was
+weighed for what it does to the system, not only for whether the model accepts it, and in every
+case the store's behaviour is the sounder design. The model is refined to describe it -- the
+abstract client's recovery and abort in `Coordination`, and recovery in units in the composition --
+rather than the store changed to match the model (decided with the engineer)[^m11-6]. Rationale
+and the alternatives are in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#recovery-and-rollback-order); the analysis is
+[DESIGN-SESSION-2026-11-15-store-recovery-order.md](design-sessions/DESIGN-SESSION-2026-11-15-store-recovery-order.md).
+
+- **A rolled-back transaction's log records stay until recovery completes.** The store's
+  transaction unit only sweeps the staging; the log is emptied at completion. The `begin` record
+  is the only durable list of where the transaction may have ingested blobs (`D329`), and the
+  collection unit reads it, so a crash before collection still finds the work. Emptying the log
+  right after the sweep would lose that list and leak what was ingested. Ordinary writes are not
+  held up by it: the fence refuses them for the whole run. A begun or ended transaction never
+  blocks a reset; only a prepare without its end does.
+- **Completion empties the log before it publishes the count and clears the fence.** The fence
+  comes off a store whose log is already clean, so no writer can begin between the fence clearing
+  and the reset with stale records ahead of its own. Either failure is safe: a reset that fails is
+  ignored and retried by the next write's quiescence; a completion that fails after the reset
+  leaves the fence for a recovery that finds an empty log.
+- **A transaction rolled back before its prepare collects what it ingested**, in a live rollback
+  and in recovery, and recovery collects what a rolled-forward transaction superseded, in a phase
+  of its own (`D330`). A live rollback collects before it empties the log, so a collection that
+  fails fails the rollback and escalates to recovery with the log still naming the targets: a
+  cleanup failure costs availability on a rare path rather than leaking space. Modelling the
+  collections checks what they risk: that none deletes a blob a pointer names
+  (`LivePointerHasBlob`, `DurablePointerHasBlob`).
+- **Recovery takes writer exclusion once per unit** ("Recovery is a run the caller drives").
+  Between units another writer acquires exclusion, is told recovery is required and fails fast
+  with `StoreError::RecoveryRequired` rather than waiting for the run to end, and a second
+  recoverer may interleave units with the first. A run restarts when the modification count
+  changed between its steps, which is what keeps it from acting on stale progress after another
+  recoverer completed and a writer began; modelling the units is what checks that guard.
+- **The per-unit cost is known and bounded.** Each unit is a fresh acquisition: in the file-based
+  implementation it writes the ownership record and advances the generation durably, and it
+  resets the handle's per-holder state, so the next settle syncs the root again. A run takes the
+  begin's acquisition, the publication's, two per transaction in the log, the claims' and the
+  completion's; the log is emptied after every write, so it holds at most a transaction or two.
+  Recovery is rare, and this is the cost of a run a caller can stop and resume.
+
+## State-space reduction for recovery-unit verification, 2026-11-16
+
+The composition's recovery units are verified with a justified state-space reduction. A
+reduction may identify states only when the distinction cannot change a checked outcome or
+the future actions that lead to one. Fresh exclusion acquisitions, a writer refused between
+units, competing recovery runs, restart when the observed modification count changes, and
+process and host failures remain part of the model. The coordination implementations and
+their ordering primitives are unchanged.
+
+The unreduced composition remains the reference while the reduction is established. Each
+discarded state distinction needs an explicit argument; small configurations are compared
+against the reference, and the collection, completion, refusal and stale-progress witnesses
+and negative controls must retain their outcomes. A schedule-specific witness supplements
+the general safety checks; it does not replace them. The duplication is retired or folded
+only after this comparison establishes the reduction, as part of the bridge work[^m11-6].
+
+The engineer chose this work over continuing the expensive exhaustive enumeration. The
+verification cost and alternatives are recorded in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#recovery-unit-verification-cost).
+
+## Directory-debt units in the publication composition, 2026-11-16
+
+The publication composition includes the directory-debt phase before publication recovery,
+with a separate exclusion hold for each directory sync and for the record clear. A clear
+whose live truncation is not durable can be exposed again by a host crash. A recovery that
+resumes after its observed count changes measures directory work before publication work.
+
+The bridge's fixtures have a fixed document set and initialize every document's blob and
+pointer paths. Blob shards are selected by document path, not content version, so subsequent
+versions use those same directories. The boundary cases supply an explicit initial durable
+directory-debt record, which a crash exposes. Directory creation, path collisions and torn
+directory-intent appends remain the separate namespace-model work in [CHECKLIST.md](CHECKLIST.md).
+The phase boundaries are part of the publication bridge work[^m11-6], as agreed with the
+engineer; they may not be omitted by treating the record as invisible cleanup.
+
+## The SharedPublication Store replay, 2026-11-16
+
+[SharedPublication.tla](spec/SharedPublication.tla) owns the publication composition with
+caller-driven recovery units. [SharedPublicationCheck.tla](spec/SharedPublicationCheck.tla)
+checks its recovery-request over-approximation with a state view; the concrete model remains
+the source of replay traces. The separate experimental Units modules are merged into these
+two responsibilities, not retained as competing protocol definitions. Coordination remains
+the independent lower contract model.
+
+The bridge in [shared_publication.rs](src/tests/conformance/shared_publication.rs) infers each
+action from consecutive states, drives Store calls in independently paused simulated processes,
+and compares live and durable documents, publication and transaction records, directory debt,
+coordination state and returned recovery progress. Failure points follow the operation being
+modelled, not a count of filesystem calls. A trace ending mid-operation leaves the call paused
+before its next effect. Control traces must leave the Store at their declared departure step.
+
+File-backed traces preserve only ownership and fence files that existed before a crash; a
+crash does not create a missing fence file. Shared-backed traces use non-failing count
+publications and fenced restart, and do not request an interruption inside the shared
+completion primitive. The generic checker retains its broader behaviors. These are bindings
+to the implementations' specified primitives, not changes to those primitives.
+
+Walk selection uses declared control-state transitions when TLC labels every action with the
+same enclosing operator. Explicit reachable-state witnesses supplement random walks, so
+collection, directory clear durability and stale-recovery restart remain replay obligations.
+The corpus table is [corpus.psd1](spec/corpus.psd1); the bridge work is tracked separately[^m11-6].

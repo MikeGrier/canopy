@@ -58,7 +58,7 @@ TheLogChangesOnlyUnderExclusion == [][log' # log => lockHolder # None]_vars
 ANewTransactionStartsFromASettledStore ==
     [][\A p \in Procs :
           (pc[p] = "open" /\ pc'[p] = "begun") =>
-              (log \in {"empty", "ended"} /\ stage = 0 /\ a = b
+              (log # "prepared" /\ stage = 0 /\ a = b
                /\ ~fence /\ trusted)]_vars
 
 \* Audience: client. A transaction that fails before it is prepared leaves the store as it was.

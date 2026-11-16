@@ -2,6 +2,7 @@
     Timeline = 'T10'
     Base = 'Creation-Control-ReservationInTwoWrites'
     Note = 'A is process 1 and B process 2.'
+    Departs = 'PUBP'
     Steps = @(
         @{ Id = 'LOOK1'; Actions = @('Look(1)') }
         @{ Id = 'LOCK1'; Actions = @('Lock(1)') }

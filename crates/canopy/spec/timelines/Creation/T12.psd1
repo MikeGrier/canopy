@@ -2,6 +2,7 @@
     Timeline = 'T12'
     Base = 'Creation-Control-ResumeWithoutReread'
     Note = 'A is process 1 and B process 2. The marker is the last artifact.'
+    Departs = 'CNFM'
     Steps = @(
         @{ Id = 'LOOK1'; Actions = @('Look(1)') }
         @{ Id = 'LOCK1'; Actions = @('Lock(1)') }

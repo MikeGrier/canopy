@@ -13,6 +13,7 @@ mod apply;
 mod attachment;
 mod blob;
 mod commit_log;
+mod conformance;
 mod digest;
 mod hierarchy;
 mod layout;

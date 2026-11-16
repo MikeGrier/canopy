@@ -12,6 +12,18 @@ mod registry;
 #[cfg(test)]
 mod tests;
 
+/// Tells the participant's step hook of `step` before it acts, in a build with test support.
+macro_rules! announce {
+    ($participant:expr, $step:ident) => {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            if let Some(hook) = &$participant.hook {
+                hook.before(SharedStep::$step);
+            }
+        }
+    };
+}
+
 impl SharedState {
     fn same_participant(&self) -> Self {
         Self {
@@ -22,6 +34,8 @@ impl SharedState {
             live: Arc::clone(&self.live),
             abandoned: Arc::clone(&self.abandoned),
             holds: Arc::clone(&self.holds),
+            #[cfg(any(test, feature = "test-support"))]
+            hook: self.hook.clone(),
         }
     }
 
@@ -134,12 +148,14 @@ impl WriterExclusion for SharedState {
                 .fetch_or(format::FALSE, Ordering::AcqRel);
             let holder_died = previous_owner != format::FALSE;
             if holder_died {
+                announce!(self, SetFence);
                 self.words
                     .word(Word::Fence)
                     .store(format::TRUE, Ordering::Release);
             }
             let mut snapshot = self.snapshot()?;
             if !snapshot.modification_count.is_multiple_of(2) {
+                announce!(self, SetFence);
                 self.words
                     .word(Word::Fence)
                     .store(format::TRUE, Ordering::Release);
@@ -164,6 +180,7 @@ impl WriterExclusion for SharedState {
             let next = found
                 .checked_add(1)
                 .ok_or(CoordError::Exhausted { what: "generation" })?;
+            announce!(self, Record);
             self.words.word(Word::Owner).store(next, Ordering::Release);
             self.words
                 .word(Word::Generation)
@@ -200,6 +217,7 @@ impl SharedHold {
                     .word(Word::Fence)
                     .store(format::TRUE, Ordering::Release);
             }
+            announce!(participant, ClearRecord);
             participant
                 .words
                 .word(Word::Owner)
@@ -236,6 +254,7 @@ impl ExclusionHold for SharedHold {
             what: "modification nesting",
         })?;
         if self.depth == 0 {
+            announce!(participant, BeginRaise);
             self.unresolved = false;
             self.raised = None;
             let current = participant.words.word(Word::Count).load(Ordering::Acquire);
@@ -249,6 +268,7 @@ impl ExclusionHold for SharedHold {
                     what: "modification count",
                 })?;
                 let odd = current + 1;
+                announce!(participant, PublishRaise);
                 participant
                     .words
                     .word(Word::Count)
@@ -269,6 +289,7 @@ impl ExclusionHold for SharedHold {
             return Err(CoordError::NoModificationOpen);
         }
         if end == ModificationEnd::Unresolved {
+            announce!(participant, Unresolved);
             self.unresolved = true;
             participant
                 .words
@@ -280,6 +301,7 @@ impl ExclusionHold for SharedHold {
             && !self.unresolved
             && let Some(odd) = self.raised.take()
         {
+            announce!(participant, BeginClose);
             let even = odd.checked_add(1).ok_or_else(|| {
                 participant
                     .words
@@ -289,6 +311,7 @@ impl ExclusionHold for SharedHold {
                     what: "modification count",
                 }
             })?;
+            announce!(participant, PublishClose);
             participant
                 .words
                 .word(Word::Count)
@@ -327,6 +350,7 @@ impl ExclusionHold for SharedHold {
                 what: "modification count",
             })?
         };
+        announce!(participant, PublishRecovered);
         participant
             .words
             .word(Word::Count)
@@ -336,6 +360,7 @@ impl ExclusionHold for SharedHold {
             .words
             .word(Word::Vouched)
             .store(format::TRUE, Ordering::Release);
+        announce!(participant, ClearFence);
         participant
             .words
             .word(Word::Fence)

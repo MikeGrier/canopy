@@ -23,13 +23,16 @@
 (* reservation means a creation was begun: it stops if the reservation     *)
 (* names another implementation or other inputs, and otherwise resumes it. *)
 (* With no reservation it creates. Either way it then takes its own        *)
-(* implementation's creation exclusion and reads the root again under it.  *)
-(* A creator publishes the reservation; a resumer finds the marker still   *)
-(* absent and the reservation unchanged; and each finds the root still     *)
-(* unoccupied. It then makes the reservation durable and only then makes   *)
-(* the artifacts, in order, making each durable before it makes the next.  *)
-(* The last artifact is the marker. It releases the exclusion when the     *)
-(* marker is durable.                                                      *)
+(* implementation's creation exclusion, reads the root again under it, and *)
+(* decides again in the same order. A marker or something creation does    *)
+(* not make stops it. A creator that finds no reservation publishes one,   *)
+(* and one that finds a reservation published since it looked resumes it   *)
+(* as its own if it names the creator's implementation and inputs, and     *)
+(* otherwise stops. A resumer stops unless the reservation is the one it   *)
+(* read. It then makes the reservation durable and only then makes the     *)
+(* artifacts, in order, making each durable before it makes the next. The  *)
+(* last artifact is the marker. It releases the exclusion when the marker  *)
+(* is durable.                                                             *)
 (*                                                                         *)
 (* Whether a file is durable is its own state, apart from whether it       *)
 (* exists. A process's death changes no file and releases its exclusion.   *)
@@ -39,11 +42,13 @@
 (* directory entry durable.                                                *)
 (*                                                                         *)
 (* An opener takes its implementation's creation exclusion, which a        *)
-(* creator holds until its marker is in place, reads the root, and opens   *)
-(* it if there is a marker and the reservation names the opener's          *)
-(* implementation. It makes the marker durable before it relies on it,     *)
-(* since the creator may have died between publishing the marker and       *)
-(* making it durable.                                                      *)
+(* creator holds until its marker is in place, and reads the root. With no *)
+(* reservation the root is not a store, and a reservation that names       *)
+(* another implementation refuses the opener. With its own                 *)
+(* implementation's it opens the root if there is a marker, and otherwise  *)
+(* the root is not yet a store. It makes the marker durable before it      *)
+(* relies on it, since the creator may have died between publishing the    *)
+(* marker and making it durable.                                           *)
 (*                                                                         *)
 (* Steps are sequentially consistent, and reading the root is one step.    *)
 (*                                                                         *)
@@ -289,7 +294,7 @@ Lock(p) ==
 CanPublish == res.st = "none" \/ Control = "publish-replaces"
 
 Publish(p) ==
-    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ CanPublish /\ Unoccupied
+    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ CanPublish /\ Unoccupied /\ ~MarkerLive
     /\ IF Control = "reservation-in-two-writes"
           THEN /\ res' = Half
                /\ pc' = Set(pc, p, "partialPub")
@@ -307,34 +312,63 @@ SecondWrite(p) ==
     /\ pc' = Set(pc, p, "syncRes")
     /\ UNCHANGED <<cx, out, rdur, aliv, ainp, adur, foreign, mine, ghost, counts>>
 
-\* A reservation was there: the creator stops.
+\* A reservation was published since the creator looked. One that names
+\* another implementation or other inputs is not this creator's to use, and it
+\* stops; one that is not complete stops it too.
 LoseRace(p) ==
-    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ ~CanPublish
-    /\ EndAs(p, "lostRace")
+    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ ~CanPublish /\ Unoccupied
+    /\ ~MarkerLive
+    /\ \/ /\ res.st = "partial"
+          /\ EndAs(p, "partial")
+          /\ sawPartial' = TRUE
+       \/ /\ res.st = "whole"
+          /\ \/ res.impl # ImplOf[p]
+             \/ res.inp # InOf[p] /\ Control # "resume-ignores-inputs"
+          /\ EndAs(p, "lostRace")
+          /\ UNCHANGED sawPartial
+    /\ cx' = ReleaseX(p)
+    /\ UNCHANGED <<root, mine, relied, everPub, counts>>
+
+\* One that names this creator's implementation and inputs was published by a
+\* creator of its implementation that has died, since a live one would still
+\* hold the exclusion: this creator resumes that creation.
+TakeOver(p) ==
+    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ ~CanPublish /\ Unoccupied
+    /\ ~MarkerLive /\ res.st = "whole" /\ res.impl = ImplOf[p]
+    /\ (res.inp = InOf[p] \/ Control = "resume-ignores-inputs")
+    /\ pc' = Set(pc, p, "syncRes")
+    /\ path' = Set(path, p, "resume")
+    /\ seen' = Set(seen, p, res)
+    /\ UNCHANGED <<cx, out, root, ak, ghost, counts>>
+
+\* The marker was put in place while the creator waited: the root is a store.
+CreatedUnderExclusion(p) ==
+    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ MarkerLive
+    /\ EndAs(p, "exists")
     /\ cx' = ReleaseX(p)
     /\ UNCHANGED <<root, mine, ghost, counts>>
 
 \* The root was occupied when the creator read it again under the exclusion.
 OccupiedUnderExclusion(p) ==
-    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ CanPublish /\ ~Unoccupied
+    /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ ~MarkerLive /\ ~Unoccupied
     /\ EndAs(p, "occupied")
     /\ cx' = ReleaseX(p)
     /\ UNCHANGED <<root, mine, ghost, counts>>
 
 \* A resumer reads the root again under the exclusion. The creation it read is
-\* gone if the marker is in place, is not the one it read if the reservation
-\* changed, and cannot be resumed if the root holds something else.
+\* gone if the marker is in place, cannot be resumed if the root holds
+\* something else, and is not the one it read if the reservation changed.
 Reconfirm(p) ==
     /\ pc[p] = "holdsX" /\ path[p] = "resume"
     /\ \/ /\ MarkerLive /\ Control # "resume-without-reread"
           /\ EndAs(p, "exists")
           /\ cx' = ReleaseX(p)
-       \/ /\ ~MarkerLive /\ res # seen[p] /\ Control # "resume-without-reread"
-          /\ EndAs(p, "changed")
-          /\ cx' = ReleaseX(p)
-       \/ /\ ~MarkerLive /\ res = seen[p] /\ ~Unoccupied
-          /\ Control # "resume-without-reread"
+       \/ /\ ~MarkerLive /\ ~Unoccupied /\ Control # "resume-without-reread"
           /\ EndAs(p, "occupied")
+          /\ cx' = ReleaseX(p)
+       \/ /\ ~MarkerLive /\ Unoccupied /\ res # seen[p]
+          /\ Control # "resume-without-reread"
+          /\ EndAs(p, "changed")
           /\ cx' = ReleaseX(p)
        \/ /\ (Control = "resume-without-reread"
                \/ (~MarkerLive /\ res = seen[p] /\ Unoccupied))
@@ -382,22 +416,27 @@ SyncArt(p) ==
 (* An opener.                                                              *)
 
 \* An opener reads the root while no creator of its implementation holds the
-\* exclusion, and opens it if there is a marker and the reservation names its
-\* implementation.
+\* exclusion. It looks at the reservation first: with none the root is not a
+\* store, and one that names another implementation refuses the opener. With
+\* its own implementation's, it opens the root if there is a marker.
 OpenLook(p) ==
     /\ pc[p] = "new" /\ RoleOf[p] = "opener" /\ cx[ImplOf[p]] = None
     /\ \/ /\ res.st = "partial"
           /\ EndAs(p, "partial")
           /\ sawPartial' = TRUE
           /\ UNCHANGED <<relied, adur>>
-       \/ /\ res.st # "partial" /\ ~MarkerLive
+       \/ /\ res.st = "none"
           /\ EndAs(p, "notAStore")
           /\ UNCHANGED <<sawPartial, relied, adur>>
-       \/ /\ res.st # "partial" /\ MarkerLive
+       \/ /\ res.st = "whole"
           /\ res.impl # ImplOf[p] /\ Control # "open-ignores-implementation"
           /\ EndAs(p, "mismatch")
           /\ UNCHANGED <<sawPartial, relied, adur>>
-       \/ /\ res.st # "partial" /\ MarkerLive
+       \/ /\ res.st = "whole" /\ ~MarkerLive
+          /\ (res.impl = ImplOf[p] \/ Control = "open-ignores-implementation")
+          /\ EndAs(p, "notAStore")
+          /\ UNCHANGED <<sawPartial, relied, adur>>
+       \/ /\ res.st = "whole" /\ MarkerLive
           /\ (res.impl = ImplOf[p] \/ Control = "open-ignores-implementation")
           /\ EndAs(p, "opened")
           /\ relied' = TRUE
@@ -457,6 +496,7 @@ Terminal ==
 Next ==
     \/ \E p \in Procs :
           \/ Look(p) \/ Lock(p) \/ Publish(p) \/ SecondWrite(p) \/ LoseRace(p)
+          \/ TakeOver(p) \/ CreatedUnderExclusion(p)
           \/ Reconfirm(p) \/ OccupiedUnderExclusion(p) \/ SyncRes(p)
           \/ WriteArt(p) \/ SyncArt(p) \/ OpenLook(p) \/ Die(p)
     \/ Crash

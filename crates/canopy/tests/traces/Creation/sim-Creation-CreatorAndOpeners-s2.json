@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "spec": "Creation",
+  "configuration": "Creation-CreatorAndOpeners",
+  "origin": {"depth":40,"kind":"simulation","seed":2,"walks":50},
+  "constants": {"Control":"\"none\"","Intrusion":"TRUE","MaxCrashes":"2","MaxDeaths":"2","NArt":"2","Procs":"{1, 2, 3}","Scenario":"\"CreatorAndOpeners\""},
+  "derived": {"scenario":{"impls":[1,1,2],"ins":[1,1,1],"roles":["creator","opener","opener"]}},
+  "departs": null,
+  "initial": {"adur":[false,false],"ainp":[0,0],"ak":[0,0,0],"aliv":[false,false],"crashes":0,"cx":[0,0],"deaths":0,"everPub":false,"foreign":false,"out":["none","none","none"],"path":["none","none","none"],"pc":["new","new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}]},
+  "steps": [
+    {"action":"OpenLook(2)","args":[2],"at":"Creation:423","changes":{"out":["none","notAStore","none"],"pc":["new","done","new"]},"name":"OpenLook","step":"#1"},
+    {"action":"OpenLook(3)","args":[3],"at":"Creation:423","changes":{"out":["none","notAStore","notAStore"],"pc":["new","done","done"]},"name":"OpenLook","step":"#2"},
+    {"action":"Look(1)","args":[1],"at":"Creation:249","changes":{"path":["fresh","none","none"],"pc":["wantX","done","done"]},"name":"Look","step":"#3"},
+    {"action":"Lock(1)","args":[1],"at":"Creation:287","changes":{"cx":[1,0],"pc":["holdsX","done","done"]},"name":"Lock","step":"#4"},
+    {"action":"Publish(1)","args":[1],"at":"Creation:297","changes":{"everPub":true,"pc":["syncRes","done","done"],"res":{"impl":1,"inp":1,"nonce":1,"st":"whole"}},"name":"Publish","step":"#5"},
+    {"action":"Intrude","args":[],"at":"Creation:486","changes":{"foreign":true},"name":"Intrude","step":"#6"},
+    {"action":"Die(1)","args":[1],"at":"Creation:454","changes":{"cx":[0,0],"deaths":1,"path":["none","none","none"],"pc":["dead","done","done"]},"name":"Die","step":"#7"},
+    {"action":"Crash","args":[],"at":"Creation:468","changes":{"crashes":1,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"}},"name":"Crash","step":"#8"},
+    {"action":"Crash","args":[],"at":"Creation:468","changes":{"crashes":2},"name":"Crash","step":"#9"}
+  ]
+}

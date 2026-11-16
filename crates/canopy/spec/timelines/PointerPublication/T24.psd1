@@ -2,6 +2,7 @@
     Timeline = 'T24'
     Base = 'PointerPublication-Control-SettleWithoutSyncStrandsTheVote'
     Note = 'Ingesting a blob renames and syncs it, then syncs its directory.'
+    Departs = 'OPN'
     Steps = @(
         @{ Id = 'ING'; Actions = @('StartWrite("B")', 'IngestRename', 'IngestSync', 'IngestRename', 'IngestSync') }
         @{ Id = 'REC'; Actions = @('RecWrite') }

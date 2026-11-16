@@ -363,6 +363,8 @@ CONSTANTS
                   \* one abstract operation
     UnloggedRecovery, \* whether a told holder recovers an unlogged write
     MixedWrites,  \* whether each write chooses to be a transaction or not
+    PublicationsFail, \* whether a publication of the count can fail
+    CrashFences,  \* whether a host crash always leaves the fence set
     UpSteps,      \* how many migration steps an upgrade's body makes; 0 leaves the
                   \* body out, and an upgrade completes in one step
     Callbacks,    \* whether the store calls back into a caller under exclusion
@@ -400,7 +402,8 @@ Scen(roles, speaks, o, c, t) ==
           [p \in 1..Len(roles) |-> IF roles[p] = "unsafeUpgrader" THEN t ELSE o])
 
 Scenarios ==
-       "Plain2" :> Scen(<<"writer", "writer">>, <<1, 1>>, 1, 1, 1)
+      "Plain1" :> Scen(<<"writer">>, <<1>>, 1, 1, 1)
+    @@ "Plain2" :> Scen(<<"writer", "writer">>, <<1, 1>>, 1, 1, 1)
     @@ "Plain3" :> Scen(<<"writer", "writer", "writer">>, <<1, 1, 1>>, 1, 1, 1)
     @@ "ReaderAndWriter" :> Scen(<<"reader", "writer">>, <<1, 2>>, 1, 2, 3)
     @@ "ReaderAndWriterTooNew" :> Scen(<<"reader", "writer">>, <<3, 3>>, 1, 2, 3)
@@ -478,6 +481,7 @@ ASSUME MaxReads \in Nat /\ MaxLeases \in Nat /\ Escapes \in BOOLEAN
 ASSUME Txn \in BOOLEAN /\ UnloggedRecovery \in BOOLEAN
 ASSUME UnloggedRecovery => ~Txn
 ASSUME MixedWrites \in BOOLEAN /\ (MixedWrites => UnloggedRecovery)
+ASSUME PublicationsFail \in BOOLEAN /\ CrashFences \in BOOLEAN
 ASSUME UpSteps \in Nat /\ (UpSteps > 0 => Txn)
 ASSUME UpSteps > 0 => Control # "upgrader-holds-exclusion"
 ASSUME NSlots \in Nat /\ MaxListings \in Nat /\ MaxDiscoveries \in Nat
@@ -654,7 +658,7 @@ core   == <<pc, att, areq, lease, schema, bystanders>>
 \* unresolved, and may only release it or run recovery. A recoverer is in
 \* "recSwap1" and "recSwap2" while it makes the swaps a prepared transaction
 \* names, "recEnd" while it appends that transaction's end record or sweeps one
-\* that was begun, "recReset" while it resets the log of one that was, "recSweep"
+\* that was begun, "recReset" while completion attempts to reset the log, "recSweep"
 \* while it sweeps the staging, "recWhole" while it makes an unlogged write's
 \* half-applied store whole, "recCount" while it publishes the even count
 \* together with the trusted state, and "recClear" while it clears the fence.
@@ -812,8 +816,8 @@ Admissible(p) ==
 \* A store with its write half applied.
 Partial == a # b
 
-\* A commit log whose latest transaction is neither ended nor rolled back.
-UnresolvedLog == log \in {"begun", "prepared"}
+\* A prepare still requires its swaps; a begin requires the sweep of its staging.
+UnresolvedLog == log = "prepared" \/ (log = "begun" /\ stage # 0)
 
 \* An upgrade whose intent is recorded and not yet cleared, whether or not its
 \* upgrader lives.
@@ -839,7 +843,7 @@ UnresolvedWork == Partial \/ UnresolvedLog \/ stage # 0 \/ IntentStands
 
 \* A store with nothing left for recovery to finish: the namespace whole, the log
 \* resolved, no staging and no upgrade intent standing.
-Settled == a = b /\ log \in {"empty", "ended"} /\ stage = 0 /\ ~IntentStands
+Settled == a = b /\ log # "prepared" /\ stage = 0 /\ ~IntentStands
 
 \* What a sampler finds when it reads the published count. State that cannot be
 \* vouched for reads as odd, whatever is stored.

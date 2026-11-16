@@ -34,6 +34,10 @@ $specPath = (Resolve-Path -LiteralPath $Spec).Path
 $specDir = Split-Path -Parent $specPath
 $specName = [System.IO.Path]::GetFileNameWithoutExtension($specPath)
 $chain = Get-Chain $specDir $specName
+$dependencies = Get-Dependencies $specDir $chain
+foreach ($dependency in $dependencies.Keys) {
+    $chain[$dependency] = [IO.File]::ReadAllText($dependencies[$dependency]).Replace("`r`n", "`n")
+}
 
 $keywords = 'CONSTANTS', 'CONSTANT', 'SPECIFICATION', 'INIT', 'NEXT', 'INVARIANT', 'INVARIANTS',
     'PROPERTY', 'PROPERTIES', 'CONSTRAINT', 'CONSTRAINTS', 'ACTION_CONSTRAINT', 'ACTION_CONSTRAINTS',

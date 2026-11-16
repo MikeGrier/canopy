@@ -28,25 +28,31 @@ Each item here names the event it waits on; it joins a milestone once that event
 
 ## M11 -- Conformance harness
 
-- [ ] **M11-1** (was `FM-3.1`) -- Export TLC behaviours as JSON traces (simulation mode for breadth, the
-  error trace for counterexamples) and check a corpus into the crate's test data. The corpus
-  includes every timeline's replay from SPEC-2.2's scenario tables, so that M11-2 replays the
-  timelines against the code ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A timeline is replayed by TLC
-  from a scenario table").
-  **CROSS-COMPONENT PREREQUISITE:** acadia's `M10` -> `M10-6` (shared coordination conformance,
-  native process checks and sampling/handoff comparison) must land first. See
-  [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m10-6).
+- [x] **M11-1** (was `FM-3.1`) -- Export TLC behaviours as a JSON trace corpus: every timeline's replay, random walks of the protocol as built, and the named defects' counterexamples. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-1)
 
-- [ ] **M11-2** (was `FM-3.2`) -- A Rust test that replays each trace step against `Store` on
-  `MemFs` + `FaultyFs` (failures as injected faults, crash as `simulate_crash`, reopen as
-  `Store::open`, one `Store` per model process, a process's death as the coordination
-  implementation's abandonment of that process's holds -- never a clean drop, which would
-  release ownership and restore the count's parity) and after every step compares a projection of the store's live and durable
-  state with the trace's model state.
+- [x] **M11-2** (was `FM-3.2`) -- The replay harness and `PointerPublication`'s bridge: every `PointerPublication` trace replays against `Store` on `MemFs` + `FaultyFs`, with the model refined to the store's commit-log handling. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-2)
 
-- [ ] **M11-3** (was `FM-3.3`) -- Prove the harness bites: remove the namespace sync that collection performs
-  before deleting, and confirm the replay of the `DANGLING-DURABLE` counterexample trace fails at
-  the step the model predicts.
+- [x] **M11-3** -- `Creation`'s bridge and the step scheduler: every `Creation` trace replays against acadia's creation contract through both implementations, with the model refined to the code's decisions. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-3)
+
+- [x] **M11-4** -- Map `Coordination`'s writer actions to the code, and agree the step hook with the engineer: the inventory, the hook's interface, the abstract write's binding, and the writer-only corpus. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-4)
+  > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> M4 -> `AC-5` (the
+  > shared implementation's step hook). See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-5).
+
+- [x] **M11-5** -- `Coordination`'s writer actions bound to the code: every writer trace replays against acadia's contract through each implementation whose behaviour it is, with the model refined to the code's recovery and crash. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-5)
+
+- [x] **M11-6** -- The SharedPublication Store replay binds document and recovery steps to both coordination implementations. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m11-6)
+
+- [ ] **M11-7** -- The rest of `Coordination`'s bridge: the registry, the upgrade, clones and
+  leases, reads and discovery, and the escapes -- a waiting writer withdrawing or refused, a handle
+  giving up attaching -- with the eligibility that refusal follows, bound as M11-5 binds the writer
+  actions, so that every `Coordination` trace replays.
+
+- [ ] **M11-8** (was `FM-3.3`) -- Prove the harness bites: remove the namespace sync that
+  collection performs before deleting, and confirm that the replay of a trace of the protocol as
+  built in which collection syncs an entry whose live pointer is ahead of its durable one fails
+  at that `CollSync` step. The `DANGLING-DURABLE` counterexample is not that trace: it is read
+  from a model without the record guard, and with the record guard the model reaches no
+  `DANGLING-DURABLE` state even without the sync (decided with the engineer, 2026-11-15).
 
 ## M12 -- Extend the protocol model
 
@@ -65,6 +71,15 @@ Each item here names the event it waits on; it joins a milestone once that event
 
 - [ ] **M12-3** (was `FM-4.3`) -- Repair and scrub, including the modification count a repair holds odd
   while it runs.
+
+- [ ] **M12-4** -- Decide with the engineer how `Store::init` relates to the creation contract, and
+  carry it out. `Store::init` reserves the root with `Creation::reserve`, then works under writer
+  exclusion rather than the creation exclusion, and does not take over an interrupted creation, so
+  the `Creation` replay holds acadia's `create` and `confirm_created` to
+  [Creation.tla](spec/Creation.tla) and not `Store::init` ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The
+  Creation replay"). Either `Store::init` creates through the contract, its partitions and marker
+  being `create`'s artifacts, or the model gains canopy's creation as a client of the contract and
+  a bridge drives `Store::init` through it.
 
 ## M13 -- Filesystem reference model
 

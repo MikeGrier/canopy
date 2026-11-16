@@ -139,7 +139,7 @@
             Old = @'
        \/ /\ log = "begun"
           /\ stage' = 0
-          /\ pc' = Set(pc, p, "recReset")
+             /\ pc' = Set(pc, p, "recSweep")
 '@
             New = @'
        \/ /\ log = "begun"

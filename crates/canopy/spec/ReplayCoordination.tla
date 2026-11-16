@@ -391,15 +391,16 @@ ReplayT16 ==
     \/ tstep = 28 /\ RecSwap2(2)  \* RSWB
     \/ tstep = 29 /\ RecEnd(2)  \* REND
     \/ tstep = 30 /\ RecSweep(2)  \* RSWP
-    \/ tstep = 31 /\ RecCount(2)  \* RCNT
-    \/ tstep = 32 /\ RecClear(2)  \* RCLR
+    \/ tstep = 31 /\ RecReset(2)  \* reset-log, which the timeline omits
+    \/ tstep = 32 /\ RecCount(2)  \* RCNT
+    \/ tstep = 33 /\ RecClear(2)  \* RCLR
 
 ReplayNextT16 == ReplayT16 /\ tstep' = tstep + 1
 
 ReplaySpecT16 == ReplayInit /\ [][ReplayNextT16]_<<vars, tstep>>
 
 \* T16's last action has been taken.
-Witness_T16Replayed == tstep # 33
+Witness_T16Replayed == tstep # 34
 
 \* T17, from timelines/Coordination/T17.psd1.
 \* Each disjunct is one action, numbered from 0, with the step it belongs to.
@@ -464,15 +465,16 @@ ReplayT18 ==
     \/ tstep = 30 /\ UpClear(2)  \* ICLR
     \/ tstep = 31 /\ RecEnd(2)  \* REND
     \/ tstep = 32 /\ RecSweep(2)  \* RSWP
-    \/ tstep = 33 /\ RecCount(2)  \* RCNT
-    \/ tstep = 34 /\ RecClear(2)  \* RCLR
+    \/ tstep = 33 /\ RecReset(2)  \* reset-log, which the timeline omits
+    \/ tstep = 34 /\ RecCount(2)  \* RCNT
+    \/ tstep = 35 /\ RecClear(2)  \* RCLR
 
 ReplayNextT18 == ReplayT18 /\ tstep' = tstep + 1
 
 ReplaySpecT18 == ReplayInit /\ [][ReplayNextT18]_<<vars, tstep>>
 
 \* T18's last action has been taken.
-Witness_T18Replayed == tstep # 35
+Witness_T18Replayed == tstep # 36
 
 \* T19, from timelines/Coordination/T19.psd1.
 \* Each disjunct is one action, numbered from 0, with the step it belongs to.

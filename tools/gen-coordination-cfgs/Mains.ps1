@@ -101,6 +101,19 @@ Write-Cfg 'Coordination-RecoveryUnlogged.cfg' `
 Write-Cfg 'Coordination-RecoveryMixed.cfg' `
     (Header @('Recovery of writes that each choose to be a transaction or not, with two writers, one of', 'which may die and the host may crash, a read and a discovery: every invariant and', 'property holds.')) `
     (Cfg (Plain 2) 2 1 1 1 'none' $true $false $allInv $allProp 0 0 0 $false 1 0 $true $true)
+# Writers alone -- no read, discovery, registry, upgrade or escape -- which the conformance replay
+# binds to the coordination implementations before the rest of the contract.
+Write-Cfg 'Coordination-Writers.cfg' `
+    (Header @('Writers alone, two of them, whose writes each choose to be a transaction or not, one', 'of which may die and the host may crash: every invariant and property holds.')) `
+    (Cfg (Plain 2) 2 1 1 0 'none' $false $false $allInv $allProp 0 0 0 $false 0 0 $true $true)
+Write-Cfg 'Coordination-WritersTxn.cfg' `
+    (Header @('Writers alone, two of them, with transactions over a commit log, one of which may die', 'and the host may crash: every invariant and property holds.')) `
+    (Cfg (Plain 2) 2 1 1 0 'none' $false $false $allInv $allProp 0 0 0 $true)
+# The writers again, as an implementation behaves whose publications of the count cannot fail and
+# whose state a host crash leaves fenced: the shared implementation's narrower behaviour.
+Write-Cfg 'Coordination-WritersShared.cfg' `
+    (Header @('Writers alone, two of them, whose writes each choose to be a transaction or not, one', 'of which may die and the host may crash, where no publication of the count fails and a', 'crash leaves the fence set: every invariant and property holds.')) `
+    (Cfg (Plain 2) 2 1 1 0 'none' $false $false $allInv $allProp 0 0 0 $false 0 0 $true $true -publicationsFail $false -crashFences $true)
 Write-Cfg 'Coordination-NoDeadlock-Recovery.cfg' `
     (Header @('No deadlock with recovery and two writers, neither of which gives up or dies:', 'every invariant and property holds, and no state but every process ended has no', 'successor.')) `
     (Cfg (Plain 2) 2 0 0 0 'none' $false $true ($exclusionInvariants + $attachInvariants) ($exclusionProperties + $attachProperties) 0 0 0 $true 1)

@@ -59,7 +59,7 @@ NormalAcquireFindsAHealthyStore ==
     [][\A p \in Procs :
           (pc[p] = "locked" /\ pc'[p] = "held")
              => (owner = None /\ ~fence /\ trusted /\ ~Partial /\ Even(count)
-                 /\ ~IntentStands /\ log \in {"empty", "ended"} /\ stage = 0)
+                 /\ ~IntentStands /\ log # "prepared" /\ stage = 0)
       ]_vars
 
 \* Audience: client. A writer is told recovery is required only when there is cause.
@@ -221,7 +221,7 @@ ReadersAreConsistent ==
 AFinishedOperationLeavesTheStoreSettled ==
     \A p \in Procs :
         pc[p] \in {"wrote", "observed", "closing", "closed"} =>
-            (a = b /\ log \in {"empty", "ended"} /\ stage = 0)
+            (a = b /\ log # "prepared" /\ stage = 0)
 
 \* Audience: internal.
 \* A callback the store makes under exclusion changes nothing but where its holder is: it

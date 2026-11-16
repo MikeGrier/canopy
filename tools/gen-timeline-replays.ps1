@@ -24,6 +24,9 @@
 #              step of their own marked Omitted = $true, named for what they do, and the table's
 #              Note says why
 #   Projected  the ids of steps the timeline marks projected that the replay takes (optional)
+#   Departs    for a timeline read from a configuration that breaks a rule, the step at which that
+#              rule acts and the code as built leaves the timeline (optional; this tool ignores it,
+#              and tools/export-trace-corpus.ps1 carries it into the trace corpus)
 #   Note       anything else the table's reader needs (optional)
 #
 # An action is written as TLC names it in a trace, with its arguments, or as any action expression
@@ -54,7 +57,7 @@ $specs = [ordered]@{
     Coordination       = @{ Init = 'Init'; Vars = 'vars'; Step = $null }
     Creation           = @{ Init = 'Init'; Vars = 'vars'; Step = $null }
     PointerPublication = @{ Init = 'Init'; Vars = 'vars'; Step = $null }
-    SharedPublication  = @{ Init = 'SpInit'; Vars = 'spvars'; Step = 'Kinds' }
+    SharedPublication  = @{ Init = 'SpInit'; Vars = 'spvars'; Step = 'SpStepFrame' }
 }
 
 $utf8 = New-Object System.Text.UTF8Encoding($false)

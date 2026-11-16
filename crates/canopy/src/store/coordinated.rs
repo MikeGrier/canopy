@@ -16,6 +16,13 @@ use acadia::coord::{
 use super::StoreError;
 use super::writer::WriterGate;
 
+#[cfg(test)]
+impl super::Store {
+    pub(crate) fn abandon_for_replay(&self) {
+        self.coordination.participant.abandon();
+    }
+}
+
 pub(crate) mod leases;
 
 /// The coordination state a store handle shares with its clones.
