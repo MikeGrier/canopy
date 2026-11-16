@@ -1336,4 +1336,4 @@ announces each such step before it acts[^ac-5]:
   dead holder's record therefore outlives it only while another participant keeps the epoch, which
   the replay must take into account wherever every process of a trace has ended.
 
-[^ac-5]: `AC-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-5) [completed 2026-11-15]
+[^ac-5]: `AC-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-5) [completed 2026-11-15; `dfcd5be`]

@@ -4991,7 +4991,7 @@ one JSON file per behaviour, written from TLC by
   walk with an invariant over `TLCGet("level")` reported the same seven-state behaviour of
   `Coordination` whatever the bound.
 
-[^m11-1]: `M11-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-1) [completed 2026-11-15]
+[^m11-1]: `M11-1` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-1) [completed 2026-11-15; `dfcd5be`]
 
 ## Replaying a trace against the code, 2026-11-15
 
@@ -5025,7 +5025,7 @@ Decided with the engineer as the conformance work began. Rationale is in
   renamed a replica and failed before syncing it, followed by a collection -- and requires the
   replay to fail at that `CollSync` step[^m11-8].
 
-[^m11-2]: `M11-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-2) [completed 2026-11-15]
+[^m11-2]: `M11-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-2) [completed 2026-11-15; `dfcd5be`]
 
 [^m11-8]: `M11-8` in [CHECKLIST.md](CHECKLIST.md)
 
@@ -5193,7 +5193,7 @@ The harness that replays `Creation`'s traces against acadia's creation contract 
   on a decision queued with the engineer, between `Store::init` following the contract and the
   model gaining canopy's creation[^m12-4].
 
-[^m11-3]: `M11-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-3) [completed 2026-11-15]
+[^m11-3]: `M11-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-3) [completed 2026-11-15; `dfcd5be`]
 
 [^m12-4]: `M12-4` in [CHECKLIST.md](CHECKLIST.md)
 
@@ -5218,12 +5218,12 @@ Decided with the engineer when the `SharedPublication` bridge began. Rationale i
   only, through which each step announces itself before it acts and the words can be read, so both
   implementations are stepped and compared alike[^ac-5].
 
-[^m11-4]: `M11-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-4) [completed 2026-11-15]
+[^m11-4]: `M11-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-4) [completed 2026-11-15; `dfcd5be`]
 
-[^m11-5]: `M11-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-5) [completed 2026-11-15]
+[^m11-5]: `M11-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-5) [completed 2026-11-15; `dfcd5be`]
 
 [^ac-5]: `AC-5` in [acadia's COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#ac-5)
-    [completed 2026-11-15]
+  [completed 2026-11-15; `dfcd5be`]
 
 ## The contract's writer actions in the code, 2026-11-15
 
@@ -5363,7 +5363,7 @@ model[^m11-6].
   and `Store::publication_durable` makes it durable, so the write knows which side of its first
   effect a failure is on.
 
-[^m11-6]: `M11-6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-6) [completed 2026-11-16]
+[^m11-6]: `M11-6` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-6) [completed 2026-11-16; `dfcd5be`]
 
 ## The model recovers and rolls back as the store does, 2026-11-15
 
