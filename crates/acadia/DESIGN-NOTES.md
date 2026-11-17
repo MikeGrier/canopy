@@ -1337,3 +1337,29 @@ announces each such step before it acts[^ac-5]:
   the replay must take into account wherever every process of a trace has ended.
 
 [^ac-5]: `AC-5` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-5) [completed 2026-11-15; `dfcd5be`]
+
+## MemFs durability reference and replay, 2026-11-17
+
+- **The reference separates live names, durable names and file data.**
+  [MemFsDurability.tla](spec/MemFsDurability.tla) assigns every path an absent, directory or
+  inode-tagged file node in both live and durable trees. File fsync advances data for one inode;
+  directory fsync advances direct names and any carried directory subtree, not file contents.
+  Crash replaces live names and readable bytes with the durable projection.
+- **Carried directory state is part of the contract.** A directory moved after its contents became
+  durable retains a snapshot at the destination even if the old parent is synced first. A directory
+  standing where the durable path still names a file stores synced contents in a carried snapshot
+  until its parent names the directory. Nested carried contents survive only when the relevant
+  parent snapshot is refreshed; the root snapshot keeps descendants that no direct child sync owns.
+- **Rename may leave two durable file names for one inode.** File rename is atomic in the live
+  tree but directory durability is independent. Syncing the destination parent before the source
+  parent leaves both names after a crash, both referring to the same inode. The reference does not
+  require deduplication or directory-sync ordering across parents.
+- **Unnamed descendants are lost precisely at the unsynced link.** Syncing a directory's own
+  contents does not name that directory in its parent. A crash therefore retains an explicitly
+  named ancestor while dropping descendants whose containing directory name was not synced.
+- **The model is checked through a replay bridge.**
+  [mem_model.rs](src/tests/mem_model.rs) drives MemFs through the same named actions and audits inode
+  references after every step. It checks the four historical defect shapes and normal file, name,
+  directory, rename and removal traces. Scenario witnesses prove the expected states are reachable;
+  controls and probes make file-data, name, carried-snapshot and crash errors fail
+  `ScenarioExpected`.

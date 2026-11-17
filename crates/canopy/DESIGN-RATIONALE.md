@@ -495,3 +495,114 @@ and a later revision of the model could break the argument with nothing left tha
 Keeping the original costs space and, when it runs, time. The engineer judged that cost acceptable
 while the model is developed, and wants any compression or loss of information to keep a way back
 to the original unless the original is superseded or excessively large.
+
+## The queued client contract
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md#the-queued-client-contract-is-the-public-model-2026-11-16).
+M14's primary product is a model another system can compose with, not an engine API whose TLA+
+model happens to omit some fields. The opaque boundary is authored and checked first; the
+asynchronous session and queue API realizes it rather than defining it.
+
+**Why expose a standalone contract.** A dependent that imports `Ring.tla`, `Coordination.tla` or a
+publication composition has imported mechanism choices. It would change when a lock, doorbell,
+journal phase or scheduler representation changed even if its observable behavior did not. A
+standalone contract gives the dependent only command, result, request, pair, logical-store and
+recovery observations. The toy dependent in M14-1 is the acceptance test: it must compile and
+model-check without naming an internal mechanism variable.
+
+**Why the public lifecycle has no started or withdrawn state.** A caller can observe submission
+acceptance or refusal and completion while a pair lives. When the pair is dropped or lost, the
+client no longer receives per-request terminal outcomes. Whether an accepted command was withdrawn
+before store work or completed invisibly is therefore not observable. Exposing one state to hide
+that distinction would force a client to depend on an engine transition it cannot query. The
+contract exposes `CompletionUnavailable`, while the ring mechanism separately checks that a
+pre-start withdrawal has no effect and a post-start command finishes atomically. The same behavior
+also covers process death and session loss without manufacturing a false negative result.
+
+**Why a request identity is only local.** A durable status service for every accepted request would
+need identity issuance, retention, uniqueness, garbage collection, crash recovery and a query API.
+It would also be unable to distinguish every application operation without storing command intent.
+That is a storage subsystem with a different durability and capacity design, not a consequence of
+the ring. The chosen `RequestId` therefore matches one completion to one accepted submission only
+for the lifetime of its pair. A caller that needs a durable distinction places a unique token or
+other idempotency fact in the transaction itself.
+
+**Why the fundamental transaction submit is one-shot.** Automatically retrying an accepted command
+can apply an operation twice when the prior result is unknown. Retry after a definite precondition
+rejection is different, but deciding how to rebuild arbitrary application input belongs to the
+caller. The `transform` helper is restricted to a closure that may run repeatedly and has no
+external side effect; it receives an explicit attempt bound and rebuilds outside exclusion. The
+caller-facing `transact` operation submits once. This keeps uncertain effects visible instead of
+hiding them behind an uncheckable exactly-once claim.
+
+**Ring scheduling alternatives.** Unordered service has the smallest implementation but permits
+one continuously ready pair to pass another indefinitely. An asynchronous boundary that gives
+clients no way to distinguish starvation from a slow command would make that problem needlessly
+hard to diagnose and use. Strong fairness on every engine or store step is broader and would expand
+the model without solving the unordered coordination waits below the ring. The selected rule is
+round-robin among pairs whose head is currently eligible: one service turn each, with blocked heads
+parked and reinserted at the back. It gives bounded bypass at the ring with little state and leaves
+per-pair FIFO intact. A later command in one pair cannot bypass a blocked head; its pair is parked,
+so its pressure does not block the engine's other pairs.
+
+**Coordination fairness stays unchanged.** The round-robin rule does not impose an order on writer
+exclusion, attaching handles or upgrades, and it does not turn a contention wait into a wall-clock
+promise. The existing client model remains correct to permit a wait to continue while coordination
+progress is absent. Stronger fairness returns only with evidence that `ClientLiveSpec`'s explicit
+progress assumptions fail important client workloads. At that point the smallest affected layer is
+reconsidered; a fairness requirement is not rejected on principle and is not added preemptively.
+
+**Versioning and compatibility.** The implementation may refine the contract by removing admitted
+behaviors. A new permitted outcome, a weakened ordering or completion guarantee, a changed meaning
+of effect certainty, or a stronger dependency in `ClientLiveSpec` is a breaking client contract.
+A breaking model gets a new module name and the previous model remains usable by dependents. Rust
+major-versioning carries the corresponding API boundary; adding only an optional command that old
+dependents need not match is compatible.
+
+**How the boundary is held.** `ClientSpec` and `ClientLiveSpec` are independently checkable. The
+ring, coordination and publication models project into the same state, and negative controls break
+effect certainty, completion correlation, pair order, loss ambiguity and ready-pair service. A toy
+dependent remains unchanged as the projections refine the contract. That composition proof, not
+API aesthetics or the current Rust shape, is the criterion for opaqueness.
+
+## Byte append is the bounded format-free primitive
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store-evaluated transaction primitives
+stay byte-oriented". CQ-1 establishes that time added to every writer hold affects utilization and
+that a short tail matters at moderate load, but it does not justify a caller-shaped callback. It
+also leaves optimistic conflict retry as the alternative whose cost the store must bound. Append is
+therefore evaluated inside the store so multiple append-only submissions do not invalidate one
+another's read checks, while the caller still supplies only data.
+
+Raw concatenation is selected because absence has an unambiguous empty-byte interpretation and the
+result has no format decision. Numeric operations would silently choose an integer width, byte order,
+signedness and overflow behavior, which would make canopy the owner of a body format under a method
+name that does not admit that responsibility. A separate format-owning layer can define those
+operations later without changing the generic byte store.
+
+The suffix and resulting-body limits make the primitive's allocation and body-to-hash work bounded.
+Materializing the append as an ordinary swap before the prepare record keeps recovery and observer
+semantics from acquiring a second operation language. A separate public operation enum was rejected:
+it would make every future primitive a dependent's exhaustive match obligation even when that
+primitive is irrelevant to the dependent.
+
+## Compose at the request history, not at implementation variables
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Ring and store outcomes refine the
+opaque client contract". Ring and the durable store models own different facts. Ring knows that an
+entry was accepted, whether a pair remains available and which request may be served next. The
+publication and coordination composition knows whether a store operation applied, had no effect or
+left that fact uncertain and requiring recovery. Neither mechanism's internal state is a useful
+contract for a dependent.
+
+The projection therefore joins them at request correlation. A pair drop first changes availability:
+queued work projects to no public completion, and running work can settle only as an unavailable
+request. The later store outcome may change logical contents, but it cannot manufacture a completion
+or rewrite uncertainty. An explicit post-loss settlement transition is necessary because making
+pair loss erase the operation would be stronger than the implementation promises, while making pair
+loss wait for the operation would hold the dependent to mechanism timing.
+
+A `started` field was rejected from the public projection because exposing it would let a dependent
+distinguish pre-start withdrawal from a running operation whose result was later lost. The client
+contract deliberately offers only the unavailable completion and an uncertainty rule. The toy
+model remains an unchanged instance of that contract; it does not gain Ring or Store variables.

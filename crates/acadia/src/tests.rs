@@ -33,6 +33,7 @@ mod fault;
 mod locks;
 mod mem_delta_sync;
 mod mem_fork;
+mod mem_model;
 mod mem_reclaim;
 mod publish;
 mod signal;

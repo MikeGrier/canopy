@@ -6,6 +6,7 @@
 use acadia::coord::CoordError;
 
 use super::*;
+use crate::transaction::SwapSetError;
 
 /// A failure from a [`Store`] layout operation ([`Store::init`] / [`Store::open`]).
 #[derive(Debug)]
@@ -293,6 +294,24 @@ pub enum StoreError {
     InvalidPointer(PointerError),
     /// A verb that mints its own nonce was called on a store opened without a nonce source.
     NoNonceSource,
+    /// An opaque transaction could not be constructed from its builder operations.
+    InvalidTransaction(SwapSetError),
+    /// A store-evaluated append would produce a body beyond its bounded work budget.
+    AppendResultTooLarge {
+        /// The node the append targets.
+        node: String,
+        /// The document the append targets.
+        document: String,
+        /// The resulting byte count.
+        bytes: usize,
+        /// The accepted maximum.
+        limit: usize,
+    },
+    /// Every bounded optimistic transform attempt was rejected by a changed precondition.
+    TransactionContended {
+        /// How many transformations and commits were attempted.
+        attempts: usize,
+    },
     /// A snapshot could not get an undisturbed read before its deadline passed.
     SnapshotContended {
         /// How many times the read ran before the deadline passed.
@@ -528,6 +547,22 @@ impl fmt::Display for StoreError {
             StoreError::NoNonceSource => {
                 f.write_str("the store was opened without a nonce source, so it cannot mint one")
             }
+            StoreError::InvalidTransaction(error) => {
+                write!(f, "the transaction could not be constructed: {error}")
+            }
+            StoreError::AppendResultTooLarge {
+                node,
+                document,
+                bytes,
+                limit,
+            } => write!(
+                f,
+                "append to {document:?} at node {node:?} would produce {bytes} bytes, beyond the {limit}-byte result limit"
+            ),
+            StoreError::TransactionContended { attempts } => write!(
+                f,
+                "the optimistic transaction was rejected after each of {attempts} attempts"
+            ),
             StoreError::SnapshotContended { attempts } => write!(
                 f,
                 "a snapshot's deadline passed before an undisturbed read after {attempts} attempts"
@@ -547,8 +582,15 @@ impl std::error::Error for StoreError {
             StoreError::CommitLog(e) => Some(e),
             StoreError::Coordination(e) => Some(e),
             StoreError::InvalidPointer(e) => Some(e),
+            StoreError::InvalidTransaction(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+impl From<SwapSetError> for StoreError {
+    fn from(error: SwapSetError) -> Self {
+        StoreError::InvalidTransaction(error)
     }
 }
 

@@ -27,10 +27,10 @@
 //!
 //! - **Logged writes**, journaled to the commit log and applied all-or-nothing:
 //!   [`update_document`](Store::update_document), [`apply_transaction`](Store::apply_transaction),
-//!   the read-modify-write [`transform`](Store::transform) (no lost update), and
-//!   [`plan_and_apply`](Store::plan_and_apply), which plans swaps from what it reads and
-//!   commits them with the writer gate held from the plan to the commit. Each reports the
-//!   nonce it used in a [`Commit`].
+//!   and the opaque [`Transaction`] submitted by [`Store::transact`]. A transaction builder
+//!   records settled reads as checks and writes as opaque operations. [`Store::transform`]
+//!   builds outside exclusion and retries a rejected transaction up to a bounded attempt count.
+//!   Each committed or rejected logged submit reports the nonce it used in a [`Commit`].
 //! - **The unlogged write** [`write_document_replicated`](Store::write_document_replicated)
 //!   (`D332`).
 //! - **Reads**: [`read_document`](Store::read_document), [`list_children`](Store::list_children),
@@ -93,16 +93,19 @@ pub use store::{
     AGENT_FORMAT_VERSION, Agent, AttachedHandle, AttachedHandles, BacklogRepairReport, BlobRead,
     BlobVerification, CANOPY_SCHEMA_VERSION, COORDINATED_FORMAT_VERSION, Children, Commit,
     ContentScrubReport, DEFAULT_BLOB_REPLICA_COUNT, DEFAULT_POINTER_REPLICA_COUNT,
-    DEFAULT_SHARD_WIDTH, DEFAULT_SNAPSHOT_TIMEOUT, DiagnosticView, GENESIS_FORMAT_VERSION,
-    GenesisConfig, LOCK_NAME, MARKER_NAME, MAX_REPLICA_COUNT, MAX_SHARD_WIDTH,
-    MIGRATABLE_FORMAT_VERSION, MIGRATION_RECORD_NAME, Migration, MigrationUnit,
+    DEFAULT_SHARD_WIDTH, DEFAULT_SNAPSHOT_TIMEOUT, DEFAULT_TRANSFORM_ATTEMPTS, DiagnosticView,
+    GENESIS_FORMAT_VERSION, GenesisConfig, LOCK_NAME, MARKER_NAME, MAX_REPLICA_COUNT,
+    MAX_SHARD_WIDTH, MIGRATABLE_FORMAT_VERSION, MIGRATION_RECORD_NAME, Migration, MigrationUnit,
     PUBLICATION_RECORD_NAME, PointerRead, QUARANTINE_LIMIT, REPAIR_BACKLOG_LIMIT, Recovery,
     RecoveryNeed, RecoveryPhase, RecoveryProgress, RejectedPrecondition, RepairOutcome,
     SchemaUpgrade, SchemaVersions, Store, StoreError, StoreId, StoreOptions, StoreProperties,
     StoreView, TransactionOutcome, UPGRADE_INTENT_NAME, UpgradeDrain, UpgradeProgress,
     UpgradeRequest, WriteOutcome,
 };
-pub use transaction::{Effect, Precondition, Swap, SwapSet, SwapSetError};
+pub use transaction::{
+    Effect, MAX_APPEND_BYTES, MAX_APPEND_RESULT_BYTES, Precondition, Swap, SwapSet, SwapSetError,
+    Transaction, TransactionBuilder, TransactionOptions,
+};
 
 #[cfg(test)]
 mod tests;

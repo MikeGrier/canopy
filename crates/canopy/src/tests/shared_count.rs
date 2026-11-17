@@ -269,13 +269,8 @@ fn every_write_verb_is_refused_to_a_reader_and_changes_nothing() {
         ),
         (
             "transform",
-            reader
-                .transform(name("alpha"), &doc("one"), |_| body(b"changed"))
+            transform_document(&reader, name("alpha"), &doc("one"), |_| body(b"changed"))
                 .map(|_| ()),
-        ),
-        (
-            "plan_and_apply",
-            reader.plan_and_apply(|_| ((), None)).map(|_| ()),
         ),
         ("quiesce", reader.quiesce().map(|outcome| outcome.value)),
         ("scrub_content", reader.scrub_content().map(|_| ())),

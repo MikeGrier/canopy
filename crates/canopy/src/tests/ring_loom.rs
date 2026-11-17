@@ -165,3 +165,42 @@ fn a_clear_that_does_not_acquire_loses_a_wake() {
 fn a_clear_that_is_a_store_loses_a_wake() {
     doorbell(1, 2, Some(Weakening::ClearAsStore));
 }
+
+/// A queue protected by a mutex publishes each item before its ring; the consumer drains one
+/// item per `take`, matching `Session`'s queue-pair handoff around the checked Doorbell protocol.
+#[test]
+fn a_queue_pair_takes_every_published_item() {
+    check(|| {
+        let doorbell = Arc::new(Doorbell::<LoomSignal>::new().unwrap());
+        let queue = Arc::new(loom::sync::Mutex::new(std::collections::VecDeque::new()));
+        let producer = {
+            let doorbell = Arc::clone(&doorbell);
+            let queue = Arc::clone(&queue);
+            thread::spawn(move || {
+                for value in 0..2 {
+                    queue.lock().unwrap().push_back(value);
+                    doorbell.ring().unwrap();
+                }
+            })
+        };
+        let mut taken = Vec::new();
+        while taken.len() < 2 {
+            if !doorbell
+                .pump(Duration::ZERO, || {
+                    let Some(value) = queue.lock().unwrap().pop_front() else {
+                        return false;
+                    };
+                    taken.push(value);
+                    true
+                })
+                .unwrap()
+            {
+                while !doorbell.wait(Duration::ZERO).unwrap() {
+                    thread::yield_now();
+                }
+            }
+        }
+        producer.join().unwrap();
+        assert_eq!(taken, [0, 1]);
+    });
+}

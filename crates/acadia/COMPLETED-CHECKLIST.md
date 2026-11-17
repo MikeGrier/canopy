@@ -89,3 +89,23 @@ holder found dead and a host restart, and check each announcement's order and th
 reads at each are those from before the step. Writing them showed that a dead holder's record
 outlives it only while another participant keeps the words' epoch. Decision:
 [DESIGN-NOTES.md](DESIGN-NOTES.md#the-shared-implementation-announces-its-steps-to-a-test-support-hook-2026-11-15).
+
+## Moved 2026-11-17 -- MemFs durability reference model
+
+### <a id="m13-1"></a>M13-1 -- `MemFs` has an independent durability reference model, replay bridge, controls and probes. *(completed 2026-11-17 12:39:51 -05:00)*
+
+[MemFsDurability.tla](spec/MemFsDurability.tla) models live and durable names, inode-tagged files,
+separate live and durable bytes, directory-carried snapshots, rename, sync, removal and crash over a
+bounded path topology. [MemFsScenarios.tla](spec/MemFsScenarios.tla) reaches the four historical
+regressions named by the work item: one inode under two names after one parent sync, a directory
+replacing a durable file, a moved directory carried over a replacement, and an unnamed nested
+directory lost by crash. The controls break file-data sync, name sync, carried refresh and crash
+rollback; each is caught by `ScenarioExpected`, and the probe corpus reports every mutant caught.
+
+[mem_model.rs](src/tests/mem_model.rs) replays the corresponding VFS actions through `MemFs`, audits
+reference counts after every step and checks the crash projection; a test-only inode hook proves the
+two surviving names identify one inode. The same bridge covers ordinary create/write/fsync, lost
+unsynced names, directory-name boundaries, removal and full durability cases. The design and its
+rationale are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs durability reference and
+replay" and [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "A finite path model carries the durability
+facts MemFs must preserve".

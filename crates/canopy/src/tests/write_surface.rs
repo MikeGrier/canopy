@@ -129,7 +129,7 @@ fn a_store_opened_without_a_source_refuses_every_minting_verb() {
         Err(StoreError::NoNonceSource)
     ));
     assert!(matches!(
-        store.transform(name("alpha"), &doc("one"), increment),
+        transform_document(&store, name("alpha"), &doc("one"), increment),
         Err(StoreError::NoNonceSource)
     ));
     assert_eq!(text(&store, "alpha", "one"), None, "nothing was written");
@@ -149,9 +149,7 @@ fn each_operation_draws_one_nonce_and_reports_it() {
         .unwrap();
     let crate::WriteOutcome {
         value: (_, third), ..
-    } = store
-        .transform(name("alpha"), &doc("one"), increment)
-        .unwrap();
+    } = transform_document(&store, name("alpha"), &doc("one"), increment).unwrap();
 
     assert_eq!(first.nonce(), &expected[0]);
     assert_eq!(second.value, expected[1]);
@@ -255,9 +253,7 @@ fn a_transform_sees_absence_and_then_each_value_it_wrote() {
         let crate::WriteOutcome {
             value: (written, commit),
             ..
-        } = store
-            .transform(name("alpha"), &doc("count"), increment)
-            .unwrap();
+        } = transform_document(&store, name("alpha"), &doc("count"), increment).unwrap();
         assert!(commit.is_committed());
         assert_eq!(written, body(expected.to_string().as_bytes()));
     }
@@ -278,8 +274,7 @@ fn transforms_racing_through_clones_lose_no_update() {
                         .map(|_| {
                             let crate::WriteOutcome {
                                 value: (_, commit), ..
-                            } = store
-                                .transform(name("alpha"), &doc("count"), increment)
+                            } = transform_document(&store, name("alpha"), &doc("count"), increment)
                                 .unwrap();
                             assert!(commit.is_committed(), "exclusion is held read to commit");
                             commit.nonce().clone()
@@ -304,7 +299,7 @@ fn transforms_racing_through_clones_lose_no_update() {
 }
 
 #[test]
-fn a_transform_whose_closure_writes_through_a_captured_clone_is_rejected() {
+fn a_transform_retries_after_a_captured_store_write() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"before")))
@@ -312,29 +307,55 @@ fn a_transform_whose_closure_writes_through_a_captured_clone_is_rejected() {
         .agent_stamp
         .expect("agent version stamp");
     let captured = store.clone();
+    let mut first_attempt = true;
     let crate::WriteOutcome {
         value: (_, commit), ..
-    } = store
-        .transform(name("alpha"), &doc("one"), |_| {
+    } = transform_document(&store, name("alpha"), &doc("one"), |_| {
+        if std::mem::take(&mut first_attempt) {
             captured
                 .update_document(Swap::new(name("alpha"), doc("one"), body(b"sneaked")))
                 .unwrap()
                 .agent_stamp
                 .expect("agent version stamp");
-            body(b"transformed")
-        })
-        .unwrap();
-    assert!(
-        commit.is_rejected(),
-        "the commit is conditional on what was read, so the sneaked write is not lost"
-    );
-    assert_eq!(text(&store, "alpha", "one").as_deref(), Some("sneaked"));
+        }
+        body(b"transformed")
+    })
+    .unwrap();
+    assert!(commit.is_committed());
+    assert_eq!(text(&store, "alpha", "one").as_deref(), Some("transformed"));
 }
 
-// -- Plan and apply ------------------------------------------------------------
+#[test]
+fn transform_stops_at_its_bounded_attempt_count() {
+    let (_vfs, store) = seeded_store();
+    let captured = store.clone();
+    let mut runs = 0;
+    let error = store
+        .transform_with_attempts(3, &mut |transaction| {
+            runs += 1;
+            transaction.read_document(name("alpha"), &doc("one"))?;
+            captured
+                .update_document(Swap::new(
+                    name("alpha"),
+                    doc("one"),
+                    body(runs.to_string().as_bytes()),
+                ))?
+                .agent_stamp?;
+            transaction.write(name("alpha"), doc("one"), body(b"transformed"));
+            Ok(())
+        })
+        .expect_err("every submission conflicts");
+    assert_eq!(runs, 3);
+    assert!(matches!(
+        error,
+        StoreError::TransactionContended { attempts: 3 }
+    ));
+}
+
+// -- Opaque transactions --------------------------------------------------------
 
 #[test]
-fn a_plan_commits_against_the_state_it_read() {
+fn a_transform_commits_against_the_state_it_read() {
     let (_vfs, store) = seeded_store();
     store
         .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
@@ -345,73 +366,20 @@ fn a_plan_commits_against_the_state_it_read() {
         value: (seen, commit),
         ..
     } = store
-        .plan_and_apply(|view| {
-            let current = view.body(name("alpha"), &doc("one")).unwrap().unwrap();
-            let swaps = SwapSet::new([
-                Swap::conditional(name("alpha"), doc("one"), body(b"2"), current.digest()),
-                Swap::new(name("beta"), doc("copy"), current.clone()),
-            ])
-            .unwrap();
-            (current, Some(swaps))
+        .transform(|transaction| {
+            let current = transaction
+                .read_document(name("alpha"), &doc("one"))?
+                .unwrap();
+            transaction
+                .write(name("alpha"), doc("one"), body(b"2"))
+                .write(name("beta"), doc("copy"), current.clone());
+            Ok(current)
         })
         .unwrap();
     assert_eq!(seen, body(b"1"));
-    assert!(commit.unwrap().is_committed());
+    assert!(commit.is_committed());
     assert_eq!(text(&store, "alpha", "one").as_deref(), Some("2"));
     assert_eq!(text(&store, "beta", "copy").as_deref(), Some("1"));
-}
-
-#[test]
-fn a_plan_with_nothing_to_write_draws_no_nonce() {
-    let (_vfs, store) = scripted_store(vec![nonce("only")]);
-    let crate::WriteOutcome {
-        value: (listed, commit),
-        ..
-    } = store
-        .plan_and_apply(|view| (view.list_documents().unwrap().len(), None))
-        .unwrap();
-    assert_eq!(listed, 0);
-    assert!(commit.is_none());
-    let commit = store
-        .update_document(Swap::new(name("alpha"), doc("one"), body(b"x")))
-        .unwrap();
-    assert_eq!(
-        commit.nonce(),
-        &nonce("only"),
-        "the plan left the script untouched"
-    );
-}
-
-#[test]
-fn a_plan_whose_closure_writes_through_a_captured_clone_is_rejected() {
-    let (_vfs, store) = seeded_store();
-    store
-        .update_document(Swap::new(name("alpha"), doc("one"), body(b"before")))
-        .unwrap()
-        .agent_stamp
-        .expect("agent version stamp");
-    let captured = store.clone();
-    let crate::WriteOutcome {
-        value: (_, commit), ..
-    } = store
-        .plan_and_apply(|view| {
-            let current = view.body(name("alpha"), &doc("one")).unwrap().unwrap();
-            captured
-                .write_document_replicated(name("alpha"), &doc("one"), &body(b"sneaked"))
-                .unwrap()
-                .agent_stamp
-                .expect("agent version stamp");
-            let swaps = SwapSet::single(Swap::conditional(
-                name("alpha"),
-                doc("one"),
-                body(b"planned"),
-                current.digest(),
-            ));
-            ((), Some(swaps))
-        })
-        .unwrap();
-    assert!(commit.unwrap().is_rejected());
-    assert_eq!(text(&store, "alpha", "one").as_deref(), Some("sneaked"));
 }
 
 mod snapshot;
@@ -496,23 +464,13 @@ fn the_outermost_write_leaves_the_commit_log_empty() {
         .agent_stamp
         .expect("agent version stamp");
     assert!(store.commit_log_is_empty().unwrap());
-    store
-        .transform(name("alpha"), &doc("one"), increment)
+    transform_document(&store, name("alpha"), &doc("one"), increment)
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
     assert!(store.commit_log_is_empty().unwrap());
     store
-        .plan_and_apply(|_| {
-            (
-                (),
-                Some(SwapSet::single(Swap::new(
-                    name("beta"),
-                    doc("two"),
-                    body(b"2"),
-                ))),
-            )
-        })
+        .update_document(Swap::new(name("beta"), doc("two"), body(b"2")))
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
@@ -520,26 +478,21 @@ fn the_outermost_write_leaves_the_commit_log_empty() {
 }
 
 #[test]
-fn a_write_nested_inside_another_leaves_the_reset_to_the_outermost() {
+fn a_write_nested_in_writer_exclusion_leaves_the_reset_to_the_outermost() {
     let (_vfs, store) = seeded_store();
-    let inner = store.clone();
-    let crate::WriteOutcome {
-        value: (records_inside, _),
-        ..
-    } = store
-        .plan_and_apply(|_| {
-            inner
-                .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
-                .unwrap()
-                .agent_stamp
-                .expect("agent version stamp");
-            (inner.commit_log().read().unwrap().len(), None)
-        })
-        .unwrap();
+    let outer = store.writable().unwrap();
+    store
+        .update_document(Swap::new(name("alpha"), doc("one"), body(b"1")))
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
     assert_eq!(
-        records_inside, 3,
+        store.commit_log().read().unwrap().len(),
+        3,
         "the nested write's records survive until the outer ends"
     );
+    drop(outer);
+    let _ = store.quiesce().unwrap();
     assert!(store.commit_log_is_empty().unwrap());
 }
 
@@ -615,8 +568,7 @@ fn the_feed_reports_logged_commits_and_unlogged_writes_in_order() {
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
-    store
-        .transform(name("alpha"), &doc("one"), increment)
+    transform_document(&store, name("alpha"), &doc("one"), increment)
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
@@ -635,6 +587,27 @@ fn the_feed_reports_logged_commits_and_unlogged_writes_in_order() {
             "write ALPHA/ONE = 4",
             "remove BETA/TWO",
         ]
+    );
+}
+
+#[test]
+fn the_feed_reports_the_materialized_append_body_once() {
+    let (_vfs, store) = seeded_store();
+    let recorder = Arc::new(Recorder::default());
+    store.observe(recorder.clone()).unwrap();
+    let mut builder = store.transaction();
+    builder.append(name("alpha"), doc("one"), b"first".to_vec());
+    let _ = store
+        .transact(&builder.build().unwrap(), crate::TransactionOptions)
+        .unwrap();
+    let mut builder = store.transaction();
+    builder.append(name("alpha"), doc("one"), b" second".to_vec());
+    let _ = store
+        .transact(&builder.build().unwrap(), crate::TransactionOptions)
+        .unwrap();
+    assert_eq!(
+        recorder.events(),
+        ["write ALPHA/ONE = first", "write ALPHA/ONE = first second"]
     );
 }
 

@@ -507,8 +507,8 @@ below name it unchanged.
   ```
 
   The SHA-256 must be
-  `e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f` (GitHub's published
-  digest for the release asset). Changing the pinned version is a deliberate change to this
+  `7e53aa636dac8a3cb0533f343115c0548e03fc0ce5edc7739becf58d3d0fb84f` (GitHub's published
+  digest for the current release asset). Changing the pinned version is a deliberate change to this
   section, not a silent upgrade.
 
 **Run a spec** with [tools/run-tlc.ps1](../tools/run-tlc.ps1):

@@ -48,6 +48,17 @@ impl crate::CommitObserver for IgnoreCommits {
     fn committed(&self, _node: &NodePath, _document: &DocumentName, _body: &DocumentBody) {}
 }
 
+struct RefuseDrainFromCommit(Store);
+
+impl crate::CommitObserver for RefuseDrainFromCommit {
+    fn committed(&self, _node: &NodePath, _document: &DocumentName, _body: &DocumentBody) {
+        assert!(matches!(
+            self.0.drain_upgrade(),
+            Err(StoreError::UpgradeFromOperation { .. })
+        ));
+    }
+}
+
 #[test]
 fn a_drained_writer_refuses_writes_and_cancellation_restores_it() {
     let (_, store) = fixture();
@@ -136,16 +147,8 @@ fn a_drain_refuses_every_work_surface_without_running_callbacks() {
         (
             "transform",
             store
-                .transform(node(), &document(), |_| {
+                .transform(|_| -> Result<(), StoreError> {
                     panic!("a refused transform must not run")
-                })
-                .map(|_| ()),
-        ),
-        (
-            "plan",
-            store
-                .plan_and_apply(|_| -> ((), Option<SwapSet>) {
-                    panic!("a refused plan must not run")
                 })
                 .map(|_| ()),
         ),
@@ -279,16 +282,17 @@ fn starting_an_upgrade_inside_a_snapshot_is_refused_without_a_registry_change() 
 }
 
 #[test]
-fn starting_an_upgrade_inside_a_write_callback_is_refused() {
+fn starting_an_upgrade_inside_a_commit_observer_is_refused() {
     let (_, store) = fixture();
     store
-        .plan_and_apply(|_| {
-            assert!(matches!(
-                store.clone().drain_upgrade(),
-                Err(StoreError::UpgradeFromOperation { .. })
-            ));
-            ((), None)
-        })
+        .observe(Arc::new(RefuseDrainFromCommit(store.clone())))
+        .unwrap();
+    store
+        .update_document(Swap::new(
+            node(),
+            document(),
+            DocumentBody::new(b"x".to_vec()),
+        ))
         .unwrap()
         .agent_stamp
         .unwrap();
@@ -510,7 +514,7 @@ fn a_drain_guard_created_elsewhere_cannot_wait_inside_an_existing_operation() {
 }
 
 #[test]
-fn a_callback_cannot_start_a_drain_through_an_independent_attachment() {
+fn a_commit_observer_cannot_start_a_drain_through_an_independent_attachment() {
     let (vfs, store) = fixture();
     let (other, _) = Store::open(
         vfs,
@@ -519,13 +523,14 @@ fn a_callback_cannot_start_a_drain_through_an_independent_attachment() {
     )
     .unwrap();
     store
-        .plan_and_apply(|_| {
-            assert!(matches!(
-                other.drain_upgrade(),
-                Err(StoreError::UpgradeFromOperation { .. })
-            ));
-            ((), None)
-        })
+        .observe(Arc::new(RefuseDrainFromCommit(other.clone())))
+        .unwrap();
+    store
+        .update_document(Swap::new(
+            node(),
+            document(),
+            DocumentBody::new(b"x".to_vec()),
+        ))
         .unwrap()
         .agent_stamp
         .unwrap();

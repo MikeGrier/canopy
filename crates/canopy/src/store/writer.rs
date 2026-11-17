@@ -58,6 +58,30 @@ impl WriterGate {
         }
     }
 
+    /// Takes the gate only when it is immediately available, without joining the wait list.
+    pub(crate) fn try_enter(self: &Arc<Self>) -> Option<WriterGuard> {
+        let me = thread::current().id();
+        let mut holder = self.holder.lock().unwrap_or_else(PoisonError::into_inner);
+        if holder.owner == Some(me) {
+            holder.depth += 1;
+        } else if holder.owner.is_none() && holder.serving == holder.next_ticket {
+            holder.next_ticket += 1;
+            holder.owner = Some(me);
+            holder.depth = 1;
+        } else {
+            return None;
+        }
+        Some(WriterGuard {
+            gate: Arc::clone(self),
+            publication_settled: false,
+            coordination: None,
+            store: None,
+            other_holder: false,
+            lease: None,
+            _not_send: PhantomData,
+        })
+    }
+
     /// Blocks until the calling thread holds the gate; nested entries do not block.
     pub(crate) fn enter(self: &Arc<Self>) -> WriterGuard {
         let me = thread::current().id();

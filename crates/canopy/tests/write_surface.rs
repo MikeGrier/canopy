@@ -1,7 +1,7 @@
 // Copyright (c) Michael Grier.
 
-//! Actors racing on one store through the write surface: writers move two documents together
-//! in one planned transaction and readers take optimistic snapshots of both.
+//! Actors racing on one store through the write surface: writers transform two documents
+//! together in one opaque transaction and readers take optimistic snapshots of both.
 //!
 //! The nonce generator is seeded from the operating system's entropy source and the seed is
 //! printed, so a failing run's nonces can be reproduced. Scheduling cannot be reproduced from a
@@ -13,8 +13,7 @@ use std::thread;
 
 use acadia::{MemFs, Vfs};
 use canopy::{
-    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreId, StoreOptions, Swap,
-    SwapSet,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Store, StoreId, StoreOptions,
 };
 
 const WRITERS: u64 = 4;
@@ -61,7 +60,7 @@ fn value(body: Option<DocumentBody>) -> u64 {
 }
 
 #[test]
-fn planned_pairs_are_never_seen_torn_and_no_increment_is_lost() {
+fn transformed_pairs_are_never_seen_torn_and_no_increment_is_lost() {
     let seed = entropy_seed();
     println!("nonce seed: {seed:#018x}");
 
@@ -91,19 +90,18 @@ fn planned_pairs_are_never_seen_torn_and_no_increment_is_lost() {
                         value: (seen, commit),
                         ..
                     } = store
-                        .plan_and_apply(|view| {
-                            let left = value(view.body(node("pair"), &doc("left")).unwrap());
-                            let right = value(view.body(node("pair"), &doc("right")).unwrap());
+                        .transform(|transaction| {
+                            let left =
+                                value(transaction.read_document(node("pair"), &doc("left"))?);
+                            let right =
+                                value(transaction.read_document(node("pair"), &doc("right"))?);
                             let next = DocumentBody::new((left + 1).to_string().into_bytes());
-                            let swaps = SwapSet::new([
-                                Swap::new(node("pair"), doc("left"), next.clone()),
-                                Swap::new(node("pair"), doc("right"), next),
-                            ])
-                            .unwrap();
-                            ((left, right), Some(swaps))
+                            transaction
+                                .write(node("pair"), doc("left"), next.clone())
+                                .write(node("pair"), doc("right"), next);
+                            Ok((left, right))
                         })
                         .unwrap();
-                    let commit = commit.unwrap();
                     trace.lock().unwrap().push(format!(
                         "writer {actor} step {step}: read {seen:?}, {:?} under {}",
                         commit.outcome(),

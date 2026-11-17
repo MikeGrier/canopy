@@ -31,3 +31,7 @@ store".
   > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> M11 -> `M11-5`
   > (`Coordination`'s writer actions bound to the code). See
   > [CHECKLIST.md](../canopy/CHECKLIST.md).
+
+## M13 -- MemFs durability reference model
+
+- [x] **M13-1** (from canopy `M13-1`) -- `MemFs` has an independent durability reference model, replay bridge, controls and probes. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m13-1)

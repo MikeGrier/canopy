@@ -10,10 +10,13 @@ starts no threads.
 
 ## Features
 
-- **Atomic writes.** `Store::update_document` replaces one document all-or-nothing;
-  `Store::apply_transaction` applies a `SwapSet` across many documents
-  all-or-nothing, journaled through an append-only commit log and replayed on open
-  after a crash.
+- **Atomic writes.** `Store::update_document` replaces one document all-or-nothing.
+  `Store::transaction` builds an opaque operation list without exclusion, recording every read
+  as a digest or absence check, and `Store::transact` submits it once across many documents.
+  `TransactionBuilder::append` concatenates raw bytes under exclusion, treating absence as an
+  empty body; it accepts a bounded suffix and resulting body. `Store::apply_transaction` retains
+  the lower-level `SwapSet` path. Logged transactions are
+  journaled through an append-only commit log and replayed on open after a crash.
 - **Compare-and-set.** `Swap::conditional` commits only if the current body has an
   expected `ContentDigest`; `Swap::conditional_absent` commits only if the document
   does not yet exist.
@@ -26,10 +29,10 @@ starts no threads.
   verified copy.
 - **Writers take turns.** Several writer handles may stay attached. Each outermost write
   holds coordination exclusion until it ends; the OS releases its lock if the holder dies,
-  and subsequent writers require explicit recovery before making effects. Every write through
-  any clone of a `Store` is serialized, which makes the read-modify-write `Store::transform`
-  and `Store::plan_and_apply` lose no update; reads never take the lock, and
-  `Store::snapshot` reads a state no write disturbed without excluding writers.
+  and subsequent writers require explicit recovery before making effects. Logged submissions
+  through any clone are serialized at the commit. `Store::transform` reads and builds outside
+  exclusion, then retries a changed read through a bounded number of attempts. Reads never take
+  the lock, and `Store::snapshot` reads a state no write disturbed without excluding writers.
 - **Schema admission.** Read-only handles may coexist with writers. Every handle holds
   shared reader attachment; a writer also holds shared writer attachment. After attaching,
   each schema layer admits readers from its oldest reader schema through its current schema,
@@ -42,6 +45,46 @@ starts no threads.
 - **Pluggable filesystem.** All I/O goes through the [`acadia`](https://crates.io/crates/acadia)
   `Vfs` trait, so the same store runs on the real filesystem (`OsFs`) or fully in
   memory with scripted fault injection (`MemFs`, `FaultyFs`) for tests.
+
+## Client Contract for Sessions
+
+`Store::session` creates an asynchronous in-process engine. `Session::queue_pair` returns mutable
+submission and completion ends. Both are `Send`, neither is `Sync`, and every accepted request is
+identified only within that pair's lifetime. This guide is the dependent's contract; queue storage,
+doorbells, worker state and the scheduler cursor are mechanism details.
+
+| Observable outcome | Meaning and caller action | Client-model promise |
+|---|---|---|
+| `Ok(RequestId)` | The command reserves a completion slot and was accepted. Match that request only with completions from the same pair. | `SubmissionOutcomesCoherent`, `CompletionCapacityReserved` |
+| `SubmissionRefusal::CompletionQueueFull` | No command was accepted or given a request id. Drain or wait for a completion before retrying. | `SubmissionOutcomesCoherent`, `CompletionCapacityReserved` |
+| `SubmissionRefusal::PairClosed` | The pair was closed, so no command was accepted. Retry only through a new pair and treat it as a new operation. | `SubmissionOutcomesCoherent` |
+| `Completion` on a live pair | Exactly one result for its pair-local request. Completions for that pair are ordered by request. | `AtMostOneDelivery`, `PerPairCompletionOrder` |
+| `CompletionQueue::wait` returns `None` | The bounded wait expired with no ready completion. The accepted request may still be pending or complete; this is not cancellation. | `AtMostOneDelivery` |
+| No completion because the pair was dropped | The contract outcome is `CompletionUnavailable`. The request may have been withdrawn, applied, or left requiring recovery. Never infer no effect. | `LostCompletionIsUnknown` |
+| `Read::Contended` or `DocumentOvertaken` | A read did not settle on one observed state. Retry according to the caller's budget; it says nothing about a write request's effect. | Store read classification, projected outside request effect |
+| `SnapshotContended` | No undisturbed snapshot completed before its deadline. Retry if the operation remains useful; no write effect is claimed. | Client composition's no-effect result for disturbed reads |
+| `StoreError::RecoveryRequired` | A store operation is refused because unresolved durable work must be recovered. It does not classify an earlier uncertain request as definitely applied or unapplied. | `RecoveryReportsUncertainEffect` |
+
+A completed transaction may report `Committed`, `Rejected`, or a store error. A rejection and a
+failure established before `prepare` are definite no-effect. A failure after the commit point can
+be an error with uncertain durable effect and can require recovery. Recovery may later finish the
+same operation, but an application must not rewrite the request's earlier uncertainty by reading
+the store afterward.
+
+A read establishes only the state it observed. For an arbitrary operation, another writer may
+have changed that state before or after the read, so read-back is not a universal proof of whether
+the uncertain request took effect. A caller that needs this distinction carries an application
+idempotency token or equivalent durable evidence in the same transaction and checks that evidence.
+Resubmission is not deduplicated by `RequestId`.
+
+Completions are FIFO within one pair (`PerPairCompletionOrder`). Across ready pairs, the engine
+gives round-robin service and parks a command waiting for writer exclusion without occupying an
+engine worker (`ReadyPairService`). This prevents one ready pair from being skipped indefinitely,
+but it is not a wall-clock latency promise, a global FIFO, or a stronger fairness rule for the
+separate coordination lock. `ClientLiveSpec` assumes the selected command can finish and the
+coordination environment permits progress; the contract does not manufacture either assumption.
+`Session::transact` and the read/list/snapshot helpers are submit-one-and-wait conveniences over
+this same contract; their timeout is a wait bound, not cancellation of accepted work.
 
 ## Schema Upgrades
 

@@ -38,6 +38,7 @@ mod removal;
 mod ring;
 #[cfg(canopy_loom)]
 mod ring_loom;
+mod session;
 mod shared_count;
 mod surface;
 mod transaction;
@@ -54,6 +55,22 @@ fn name(raw: &str) -> NodePath {
 
 fn body(bytes: &[u8]) -> DocumentBody {
     DocumentBody::new(bytes.to_vec())
+}
+
+fn transform_document(
+    store: &Store,
+    node: impl Into<NodePath>,
+    document: &DocumentName,
+    mut transform: impl FnMut(Option<&DocumentBody>) -> DocumentBody,
+) -> Result<crate::WriteOutcome<(DocumentBody, crate::Commit)>, StoreError> {
+    let node = node.into();
+    let document = document.clone();
+    store.transform(move |transaction| {
+        let current = transaction.read_document(node.clone(), &document)?;
+        let output = transform(current.as_ref());
+        transaction.write(node.clone(), document.clone(), output.clone());
+        Ok(output)
+    })
 }
 
 /// Reading a document's body in a test, where no writer is competing.
@@ -234,6 +251,17 @@ fn sourced_store() -> (Arc<dyn Vfs>, Store) {
     let options = StoreOptions::with_nonce_source(test_agent(), counting_nonce_source());
     let store = Store::init(vfs.clone(), root, test_config(), options).expect("init store");
     (vfs, store)
+}
+
+fn seeded_store() -> (Arc<dyn Vfs>, Store) {
+    sourced_store()
+}
+
+fn text(store: &Store, node: &str, document: &str) -> Option<String> {
+    store
+        .read_body(name(node), &doc(document))
+        .unwrap()
+        .map(|body| String::from_utf8(body.as_bytes().to_vec()).unwrap())
 }
 
 use crate::commit_log::{

@@ -28,6 +28,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use acadia::coord::CoordError;
 use acadia::{FileType, Vfs, VfsError, VfsErrorKind, VfsLock};
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +37,10 @@ use crate::commit_log::{CommitLog, CommitLogError, LogRecord, PreparedSet, Prepa
 use crate::name::{DocumentName, NodePath, Nonce};
 use crate::naming::BlobRef;
 use crate::pointer::PointerError;
-use crate::transaction::{Precondition, Swap, SwapSet};
+use crate::transaction::{
+    MAX_APPEND_RESULT_BYTES, Precondition, Swap, SwapSet, Transaction, TransactionAppend,
+    TransactionBuilder, TransactionCheck, TransactionOptions,
+};
 
 mod agent;
 mod apply;
@@ -85,7 +89,9 @@ pub use self::namespace::PointerRead;
 #[cfg(test)]
 pub(crate) use self::surface::CLAIMS_DIR;
 pub use self::surface::WriteOutcome;
-pub use self::surface::{Commit, DEFAULT_SNAPSHOT_TIMEOUT, StoreOptions, StoreView};
+pub use self::surface::{
+    Commit, DEFAULT_SNAPSHOT_TIMEOUT, DEFAULT_TRANSFORM_ATTEMPTS, StoreOptions, StoreView,
+};
 
 /// The marker file name at the store root (D40).
 ///
@@ -636,6 +642,11 @@ pub struct Store {
 }
 
 impl Store {
+    /// Starts an in-process asynchronous session on this store.
+    pub fn session(&self) -> std::io::Result<crate::ring::Session> {
+        crate::ring::Session::new(self.clone())
+    }
+
     /// The store's root path.
     pub fn root(&self) -> &Path {
         &self.root
@@ -688,6 +699,15 @@ impl Store {
     pub fn modifications(&self) -> Result<u64, StoreError> {
         let _lease = self.operation_lease()?;
         self.coordination.sample()
+    }
+
+    pub(crate) fn notify_next_modification(
+        &self,
+        deadline: std::time::Instant,
+        ring: Box<dyn FnOnce() + Send>,
+    ) -> Result<Box<dyn acadia::coord::Notice>, StoreError> {
+        self.coordination
+            .notify(self.coordination.sample_count()?, deadline, ring)
     }
 
     /// Whether two [`modifications`](Store::modifications) samples bracket a span in which
@@ -876,6 +896,41 @@ impl Store {
         self.coordination.acquired()
     }
 
+    pub(crate) fn try_enter_exclusion(&self) -> Result<Option<WriterGuard>, StoreError> {
+        let lease = self.operation_lease()?;
+        self.refuse_if_read_only()?;
+        let Some(mut guard) = self.writer.try_enter() else {
+            return Ok(None);
+        };
+        guard.lease = Some(lease);
+        if self.writer.held_depth() == 1 {
+            let acquired = self.coordination.try_acquire();
+            let (acquired, changed) = match acquired {
+                Ok(acquired) => acquired,
+                Err(StoreError::Coordination(CoordError::WouldWait)) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            guard.other_holder = changed;
+            if acquired.recovery_required() {
+                self.writer.mark_unresolved();
+            } else {
+                self.writer.clear_unresolved();
+            }
+            if changed {
+                self.log_durability.invalidate();
+                self.publication.invalidate();
+                *self
+                    .unsynced_dirs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = DirSyncDebt::default();
+            }
+            self.refresh_stamp_generation(acquired, changed);
+        }
+        guard.coordination = Some(Arc::clone(&self.coordination));
+        guard.store = Some(self.clone());
+        Ok(Some(guard))
+    }
+
     pub(crate) fn enter_exclusion(&self) -> Result<WriterGuard, StoreError> {
         let lease = self.operation_lease()?;
         self.refuse_if_read_only()?;
@@ -911,6 +966,18 @@ impl Store {
     /// The outermost entry settles the publication record first, so every operation on the
     /// store -- a write of either kind, a check, a collection, a repair, a scrub -- starts from
     /// a store with no publication pending, and none needs to remember to settle.
+    pub(crate) fn try_writable(&self) -> Result<Option<WriterGuard>, StoreError> {
+        self.refuse_if_read_only()?;
+        let Some(mut guard) = self.try_enter_exclusion()? else {
+            return Ok(None);
+        };
+        self.refuse_if_unresolved()?;
+        if self.writer.held_depth() == 1 {
+            guard.publication_settled = self.settle_publication()?;
+        }
+        Ok(Some(guard))
+    }
+
     pub(crate) fn writable(&self) -> Result<WriterGuard, StoreError> {
         self.refuse_if_read_only()?;
         let mut guard = self.enter_exclusion()?;

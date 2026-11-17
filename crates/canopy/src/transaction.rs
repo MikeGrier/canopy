@@ -26,6 +26,15 @@ use std::fmt;
 
 use crate::body::{ContentDigest, DocumentBody};
 use crate::name::{DocumentName, NodePath};
+use crate::store::{Store, StoreError};
+
+const BUILDER_READ_ATTEMPTS: usize = 8;
+
+/// The largest byte suffix one append operation accepts.
+pub const MAX_APPEND_BYTES: usize = 64 * 1024;
+
+/// The largest resulting body an append operation produces.
+pub const MAX_APPEND_RESULT_BYTES: usize = 1024 * 1024;
 
 /// The precondition a [`Swap`] places on the current state of its `(node, document)`
 /// target before the transaction may apply it (D54).
@@ -334,6 +343,206 @@ impl SwapSet {
     }
 }
 
+/// Options for submitting a transaction.
+///
+/// This is deliberately empty today. It is a separate value so future submission
+/// policy can be added without changing the command's identity or shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransactionOptions;
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TransactionCheck {
+    node: NodePath,
+    document: DocumentName,
+    precondition: Precondition,
+}
+
+impl TransactionCheck {
+    pub(crate) fn node(&self) -> &NodePath {
+        &self.node
+    }
+
+    pub(crate) fn document(&self) -> &DocumentName {
+        &self.document
+    }
+
+    pub(crate) fn precondition(&self) -> Precondition {
+        self.precondition
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TransactionAppend {
+    node: NodePath,
+    document: DocumentName,
+    bytes: Vec<u8>,
+}
+
+impl TransactionAppend {
+    pub(crate) fn node(&self) -> &NodePath {
+        &self.node
+    }
+
+    pub(crate) fn document(&self) -> &DocumentName {
+        &self.document
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// An opaque operation list submitted atomically to a store.
+///
+/// Build one with [`Store::transaction`] and [`TransactionBuilder`]. Its internal
+/// operations are intentionally unavailable, so future primitives do not become
+/// public discriminants or promise a body format.
+#[derive(Clone)]
+pub struct Transaction {
+    checks: Vec<TransactionCheck>,
+    swaps: SwapSet,
+    appends: Vec<TransactionAppend>,
+}
+
+impl fmt::Debug for Transaction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Transaction { .. }")
+    }
+}
+
+impl Transaction {
+    pub(crate) fn checks(&self) -> &[TransactionCheck] {
+        &self.checks
+    }
+
+    pub(crate) fn swaps(&self) -> &SwapSet {
+        &self.swaps
+    }
+
+    pub(crate) fn appends(&self) -> &[TransactionAppend] {
+        &self.appends
+    }
+
+    /// Whether this transaction has no checks or changes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.checks.is_empty() && self.swaps.is_empty() && self.appends.is_empty()
+    }
+}
+
+/// Builds one transaction from reads and changes without holding writer exclusion.
+///
+/// Every settled read is recorded as a digest or absence check. The store verifies
+/// all recorded checks atomically with the writes when the transaction is submitted.
+pub struct TransactionBuilder<'store> {
+    store: &'store Store,
+    checks: Vec<TransactionCheck>,
+    swaps: Vec<Swap>,
+    appends: Vec<TransactionAppend>,
+    node_removals: Vec<NodePath>,
+}
+
+impl<'store> TransactionBuilder<'store> {
+    pub(crate) fn new(store: &'store Store) -> Self {
+        Self {
+            store,
+            checks: Vec::new(),
+            swaps: Vec::new(),
+            appends: Vec::new(),
+            node_removals: Vec::new(),
+        }
+    }
+
+    /// Reads a settled document and records its digest or absence as a transaction check.
+    pub fn read_document(
+        &mut self,
+        node: impl Into<NodePath>,
+        document: &DocumentName,
+    ) -> Result<Option<DocumentBody>, StoreError> {
+        let node = node.into();
+        let current = crate::read_within(self.store, &node, document, BUILDER_READ_ATTEMPTS)?;
+        self.checks.push(TransactionCheck {
+            node,
+            document: document.clone(),
+            precondition: match &current {
+                Some(body) => Precondition::ExpectedDigest(body.digest()),
+                None => Precondition::ExpectedAbsent,
+            },
+        });
+        Ok(current)
+    }
+
+    /// Adds an unconditional document write to this transaction.
+    pub fn write(
+        &mut self,
+        node: impl Into<NodePath>,
+        document: DocumentName,
+        body: DocumentBody,
+    ) -> &mut Self {
+        self.swaps.push(Swap::new(node, document, body));
+        self
+    }
+
+    /// Adds an unconditional document removal to this transaction.
+    pub fn remove(&mut self, node: impl Into<NodePath>, document: DocumentName) -> &mut Self {
+        self.swaps.push(Swap::remove(node, document));
+        self
+    }
+
+    /// Appends raw bytes to a document's current body under writer exclusion.
+    ///
+    /// Absence is treated as an empty body. The store retains ownership of no numeric or document
+    /// format; the operation concatenates bytes exactly. Its input and resulting body are bounded
+    /// by [`MAX_APPEND_BYTES`] and [`MAX_APPEND_RESULT_BYTES`].
+    pub fn append(
+        &mut self,
+        node: impl Into<NodePath>,
+        document: DocumentName,
+        bytes: impl Into<Vec<u8>>,
+    ) -> &mut Self {
+        self.appends.push(TransactionAppend {
+            node: node.into(),
+            document,
+            bytes: bytes.into(),
+        });
+        self
+    }
+
+    /// Adds a node removal, applied only if the node is empty after this transaction's changes.
+    pub fn remove_node(&mut self, node: impl Into<NodePath>) -> &mut Self {
+        self.node_removals.push(node.into());
+        self
+    }
+
+    /// Validates and finishes the opaque transaction.
+    pub fn build(self) -> Result<Transaction, SwapSetError> {
+        for append in &self.appends {
+            if append.bytes.len() > MAX_APPEND_BYTES {
+                return Err(SwapSetError::AppendInputTooLarge {
+                    node: append.node.to_string(),
+                    document: append.document.as_str().to_owned(),
+                    bytes: append.bytes.len(),
+                    limit: MAX_APPEND_BYTES,
+                });
+            }
+        }
+        let mut validation_swaps = self.swaps.clone();
+        validation_swaps.extend(self.appends.iter().map(|append| {
+            Swap::new(
+                append.node.clone(),
+                append.document.clone(),
+                DocumentBody::new(Vec::new()),
+            )
+        }));
+        SwapSet::with_node_removals(validation_swaps, self.node_removals.clone())?;
+        Ok(Transaction {
+            checks: self.checks,
+            swaps: SwapSet::with_node_removals(self.swaps, self.node_removals)?,
+            appends: self.appends,
+        })
+    }
+}
+
 /// Why a [`SwapSet`] could not be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwapSetError {
@@ -360,6 +569,17 @@ pub enum SwapSetError {
         /// The document the conflicting write places.
         document: String,
     },
+    /// One append operation's input exceeds the bounded primitive cost.
+    AppendInputTooLarge {
+        /// The node the append targets.
+        node: String,
+        /// The document the append targets.
+        document: String,
+        /// The input byte count.
+        bytes: usize,
+        /// The accepted maximum.
+        limit: usize,
+    },
 }
 
 impl fmt::Display for SwapSetError {
@@ -382,6 +602,15 @@ impl fmt::Display for SwapSetError {
                 f,
                 "swap set removes the node {node:?} while also writing the document \
                  {document:?} at {write:?}"
+            ),
+            SwapSetError::AppendInputTooLarge {
+                node,
+                document,
+                bytes,
+                limit,
+            } => write!(
+                f,
+                "append of {bytes} bytes to {document:?} at node {node:?} exceeds the {limit}-byte input limit"
             ),
         }
     }

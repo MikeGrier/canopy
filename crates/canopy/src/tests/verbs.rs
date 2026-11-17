@@ -1,14 +1,13 @@
 // Copyright (c) Michael Grier.
 
 //! The public write verbs on `Store`: read-modify-write without lost updates, compare-and-set,
-//! all-or-nothing transactions, planned commits, fencing after an ambiguous failure, and the
-//! commit feed.
+//! all-or-nothing transactions, fencing after an ambiguous failure, and the commit feed.
 
 use super::*;
 
 use std::sync::Mutex;
 
-use crate::{CommitObserver, StoreView};
+use crate::{CommitObserver, TransactionBuilder, TransactionOptions};
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
 
 fn number(current: Option<&DocumentBody>) -> u64 {
@@ -38,15 +37,14 @@ fn transform_sees_none_and_creates_when_absent() {
     let crate::WriteOutcome {
         value: (out, commit),
         ..
-    } = store
-        .transform(node.clone(), &d, |current| {
-            if current.is_none() {
-                body(b"created")
-            } else {
-                body(b"existed")
-            }
-        })
-        .unwrap();
+    } = transform_document(&store, node.clone(), &d, |current| {
+        if current.is_none() {
+            body(b"created")
+        } else {
+            body(b"existed")
+        }
+    })
+    .unwrap();
     assert!(commit.is_committed());
     assert_eq!(out, body(b"created"));
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"created")));
@@ -63,13 +61,12 @@ fn transform_reads_and_updates_the_current_body() {
         .expect("agent version stamp");
     let crate::WriteOutcome {
         value: (out, _), ..
-    } = store
-        .transform(node.clone(), &d, |current| {
-            let mut bytes = current.map(|b| b.as_bytes().to_vec()).unwrap_or_default();
-            bytes.extend_from_slice(b"+v2");
-            body(&bytes)
-        })
-        .unwrap();
+    } = transform_document(&store, node.clone(), &d, |current| {
+        let mut bytes = current.map(|b| b.as_bytes().to_vec()).unwrap_or_default();
+        bytes.extend_from_slice(b"+v2");
+        body(&bytes)
+    })
+    .unwrap();
     assert_eq!(out, body(b"v1+v2"));
     assert_eq!(store.read_body(&node, &d).unwrap(), Some(body(b"v1+v2")));
 }
@@ -116,7 +113,7 @@ fn transforms_from_many_threads_have_no_lost_update() {
         for _ in 0..WRITERS {
             let (store, node, d) = (store.clone(), node.clone(), d.clone());
             scope.spawn(move || {
-                let (_, commit) = store.transform(node, &d, bump).unwrap().value;
+                let (_, commit) = transform_document(&store, node, &d, bump).unwrap().value;
                 assert!(commit.is_committed());
             });
         }
@@ -132,11 +129,15 @@ fn a_counter_transform_is_just_a_document_write() {
     let (_vfs, store) = sourced_store();
     let (node, d) = (name("alloc"), doc("next-id"));
     assert_eq!(
-        store.transform(node.clone(), &d, bump).unwrap().0,
+        transform_document(&store, node.clone(), &d, bump)
+            .unwrap()
+            .0,
         body(b"1")
     );
     assert_eq!(
-        store.transform(node.clone(), &d, bump).unwrap().0,
+        transform_document(&store, node.clone(), &d, bump)
+            .unwrap()
+            .0,
         body(b"2")
     );
     // The counter is an ordinary replicated document, verifiable like any other.
@@ -570,11 +571,12 @@ fn observed_store() -> (Store, Arc<Spy>) {
 #[test]
 fn a_transform_reports_the_body_it_committed() {
     let (store, spy) = observed_store();
-    store
-        .transform(name("record"), &doc("record.json"), |_| body(b"hello"))
-        .unwrap()
-        .agent_stamp
-        .expect("agent version stamp");
+    transform_document(&store, name("record"), &doc("record.json"), |_| {
+        body(b"hello")
+    })
+    .unwrap()
+    .agent_stamp
+    .expect("agent version stamp");
     assert_eq!(
         spy.seen(),
         vec![(
@@ -725,25 +727,23 @@ fn the_observer_runs_on_the_writing_thread() {
     );
 }
 
-// -- Plan and apply -----------------------------------------------------------------------
+// -- Opaque transactions ----------------------------------------------------------------
 
-/// Reads a one-byte counter document and plans the swap that increments it.
-fn increment_plan(view: &StoreView<'_>) -> (u8, Option<SwapSet>) {
-    let current = view
-        .body(name("counter"), &doc("n"))
-        .unwrap()
-        .map(|b| b.as_bytes()[0])
+fn increment_transaction(transaction: &mut TransactionBuilder<'_>) -> Result<u8, StoreError> {
+    let current = transaction
+        .read_document(name("counter"), &doc("n"))?
+        .map(|body| body.as_bytes()[0])
         .unwrap_or(0);
-    let swap = Swap::new(name("counter"), doc("n"), body(&[current + 1]));
-    (current, Some(SwapSet::single(swap)))
+    transaction.write(name("counter"), doc("n"), body(&[current + 1]));
+    Ok(current)
 }
 
 #[test]
-fn plan_and_apply_commits_what_the_plan_returns_and_hands_back_its_value() {
+fn a_transform_commits_what_the_builder_returns_and_hands_back_its_value() {
     let (_vfs, store) = sourced_store();
-    let (value, commit) = store.plan_and_apply(increment_plan).unwrap().value;
+    let (value, commit) = store.transform(increment_transaction).unwrap().value;
     assert_eq!(value, 0);
-    assert!(commit.unwrap().is_committed());
+    assert!(commit.is_committed());
     assert_eq!(
         store.read_body(name("counter"), &doc("n")).unwrap(),
         Some(body(&[1]))
@@ -751,28 +751,17 @@ fn plan_and_apply_commits_what_the_plan_returns_and_hands_back_its_value() {
 }
 
 #[test]
-fn plan_and_apply_with_no_swaps_writes_nothing_and_reports_no_commit() {
-    let (_vfs, store) = sourced_store();
-    let (value, commit) = store.plan_and_apply(|_| ("nothing", None)).unwrap().value;
-    assert_eq!(value, "nothing");
-    assert!(commit.is_none());
-    assert_eq!(store.read_body(name("counter"), &doc("n")).unwrap(), None);
-}
-
-#[test]
-fn plan_and_apply_sees_the_state_the_previous_write_left() {
+fn a_transform_sees_the_state_the_previous_write_left() {
     let (_vfs, store) = sourced_store();
     for expected in 0..10u8 {
-        let (value, commit) = store.plan_and_apply(increment_plan).unwrap().value;
+        let (value, commit) = store.transform(increment_transaction).unwrap().value;
         assert_eq!(value, expected);
-        assert!(commit.unwrap().is_committed());
+        assert!(commit.is_committed());
     }
 }
 
 #[test]
-fn concurrent_plan_and_apply_calls_never_lose_a_round() {
-    // Every call plans from the state the previous call left, so no call is rejected and none
-    // overwrites another.
+fn concurrent_transforms_never_lose_a_round() {
     let (_vfs, store) = sourced_store();
     let (threads, each) = (6u8, 20u8);
     thread::scope(|scope| {
@@ -780,8 +769,8 @@ fn concurrent_plan_and_apply_calls_never_lose_a_round() {
             let store = store.clone();
             scope.spawn(move || {
                 for _ in 0..each {
-                    let (_, commit) = store.plan_and_apply(increment_plan).unwrap().value;
-                    assert!(commit.unwrap().is_committed());
+                    let (_, commit) = store.transform(increment_transaction).unwrap().value;
+                    assert!(commit.is_committed());
                 }
             });
         }
@@ -793,27 +782,26 @@ fn concurrent_plan_and_apply_calls_never_lose_a_round() {
 }
 
 #[test]
-fn a_plan_guarded_on_a_stale_digest_is_rejected_whole() {
+fn a_transaction_with_a_changed_read_is_rejected_whole() {
     let (_vfs, store) = sourced_store();
+    let mut builder = store.transaction();
+    assert_eq!(
+        builder.read_document(name("counter"), &doc("n")).unwrap(),
+        None
+    );
+    builder.write(name("counter"), doc("n"), body(&[9])).write(
+        name("counter"),
+        doc("other"),
+        body(b"x"),
+    );
+    let transaction = builder.build().unwrap();
     store
         .update_document(Swap::new(name("counter"), doc("n"), body(&[1])))
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");
-    let crate::WriteOutcome {
-        value: (_, commit), ..
-    } = store
-        .plan_and_apply(|_| {
-            let stale = body(b"not what is stored").digest();
-            let swaps = SwapSet::new([
-                Swap::conditional(name("counter"), doc("n"), body(&[9]), stale),
-                Swap::new(name("counter"), doc("other"), body(b"x")),
-            ])
-            .unwrap();
-            ((), Some(swaps))
-        })
-        .unwrap();
-    assert!(commit.unwrap().is_rejected());
+    let commit = store.transact(&transaction, TransactionOptions).unwrap();
+    assert!(commit.is_rejected());
     assert_eq!(
         store.read_body(name("counter"), &doc("other")).unwrap(),
         None,
@@ -822,10 +810,10 @@ fn a_plan_guarded_on_a_stale_digest_is_rejected_whole() {
 }
 
 #[test]
-fn plan_and_apply_reports_what_it_committed_to_the_observer() {
+fn a_transform_reports_what_it_committed_to_the_observer() {
     let (store, spy) = observed_store();
     store
-        .plan_and_apply(increment_plan)
+        .transform(increment_transaction)
         .unwrap()
         .agent_stamp
         .expect("agent version stamp");

@@ -160,3 +160,24 @@ hooked participants beside the ordinary one keeps `SharedFactory` a unit value t
 as its callers use it. The reading of the words takes no lock so that it changes nothing the
 replay compares, and in particular holds no liveness, which would keep an epoch alive that the
 model lets end.
+
+## A finite path model carries the durability facts MemFs must preserve
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs durability reference and
+replay". The prior differential oracle compared optimized delta directory sync with full
+reconciliation, but both paths shared the same in-memory durable-tree bookkeeping. It therefore
+could not independently say that a carried directory, an unnamed nested directory or a crash after
+one parent sync produced the intended result.
+
+The reference keeps names and bytes as separate facts and assigns file inodes explicitly. That
+small abstraction is the mechanism needed by every named defect: a durable name can survive with
+empty file data, a rename can leave the same inode under two names, and a directory snapshot can
+outlive its path in a live tree. Modeling the whole MemFs implementation as nested Rust maps would
+turn the TLA+ file into an implementation copy and make a shared mistake harder to see.
+
+A carried snapshot is retained as flat path-indexed data because the contract question is which
+durable entries survive each sync and crash. The scripted scenarios are witnesses for the four
+historical failures, while the smaller unrestricted model explores create, write, remove, sync,
+rename and crash combinations around the file-alias shape. Controls break one durability promise at
+a time, and the Rust bridge checks the same final projections against MemFs while auditing inode
+reference counts after every replay step.

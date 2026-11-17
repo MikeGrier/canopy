@@ -107,140 +107,54 @@ Each item here names the event it waits on; it joins a milestone once that event
 
 ## M13 -- Filesystem reference model
 
-- [ ] **M13-1** (was `FM-5.1`) -- A TLA+ reference model of the durability semantics `MemFs` implements
-  (directory entries and their sync state, file data and its sync state, rename, crash),
-  checked against `MemFs` with the M11 harness. `MemFs`'s recent defects are the first cases it
-  must reproduce: one inode left under two names by a crash, a directory replacing a durable
-  file, a moved or nested directory inside a carried snapshot, and an unnamed directory beneath
-  one.
-  > **CROSS-COMPONENT HANDOFF:** this work lives in component `crates/acadia`; its
-  > checklist is created when this item starts and the item moves there.
+- [x] **M13-1** (was `FM-5.1`) -- `MemFs` has an independent durability reference model and replay bridge in Acadia. -> [completed 2026-11-17](../acadia/COMPLETED-CHECKLIST.md#m13-1)
 
-## M14 -- The model clients rely on
+## M14 -- The model clients compose with
 
-Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "The model clients rely on, and the model the code is
-held to". Discussion:
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "The queued client contract is the public model".
+Discussion: the opaque contract discussion recorded in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) and
 [DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md](design-sessions/DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md).
-These items follow the primary deliverable, the milestones above: what is promised rests on ODI-2's
-decision about fairness and on what MP-4 and CQ-1 find, the refinement is written against the state
-MP-3 and MP-4 change, the oracle for tests at the API uses M11's harness, and the documentation for
-dependents describes the multi-process behaviour of M7 to M10. CM-1, which needed none of them and steers
-MP-3 and MP-4, was done in M3.
+
+M14's primary deliverable is an opaque TLA+ contract that a dependent can instantiate without
+importing canopy's ring, coordination, publication or filesystem mechanism. The asynchronous API
+is one implementation of that contract. The ring and coordination models refine the client
+contract; clients refine neither and depend on none of their variables.
+
+These items follow the primary deliverable, the milestones above: the observable store outcomes
+rest on ODI-2's decision about coordination fairness and on what MP-4 and CQ-1 find, the refinement
+is written against the state MP-3 and MP-4 change, the oracle for tests at the API uses M11's
+harness, and the documentation for dependents describes the multi-process behaviour of M7 to M10.
+CM-1, which needed none of them and steers MP-3 and MP-4, was done in M3.
 
 **Parallel track (decided with the engineer, 2026-11-16).** The store's hardening, M11 to M13,
-stays the first and primary work. While it waits, M14-1 and M14-2 may proceed in another session
-or on another machine, provided they take nothing from it: no long checks on the machine doing the
-hardening, no edits to the specs, generated configurations or traces the hardening is changing, and
-where both touch the same code the hardening's change goes first. M14-5 and M14-6 may be discussed
-in the same way. M14-6 and M14-7 start from a model whose writer requests end served, withdrawn or
-dead. The rest of M14 follows its dependencies as written.
+stays the first and primary work. M14-0 is complete, so M14-1, M14-2 and M14-3 may proceed in
+another session or on another machine without waiting for the hardening, provided they take
+nothing from it: no long checks on the machine doing the hardening, no edits to existing specs,
+generated configurations or traces the hardening is changing, and where both touch the same code
+the hardening's change goes first. M14-1's contract and toy dependent remain standalone until the
+hardening has settled the observables they project. M14-7 starts from a model whose writer requests
+end served, withdrawn or dead. The rest of M14 follows its dependencies as written.
 
-- [ ] **M14-1** (was `API-2`) -- Transactions built without exclusion and submitted once
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion but the commit
-  observer"): an operation that only checks a document's digest or absence, beside writes and
-  removals; a builder the store hands out that records each document it reads as such a check and
-  holds no lock; `Store::transact`, taking the operation list and an options value that is empty
-  today; and `Store::transform` as the helper that runs a closure against a fresh builder without
-  the lock and retries a commit rejected by a changed read, up to a bounded number of attempts.
-  The closure form of `transform` is retired with it.
+- [x] **M14-0** (was `ODI-5`) -- The queued client contract, request lifecycle, ambiguity rules and ready-pair scheduling are decided. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-0)
 
-- [ ] **M14-2** (was `QS-1`) -- The ring's spec barrier ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The ring: a
-  portable protocol over one platform primitive, behind a contract spec"): `RingContract.tla`,
-  stating what a client observes, and `Ring.tla`, the mechanism, which uses the doorbell only
-  through `DoorbellContract.tla` and is checked by TLC to refine the contract. Together they
-  model a session's queue pairs and their two doorbells, independent of the coordination model: a push that only queues and a submission doorbell rung
-  for a batch; submission reserving a completion slot and refused when none is free; the engine as
-  the one consumer of submissions and producer of completions, woken by its doorbell; an entry
-  started in order within its pair; the completion doorbell rung on empty to not empty and armed
-  by the client's take, clear, check again, wait; a pair dropped by its client at any point; and
-  the engine's work on an entry either withdrawn before it starts or run to completion.
-  Properties: every accepted entry gets exactly one completion while its pair exists; posting a
-  completion is never blocked; a pair's entries take effect in submission order; an entry
-  withdrawn by a drop never takes effect, and one started does; a client waiting on the completion
-  doorbell is never left waiting with a completion queued, nor the engine with a submission rung
-  for ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A client reaches the store through a session and its
-  queue pairs"). Controls: submission without a reservation, which must overflow; a drop that
-  cancels a started entry, which must break the atomicity property; an arming that skips the
-  check after clearing, and one that checks before clearing, each of which must leave a client
-  waiting past a completion.
+- [x] **M14-1** (was `CM-2`) -- The standalone client contract, negative controls and mechanism-free toy dependent are implemented. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-1)
 
-- [ ] **M14-3** (was `API-3`) -- Sessions and queue pairs as M14-2 specifies them, through which all work is
-  submitted, with M14-1's transactions, reads, snapshots and enumerations as entries: a session
-  acquired on a store, pairs acquired from it, ends `Send` and not `Sync` with `&mut` push and pop,
-  completions reserved at submission, a submission doorbell rung by the client for a batch, a
-  completion doorbell that is a waitable object on each platform, and the engine setting aside a
-  waiting entry with a registration on the coordination notification, which rings the engine's
-  doorbell, so that no waiting holds a thread ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A client
-  reaches the store through a session and its queue pairs"). The synchronous methods become a
-  convenience that submits one entry and waits on the completion doorbell. The queues are
-  `canopy::ring`'s, generic over the signal as RG-2's doorbell is, following
-  [durable-ioring](https://github.com/MikeGrier/windows-threadpool-sys/tree/main/crates/durable-ioring)'s
-  ring, with the step of `Ring.tla` each line realizes named beside it, and checked by the
-  memory-model checker RG-2.1 chooses. The completion doorbell is a `Doorbell` over the
-  platform's signal, so it is sealed: a client waits on it through `Doorbell::watch` (RG-3) or the
-  synchronous wait, and reaches its platform object only through the `unsafe` accessors
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The doorbell's signal is sealed"). Tests: exactly one
-  completion per entry under many pairs, per-pair order, a full completion queue refusing a
-  submission, a pair dropped with entries unstarted and started, a client waiting on the
-  completion doorbell from a thread pool's wait, many waiting entries holding no engine thread,
-  and sabotages that reverse the arming protocol's clear and check, and the doorbell's reset and
-  flag, each of which must hang.
+- [x] **M14-2** (was `API-2`) -- Opaque transactions are built outside exclusion and `transform` retries changed reads with a bound. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-2)
 
-- [ ] **M14-4** (was `API-1`) -- Withdraw `Store::plan_and_apply` from the public API, moving its callers to
-  M14-1's transactions, whose checks stand for what a plan read, so that M14-6 decides what canopy
-  advertises from a surface without it ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs
-  under exclusion but the commit observer").
+- [x] **M14-3** (was `QS-1`) -- The ring contract, two-doorbell mechanism, round-robin scheduler and controls are modelled. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-3)
 
-- [ ] **M14-5** (was `ODI-6`) -- Decide which primitives the store evaluates under exclusion -- operations
-  computed from a document's current value, such as add, maximum and append, which never
-  conflict -- from where CQ-1 shows read-modify-write retries failing too often, with the bound on
-  each one's cost, and whether canopy owns a body format so that a primitive can work on more than
-  bytes ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion but the commit
-  observer"). Record the decision; each primitive adopted becomes a work item here.
+- [x] **M14-4** (was `API-3`) -- Sessions expose asynchronous queue pairs, readiness, bounded waits and parked command execution. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-4)
 
-- [ ] **M14-6** (was `ODI-5`) -- Decide what canopy advertises to the code that depends on it. From CM-1's
-  client-visible guarantees and the results of MP-4, CQ-1 and ODI-2, decide which guarantees are
-  promised and which are explicitly not -- an order or a bound on waiting, the outcome of a write
-  whose holder was told recovery is required until recovery has run, a networked filesystem --
-  and how the promise is versioned, since a change to it is a change a dependent can feel.
-  Decide how it is delivered: prose in the crate documentation, a TLA+ module a dependent can
-  compose with, or both. A promise is a commitment, so this is the engineer's decision; record it
-  in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+- [x] **M14-5** (was `API-1`) -- The public API no longer exposes `Store::plan_and_apply`. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-5)
 
-- [ ] **M14-7** (was `CM-2`) -- The client model: a small TLA+ module over what a `Store` user can observe --
-  the logical contents, which handles are attached and in what role, each request's outcome,
-  whether the store needs recovery -- and none of the mechanism: no count, fence, generation,
-  commit log or lock order. Its invariants are M14-6's promised guarantees in a user's terms, and
-  it promises no more, so the implementation keeps the freedom the promise leaves. It follows
-  the conventions of the other models: controls that reverse a promise and must fail, witnesses
-  that show each outcome a caller can meet is reachable, and configurations whose headers state
-  the outcome [run-tlc-all.ps1](../../tools/run-tlc-all.ps1) must find.
+- [x] **M14-6** (was `ODI-6`) -- Bodies remain opaque and append is the first bounded store-evaluated primitive. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-6)
 
-- [ ] **M14-8** (was `CM-3`) -- Check that the code's model refines the client model. For each form of the
-  coordination model that is kept -- the abstract and the detailed write and upgrade -- write in
-  the spec the mapping from its state to the client model's, and have TLC check in its main
-  configurations that every behaviour projects onto a behaviour of the client model. The mapping
-  is where the commit point is written down: when a write counts as having happened, including
-  when its holder was told it failed. The probes at the milestone boundary include mutants that
-  break a promise, and each must fail the refinement.
+- [x] **M14-7** (was `CM-3`) -- Ring and store outcomes refine one opaque client history. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-7)
 
-  Verify: the refinement holds in each main configuration, and a control that breaks a promise
-  fails it.
+- [x] **M14-8** (was `FM-3.4`) -- Store sessions are checked against the opaque client projection at the API. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-8)
 
-- [ ] **M14-9** (was `FM-3.4`) -- Check `Store` against the client model at the API: sequences of calls on
-  `MemFs` + `FaultyFs`, with injected faults, crashes and several `Store`s over one root, and the
-  client model as the oracle -- every outcome the code returns must be one the model allows from
-  the state its earlier calls put it in. M11-2 compares internal state step by step; this
-  compares only what a user can see, so it keeps passing through any change of mechanism that
-  M14-8's refinement still admits.
-
-- [ ] **M14-10** (was `CM-4`) -- Tell dependents how to use canopy reliably. From M14-6's decision and the
-  client model, write in the crate documentation the contract as a user relies on it and a guide
-  to acting on each outcome: what a caller does when told recovery is required or a read is
-  disturbed, how to learn whether a write whose outcome is unknown took effect and how to retry
-  it safely, what waiting to expect under contention, and what is not promised. Each statement
-  names the property of the client model it rests on, so a reader can follow a promise to its
-  check.
+- [x] **M14-9** (was `CM-4`) -- Dependents have a complete outcome and retry guide for the client contract. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-9)
 
 ## M14+ -- TLA futures
 

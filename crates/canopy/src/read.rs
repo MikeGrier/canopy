@@ -101,11 +101,12 @@ impl Contended {
     }
 }
 
-/// How many resolutions canopy's own writer-side reads take before reporting they were outrun.
+/// How many resolutions canopy's writer-side phase-1 checks take before reporting they were outrun.
 ///
-/// The precondition check and the read-modify-write transforms run *as* the writer, and
-/// coordination exclusion admits only one. Being superseded there would mean a second writer, which
-/// is an anomaly worth surfacing rather than spinning on -- so this is small on purpose.
+/// These reads run under coordination exclusion, which admits only one writer. Being superseded
+/// would mean a second writer, which is an anomaly worth surfacing rather than spinning on -- so
+/// this is small on purpose. Transaction builders read outside exclusion and own their attempt
+/// bound separately.
 pub(crate) const WRITER_READ_ATTEMPTS: usize = 2;
 
 /// Reads a document, resolving again for as long as `again` says to.

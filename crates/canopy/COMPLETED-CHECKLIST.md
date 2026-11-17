@@ -2206,3 +2206,162 @@ the publication composition", with the reduction argument in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#recovery-quotient-argument). An intermittent creation
 test observation unrelated to the changed creation code is recorded in
 [UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md).
+
+## Moved 2026-11-16 -- Queued client contract
+
+### <a id="m14-0"></a>M14-0 -- The queued client contract, request lifecycle, ambiguity rules and ready-pair scheduling are decided. *(completed 2026-11-16 21:22:21 -05:00)*
+
+The opaque TLA+ boundary owns abstract commands, local request correlation, submission and
+completion outcomes, pair lifetime, logical state and recovery state. `started` and pre-start
+withdrawal stay internal to the ring; a client sees pair loss as `CompletionUnavailable` and
+classifies its effect through the logical and recovery state. Local ready pairs use round-robin
+bounded-bypass service; coordination remains unordered below that rule. A fundamental transaction
+submit is one-shot, optimistic closure retries are bounded and side-effect-free, and a durable
+application token is the mechanism for proving an ambiguous retry.
+
+The decision is in [DESIGN-NOTES.md](DESIGN-NOTES.md#the-queued-client-contract-is-the-public-model-2026-11-16),
+with the alternatives and fairness cost comparison in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#the-queued-client-contract).
+
+## Moved 2026-11-16 -- Opaque client TLA+ contract
+
+### <a id="m14-1"></a>M14-1 -- The standalone client contract, negative controls and mechanism-free toy dependent are implemented. *(completed 2026-11-16 21:44:32 -05:00)*
+
+[ClientContract.tla](spec/ClientContract.tla) exports only session and pair lifetime, accepted or
+refused submission, local request correlation, completion and effect certainty, logical contents
+and recovery state. It carries `ClientSpec` and `ClientLiveSpec` separately; request IDs and pair
+lifetime bookkeeping are derived from the exported history rather than exposed allocator state.
+[ClientContractCheck.tla](spec/ClientContractCheck.tla) owns duplicate-delivery, known-loss,
+out-of-order and completion-overfill controls outside the public module.
+[ToyClient.tla](spec/ToyClient.tla) substitutes only its logical contents and checks the contract
+without importing ring, coordination, publication or filesystem definitions. The configurations
+reach both submission refusals, every effect class and the three pair-loss histories, and their
+negative controls fail their named client properties.
+
+## Moved 2026-11-16 -- Opaque optimistic transactions
+
+### <a id="m14-2"></a>M14-2 -- Opaque transactions are built outside exclusion and `transform` retries changed reads with a bound. *(completed 2026-11-16 22:13:14 -05:00)*
+
+[transaction.rs](src/transaction.rs) exports an opaque `Transaction`, empty `TransactionOptions`,
+and `TransactionBuilder`. A builder reads settled documents without writer exclusion, records a
+digest or absence check, and collects writes, removals and node removals; its internal operation
+representation remains private. `Store::transact` submits once and returns a committed or rejected
+`Commit`; `Store::transform` holds ordinary operation admission, builds on a fresh builder outside
+exclusion and retries a changed precondition with bounded attempts and a scheduler yield. Its
+closure is documented as rerunnable and side-effect-free. Read, effect, validation, retry-exhaustion
+and concurrent lost-update behavior are covered by the transaction and write-surface unit tests.
+The public crate documentation describes the builder and optimistic retry path in place of the
+old closure-under-exclusion behavior.
+
+## Moved 2026-11-16 -- Ring spec barrier
+
+### <a id="m14-3"></a>M14-3 -- The ring contract, two-doorbell mechanism, round-robin scheduler and controls are modelled. *(completed 2026-11-16 22:54:52 -05:00)*
+
+[RingContract.tla](spec/RingContract.tla) exposes only pair lifetime, local request identity,
+accepted or refused submission, completion delivery, and completion unavailability. [Ring.tla](spec/Ring.tla)
+models queued pushes, explicit batch notification, completion reservation, one engine consumer,
+per-pair FIFO, started versus queued drop behavior, completion publication, and round-robin service
+of ready pairs. The submission bell and two completion bells instantiate
+[DoorbellContract.tla](spec/DoorbellContract.tla) rather than importing the doorbell mechanism. A
+separate fair configuration proves work-taken and waiter-wake properties under explicit drain-or-drop
+service assumptions. [RingCheck.tla](spec/RingCheck.tla) keeps overfill, started-entry cancellation,
+out-of-order service and lost-wake mutations outside the normal mechanism.
+
+## Moved 2026-11-17 -- In-process sessions and queue pairs
+
+### <a id="m14-4"></a>M14-4 -- Sessions expose asynchronous queue pairs, readiness, bounded waits and parked command execution. *(completed 2026-11-17 00:00:05 -05:00)*
+
+[session.rs](src/ring/session.rs) implements a session-owned ring engine and `Send` but not `Sync`
+submission and completion ends. A push reserves completion capacity, batches notify the submission
+doorbell, and receives a pair-local `RequestId`; completion delivery carries that identity and is
+available through direct take, bounded pump or platform thread-pool watch. Commands cover opaque
+transactions, reads, snapshots and enumeration. The engine serves ready pairs round-robin and parks
+writes on a modification-count notification when local or cross-process writer exclusion is
+unavailable, so an engine worker is not held waiting. Dropping either end closes the pair,
+withdraws queued entries, discards unavailable completions and lets already-started work finish.
+`Session` read, list, snapshot and transaction helpers submit one command and wait over the same
+ring surface. The queue shape and started/drop distinction are held by the M14-3 model's controls
+and witnesses; a Loom model checks queue publication through the Doorbell, and the Rust tests cover
+backpressure, order, drop, watches, many pairs and no-thread-wait parking.
+
+## Moved 2026-11-17 -- Retire the under-exclusion planning callback
+
+### <a id="m14-5"></a>M14-5 -- The public API no longer exposes `Store::plan_and_apply`. *(completed 2026-11-17 07:11:53 -05:00)*
+
+The under-exclusion caller callback is removed without a compatibility shim. Every in-tree test
+or integration scenario now expresses its read-modify-write through opaque `TransactionBuilder`
+checks and `Store::transform`, while direct fixed writes remain direct transaction submissions.
+Drain admission checks execute through the sanctioned commit observer when they must inspect the
+operation's exclusion context. The concurrency race still verifies that paired updates stay atomic
+and no increment is lost, and the internal writer-nesting test retains the commit-log settlement
+check without exposing an application callback. Current crate and README documentation describe
+only the transaction and snapshot surfaces that remain.
+
+## Moved 2026-11-17 -- Decide and implement bounded store primitives
+
+### <a id="m14-6"></a>M14-6 -- Bodies remain opaque and append is the first bounded store-evaluated primitive. *(completed 2026-11-17 07:19:11 -05:00)*
+
+- [x] **M14-6.1** -- Decide the primitive policy from CQ-1 and the opaque-transaction contract.
+  Bodies remain unparsed bytes. Numeric `add` and `maximum` operations are not adopted because
+  they would make canopy own a width, signedness, byte order and overflow policy. Append is adopted
+  as the first format-free primitive; the decision is recorded in
+  [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store-evaluated transaction primitives stay byte-oriented"
+  and [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "Byte append is the bounded format-free primitive".
+
+- [x] **M14-6.2** -- Add bounded raw-byte append to `TransactionBuilder` without exposing an
+  operation enum. The operation treats absence as empty bytes, runs under writer exclusion, and
+  materializes an ordinary swap before prepare. The suffix is bounded by `MAX_APPEND_BYTES` and
+  the result by `MAX_APPEND_RESULT_BYTES`; rejection precedes the commit point. Tests cover binary
+  bytes, absent and existing documents, atomic multi-target use, exact and over-limit boundaries,
+  duplicate and node-removal conflicts, stale-check rejection, concurrent no-loss behavior and
+  exactly-once observer delivery of the materialized body.
+
+## Moved 2026-11-17 -- Refine the client contract from ring and store outcomes
+
+### <a id="m14-7"></a>M14-7 -- Ring and store outcomes refine one opaque client history. *(completed 2026-11-17 08:01:00 -05:00)*
+
+[ClientComposition.tla](spec/ClientComposition.tla) projects Ring acceptance, local request identity,
+per-pair order, ready-pair service, withdrawal and completion availability into
+[ClientContract.tla](spec/ClientContract.tla). A projection step uses request state and pair
+liveness only; it contains no `started` field and exposes no doorbell or engine cursor. Store
+completion supplies definite-applied, definite-no-effect or uncertain outcome data, logical
+contents and recovery state. Pair loss first removes availability; a started operation may later
+settle and change contents or require recovery without manufacturing a completion, while the client
+continues to see only `CompletionUnavailable` and uncertain effect. [ToyClient.tla](spec/ToyClient.tla)
+continues to instantiate the public contract unchanged and retains its properties through the
+composition projection. Main and fair refinement configurations cover the contract; controls fail
+the promised outcome, order, ambiguity and ready-pair service checks; witnesses reach unavailable
+completion and uncertain post-loss settlement; mutation probes catch each realization or projection
+promise without a surviving mutant.
+
+## Moved 2026-11-17 -- Check Store against the composed client contract
+
+### <a id="m14-8"></a>M14-8 -- Store sessions are checked against the opaque client projection at the API. *(completed 2026-11-17 08:14:22 -05:00)*
+
+[client_contract.rs](src/tests/conformance/client_contract.rs) keeps a test-only oracle containing
+only the public pair, request, completion, effect and recovery projection. It deliberately has no
+queue, engine, doorbell or started state. Real `Store::session` calls are mapped into that oracle for
+normal commits, precondition rejection, local completion-capacity refusal, pair-closed refusal,
+pre-start withdrawal, completion during another pair's parked head, started work after pair loss,
+continuously ready competing pairs and independent Store attachments over separate `MemFs`
+process views. A pre-prepare append fault completes with definite no effect. A post-prepare rename
+fault completes as uncertain, remains recovery-required across a simulated crash, and remains
+uncertain after recovery even when a later read sees the applied body. The oracle's own control
+rejects out-of-order completion and known-effect pair loss, so the bridge fails rather than silently
+accepting either projection error.
+
+## Moved 2026-11-17 -- Document the opaque client contract for dependents
+
+### <a id="m14-9"></a>M14-9 -- Dependents have a complete outcome and retry guide for the client contract. *(completed 2026-11-17 11:38:53 -05:00)*
+
+[README.md](README.md) now states the client-visible meaning and required caller action for accepted
+and refused submissions, delivered completion, bounded-wait expiry, pair loss, disturbed reads,
+snapshots and recovery-required state. Each promise names the corresponding client-model property:
+submission coherence and capacity, exactly-once delivery, per-pair order, unknown effect on pair
+loss, and recovery only with uncertainty. The guide explains that a timeout or pair loss is not
+cancellation, that `RequestId` is pair-local correlation rather than a durable receipt, and that a
+later read cannot universally decide whether an arbitrary uncertain operation ran. Applications
+that need that distinction carry an idempotency token or equivalent durable evidence in the same
+transaction. It also bounds the ready-pair fairness claim: round-robin prevents cross-pair skipping
+but makes no wall-clock or global coordination-order promise. The public session, completion and
+error rustdoc repeats these rules at the points a dependent consumes them.

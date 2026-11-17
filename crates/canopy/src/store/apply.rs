@@ -159,9 +159,58 @@ impl Store {
     /// [`StoreError::RecoveryRequired`] and leaves the journal untouched until
     /// [`Store::recover`] has finished it.
     pub fn apply_transaction(&self, swaps: &SwapSet) -> Result<WriteOutcome<Commit>, StoreError> {
+        self.apply_transaction_parts(swaps, &[], &[])
+    }
+
+    /// Atomically submits an opaque [`Transaction`] and its reserved options.
+    pub fn transact(
+        &self,
+        transaction: &Transaction,
+        options: TransactionOptions,
+    ) -> Result<WriteOutcome<Commit>, StoreError> {
+        let _ = options;
+        self.apply_transaction_parts(
+            transaction.swaps(),
+            transaction.checks(),
+            transaction.appends(),
+        )
+    }
+
+    pub(crate) fn try_transact(
+        &self,
+        transaction: &Transaction,
+        options: TransactionOptions,
+    ) -> Result<Option<WriteOutcome<Commit>>, StoreError> {
+        let _ = options;
+        let Some(_writer) = self.try_writable()? else {
+            return Ok(None);
+        };
+        self.apply_transaction_parts_under_writer(
+            transaction.swaps(),
+            transaction.checks(),
+            transaction.appends(),
+        )
+        .map(Some)
+    }
+
+    fn apply_transaction_parts(
+        &self,
+        swaps: &SwapSet,
+        checks: &[TransactionCheck],
+        appends: &[TransactionAppend],
+    ) -> Result<WriteOutcome<Commit>, StoreError> {
         let _writer = self.writable()?;
+        self.apply_transaction_parts_under_writer(swaps, checks, appends)
+    }
+
+    fn apply_transaction_parts_under_writer(
+        &self,
+        swaps: &SwapSet,
+        checks: &[TransactionCheck],
+        appends: &[TransactionAppend],
+    ) -> Result<WriteOutcome<Commit>, StoreError> {
         let mut claim = self.claim_fresh_nonce()?;
-        let result = self.apply_transaction_as(swaps, claim.nonce());
+        let result = self.apply_transaction_as_parts(swaps, checks, appends, claim.nonce());
         if self.recovery_required()? {
             claim.keep();
         }
@@ -185,9 +234,20 @@ impl Store {
 
     /// [`apply_transaction`](Store::apply_transaction) under `txn`, which the caller has
     /// claimed or, in a test, chosen; the commit log is left as the transaction wrote it.
+    #[cfg(test)]
     pub(crate) fn apply_transaction_as(
         &self,
         swaps: &SwapSet,
+        txn: &Nonce,
+    ) -> Result<TransactionOutcome, StoreError> {
+        self.apply_transaction_as_parts(swaps, &[], &[], txn)
+    }
+
+    fn apply_transaction_as_parts(
+        &self,
+        swaps: &SwapSet,
+        checks: &[TransactionCheck],
+        appends: &[TransactionAppend],
         txn: &Nonce,
     ) -> Result<TransactionOutcome, StoreError> {
         // Held from the precondition checks through the last phase, so no other writer in
@@ -197,12 +257,9 @@ impl Store {
         // swaps; dropped after any fence below is set, so an unresolved one stays odd.
         let _modifying = self.begin_modification()?;
         let mut began = false;
-        let result = self.apply_transaction_gated(swaps, txn, &mut began);
+        let result = self.apply_transaction_gated(swaps, checks, appends, txn, &mut began);
         if result.is_err() && began && !matches!(self.rollback_unprepared(txn), Ok(true)) {
             self.writer.mark_unresolved();
-        }
-        if let Ok(TransactionOutcome::Committed) = &result {
-            self.report_committed(swaps);
         }
         result
     }
@@ -213,10 +270,24 @@ impl Store {
     fn apply_transaction_gated(
         &self,
         swaps: &SwapSet,
+        checks: &[TransactionCheck],
+        appends: &[TransactionAppend],
         txn: &Nonce,
         began: &mut bool,
     ) -> Result<TransactionOutcome, StoreError> {
-        // Phase 1: preconditions (D54 CAS), before any log or disk mutation.
+        // Phase 1: builder checks, then write preconditions, before any disk mutation.
+        for check in checks {
+            if let Some(rejection) = self.transaction_precondition_rejection(
+                check.node(),
+                check.document(),
+                check.precondition(),
+            )? {
+                return Ok(rejection);
+            }
+        }
+        let materialized = self.materialize_appends(swaps, appends)?;
+        let swaps = &materialized;
+
         for swap in swaps.swaps() {
             match swap.precondition() {
                 Precondition::Unconditional => {}
@@ -376,8 +447,88 @@ impl Store {
         // committed and applied, and what is left undone is cleanup that recovery will
         // complete, but a fault is still worth reporting rather than swallowing.
         self.collect_superseded(&prepared)?;
+        self.report_committed(swaps);
 
         Ok(TransactionOutcome::Committed)
+    }
+
+    fn materialize_appends(
+        &self,
+        swaps: &SwapSet,
+        appends: &[TransactionAppend],
+    ) -> Result<SwapSet, StoreError> {
+        if appends.is_empty() {
+            return Ok(swaps.clone());
+        }
+        let mut materialized = swaps.swaps().to_vec();
+        for append in appends {
+            let current = crate::read_within(
+                self,
+                append.node(),
+                append.document(),
+                crate::read::WRITER_READ_ATTEMPTS,
+            )?;
+            let current_bytes = current.as_ref().map_or(&[][..], DocumentBody::as_bytes);
+            let result_bytes = current_bytes
+                .len()
+                .checked_add(append.bytes().len())
+                .ok_or_else(|| StoreError::AppendResultTooLarge {
+                    node: append.node().to_string(),
+                    document: append.document().as_str().to_owned(),
+                    bytes: usize::MAX,
+                    limit: MAX_APPEND_RESULT_BYTES,
+                })?;
+            if result_bytes > MAX_APPEND_RESULT_BYTES {
+                return Err(StoreError::AppendResultTooLarge {
+                    node: append.node().to_string(),
+                    document: append.document().as_str().to_owned(),
+                    bytes: result_bytes,
+                    limit: MAX_APPEND_RESULT_BYTES,
+                });
+            }
+            let mut body = Vec::with_capacity(result_bytes);
+            body.extend_from_slice(current_bytes);
+            body.extend_from_slice(append.bytes());
+            materialized.push(Swap::new(
+                append.node().clone(),
+                append.document().clone(),
+                DocumentBody::new(body),
+            ));
+        }
+        SwapSet::with_node_removals(materialized, swaps.node_removals().iter().cloned())
+            .map_err(StoreError::InvalidTransaction)
+    }
+
+    fn transaction_precondition_rejection(
+        &self,
+        node: &NodePath,
+        document: &DocumentName,
+        precondition: Precondition,
+    ) -> Result<Option<TransactionOutcome>, StoreError> {
+        let expected = match precondition {
+            Precondition::Unconditional => return Ok(None),
+            Precondition::ExpectedDigest(expected) => {
+                RejectedPrecondition::ExpectedDigest(expected)
+            }
+            Precondition::ExpectedAbsent => RejectedPrecondition::ExpectedAbsent,
+        };
+        let current = crate::read_within(self, node, document, crate::read::WRITER_READ_ATTEMPTS)?;
+        let current_digest = current.as_ref().map(DocumentBody::digest);
+        let holds = match precondition {
+            Precondition::Unconditional => true,
+            Precondition::ExpectedDigest(expected) => current_digest == Some(expected),
+            Precondition::ExpectedAbsent => current_digest.is_none(),
+        };
+        if holds {
+            Ok(None)
+        } else {
+            Ok(Some(TransactionOutcome::Rejected {
+                node: node.to_string(),
+                document: Some(document.as_str().to_owned()),
+                expected,
+                current: current_digest,
+            }))
+        }
     }
 
     /// Refuses a set whose writes collide with the namespace on disk or with each other

@@ -39,6 +39,9 @@ pub(crate) const CLAIMS_DIR: &str = ".claims";
 /// The default time [`Store::snapshot`] waits for a stable modification count.
 pub const DEFAULT_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// The default maximum number of optimistic transform submissions.
+pub const DEFAULT_TRANSFORM_ATTEMPTS: usize = 256;
+
 /// The state behind the write surface that every clone of a store shares.
 #[derive(Default)]
 pub(crate) struct Surface {
@@ -169,9 +172,9 @@ impl Commit {
 
 /// The store as a callback sees it: every read, and no write.
 ///
-/// Lent to the closures of [`Store::plan_and_apply`] and [`Store::snapshot`] for the duration
-/// of the call. A closure that has captured a clone of the store can still write through that
-/// clone; the view only ensures that nothing handed to the closure invites it.
+/// Lent to [`Store::snapshot`] closures for the duration of the call. A closure that has captured
+/// a clone of the store can still write through that clone; the view only ensures that nothing
+/// handed to the closure invites it.
 pub struct StoreView<'s> {
     store: &'s Store,
 }
@@ -535,57 +538,41 @@ impl Store {
         }
     }
 
-    /// Reads a document under exclusion, computes its new body with `transform`, and commits it
-    /// as a swap conditional on what was read.
-    ///
-    /// `transform` sees `None` when the document is absent. Exclusion is held from the read to
-    /// the commit, so no writer through another handle can land between them; a write made
-    /// from inside `transform` itself, through a captured clone of the store, is not excluded,
-    /// and the condition then rejects the commit rather than lose that write.
-    /// The callback holds up writers in every process; it must not wait for another handle's write.
-    pub fn transform(
-        &self,
-        node: impl Into<NodePath>,
-        document: &DocumentName,
-        transform: impl FnOnce(Option<&DocumentBody>) -> DocumentBody,
-    ) -> Result<WriteOutcome<(DocumentBody, Commit)>, StoreError> {
-        let _writer = self.writable()?;
-        let node = node.into();
-        let current = crate::read_within(self, &node, document, WRITER_READ_ATTEMPTS)?;
-        let body = transform(current.as_ref());
-        let swap = match &current {
-            Some(current) => {
-                Swap::conditional(node, document.clone(), body.clone(), current.digest())
-            }
-            None => Swap::conditional_absent(node, document.clone(), body.clone()),
-        };
-        let commit = self.update_document(swap)?;
-        self.settle_log();
-        Ok(commit.map(|commit| (body, commit)))
+    /// Creates an opaque transaction builder without acquiring writer exclusion.
+    pub fn transaction(&self) -> TransactionBuilder<'_> {
+        TransactionBuilder::new(self)
     }
 
-    /// Plans a transaction from what the store holds and commits it, with exclusion held from
-    /// the plan's first read to the commit.
+    /// Builds and submits a transaction, retrying a changed read outside exclusion.
     ///
-    /// `plan` returns a value for the caller and, when there is something to write, the swaps
-    /// to commit. It sees the store through a [`StoreView`]. The swaps may still carry
-    /// preconditions, and a rejection is reported in the [`Commit`]. The second element is
-    /// `None` when `plan` returned no swaps.
-    /// The callback holds up writers in every process; it must not wait for another handle's write.
-    pub fn plan_and_apply<Output>(
+    /// The closure may run more than once and must perform no external side effect. Each
+    /// invocation receives a fresh builder; every read becomes an atomic precondition on
+    /// the submission. A rejection discards the builder and invokes the closure again, up to
+    /// [`DEFAULT_TRANSFORM_ATTEMPTS`]. The fundamental [`Store::transact`] path never retries.
+    pub fn transform<Output>(
         &self,
-        plan: impl FnOnce(&StoreView<'_>) -> (Output, Option<SwapSet>),
-    ) -> Result<WriteOutcome<(Output, Option<Commit>)>, StoreError> {
-        let _writer = self.writable()?;
-        let (value, swaps) = plan(&StoreView { store: self });
-        let outcome = match swaps {
-            Some(swaps) => self
-                .apply_transaction(&swaps)?
-                .map(|commit| (value, Some(commit))),
-            None => self.stamped((value, None), false),
-        };
-        self.settle_log();
-        Ok(outcome)
+        mut transform: impl FnMut(&mut TransactionBuilder<'_>) -> Result<Output, StoreError>,
+    ) -> Result<WriteOutcome<(Output, Commit)>, StoreError> {
+        let _lease = self.operation_lease()?;
+        self.transform_with_attempts(DEFAULT_TRANSFORM_ATTEMPTS, &mut transform)
+    }
+
+    pub(crate) fn transform_with_attempts<Output>(
+        &self,
+        attempts: usize,
+        transform: &mut impl FnMut(&mut TransactionBuilder<'_>) -> Result<Output, StoreError>,
+    ) -> Result<WriteOutcome<(Output, Commit)>, StoreError> {
+        for _ in 0..attempts {
+            let mut builder = self.transaction();
+            let value = transform(&mut builder)?;
+            let transaction = builder.build()?;
+            let outcome = self.transact(&transaction, TransactionOptions)?;
+            if outcome.is_committed() {
+                return Ok(outcome.map(|commit| (value, commit)));
+            }
+            std::thread::yield_now();
+        }
+        Err(StoreError::TransactionContended { attempts })
     }
 
     /// Runs `read` against a state no write disturbed, without excluding writers.

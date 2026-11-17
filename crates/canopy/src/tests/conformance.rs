@@ -5,6 +5,7 @@
 //! acadia's coordination -- on `MemFs` through the actions a trace takes, and compares a
 //! projection of its live and durable state with the trace's model state after every step.
 
+mod client_contract;
 mod coordination;
 mod corpus;
 mod creation;

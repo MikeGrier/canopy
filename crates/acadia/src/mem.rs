@@ -205,6 +205,26 @@ impl MemFs {
         recount(inner);
     }
 
+    /// The live and durable inode identities at a file path, for crash-model replay.
+    #[cfg(test)]
+    pub(crate) fn file_inodes(&self, path: &Path) -> VfsResult<(Option<u64>, Option<u64>)> {
+        let parts = split_path(path, "file_inodes")?;
+        let guard = self.tree();
+        let inode =
+            |tree: &BTreeMap<OsString, Node>| match node_at(tree, &parts, "file_inodes", path) {
+                Ok(Node::File(id)) => Ok(Some(*id)),
+                Ok(Node::Dir(_)) => Err(err(
+                    VfsErrorKind::IsADirectory,
+                    "file_inodes",
+                    path,
+                    "is a directory",
+                )),
+                Err(error) if error.kind() == VfsErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            };
+        Ok((inode(&guard.live)?, inode(&guard.durable)?))
+    }
+
     /// How many files' live and durable bytes are held, so a test can see data reclaimed.
     #[cfg(test)]
     pub(crate) fn held_file_data(&self) -> (usize, usize) {

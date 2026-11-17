@@ -626,6 +626,13 @@ the implementation item in [CHECKLIST.md](CHECKLIST.md).
 
 ## The public write surface belongs on `Store`, 2026-11-10
 
+> **SUPERSEDED in part, 2026-11-16, by "No caller code runs under exclusion but the commit
+> observer" and [M14-2](COMPLETED-CHECKLIST.md#m14-2).** The `transform` rows and callback
+> paragraphs below describe the retired closure-under-exclusion form. Current `transform` holds
+> ordinary operation admission, builds an opaque transaction outside exclusion, and retries a
+> rejected read check with a fresh builder; `plan_and_apply` remains as described for its separate
+> work.
+
 - **Consumers write through `Store`.** The document-write verbs a consumer needs --
   read-modify-write, compare-and-set, planned transactions, consistent snapshots, the commit
   feed -- are methods on `Store`, alongside the transactional and lower-level writes, rather than
@@ -2576,6 +2583,12 @@ with 1 the oldest reader schema, and nothing has attached.
 | 29 `END2` | B | completes it: the layer's schema becomes 3 and the oldest reader schema stays 1; B's handle ends, and C, still attached, speaks 1, two schemas behind, and can read what both upgrades left | schema: 3; intent: none |
 
 ## The model clients rely on, and the model the code is held to, 2026-11-11
+
+> **SUPERSEDED in part, 2026-11-16, by "The queued client contract is the public model".** The
+> client model below remains the store-observable side of the split, but the public composition
+> also owns queue submission, pair loss, completion availability and explicit progress assumptions.
+> Read the queued-contract decision before acting on this one; `started` is internal
+> to the ring and is not a client state.
 
 - **There are two models: the one the code is held to and the one clients rely on.** The code's
   model is the one in `spec/`. It carries the mechanism -- the count, the fence, the generation,
@@ -5514,3 +5527,122 @@ or when it is too large to keep, which is decided with the engineer. For the pub
 composition, each `SharedPublicationCheck`
 configuration keeps its `SharedPublication` counterpart. Rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#reductions-keep-their-original).
+
+## The queued client contract is the public model, 2026-11-16
+
+M14 is organized around a standalone TLA+ contract that a dependent can instantiate. The contract,
+not the asynchronous Rust API or an implementation model, is the opaque boundary clients compose
+with. The API and the ring are one realization of it; ring, coordination, publication and
+filesystem models project into it. A change within a valid projection is not visible to a client.
+
+- **A dependent instantiates one abstract store and the command vocabulary it uses.** The contract
+  owns sessions, pairs, request identities, submission outcomes, completion outcomes, logical
+  contents and recovery-required state. A dependent supplies the document/value domain and maps
+  its operations to canopy commands. Queue slots, doorbells, scheduler position, a `started` bit,
+  locks, fences, generations, logs, replicas and filesystem state are absent. A toy dependent must
+  compile and model-check without naming any of them.
+- **A request identity is correlation, not a durable receipt.** Submission returns
+  `Accepted(RequestId)` or `Refused(SubmissionRefusal)`. An identifier is unique only for the
+  lifetime of its pair and is useful only to match a local completion. Submission refusal means no
+  store command was accepted and has no store effect. The refusal distinguishes `PairClosed` from
+  `CompletionQueueFull`; both are caller-actionable local outcomes. No global or durable lookup by
+  `RequestId` exists, and resubmitting a command does not deduplicate it.
+- **An accepted command has one visible endpoint.** While its pair is live, it completes exactly
+  once with a command-specific result and one effect classification: `DefinitelyNoEffect`,
+  `DefinitelyApplied` or `EffectUnknown`. A read has a visible observation, which may be disturbed
+  rather than settled, and never claims a write effect. The write command's result says whether its
+  application was definite or unresolved; recovery-required state explains when resolution waits
+  on recovery. No completion is duplicated or reordered within its pair.
+- **Pair loss hides the internal queued/running distinction.** Dropping or losing a pair changes all
+  of its outstanding accepted requests to `CompletionUnavailable`. Their effect may be absent,
+  may have been applied, or may wait for recovery; those alternatives are represented in logical
+  store and recovery state, not by exposing a `started` or `withdrawn` variable. A pre-start
+  withdrawal is checked only by the ring mechanism's no-effect property. A client can never treat
+  `CompletionUnavailable` as proof that the command did not run.
+- **Ambiguity is resolved by an application fact, not by a universal read-back rule.** A later read
+  can establish the state it observes, but another operation can overwrite an arbitrary command's
+  effect. A caller that needs to distinguish a retry from a prior uncertain completion places a
+  unique idempotency token or equivalent durable evidence in the same transaction. The fundamental
+  transaction submit operation is one-shot and never retries. `transform` is a separate optimistic
+  helper: its closure may run more than once and must perform no external side effect; attempts are
+  explicitly bounded, and every retry reconstructs a transaction outside exclusion.
+- **A push is local and a notification may batch.** Queue capacity is fixed. Submission reserves a
+  completion slot before acceptance, and posting a completion never blocks the engine on the
+  client. Pushing only queues; a separate submission-doorbell action makes a batch visible to the
+  engine. Completion readiness is level-like, and a client may drain it, wait with a timeout or
+  register it with an event loop. A synchronous method is only submit-one-and-wait.
+- **Ready pairs receive bounded-bypass service.** Each live pair that has an eligible head is placed
+  in one round-robin service ring. The engine services one head and then moves to the next ready
+  pair, so another ready pair cannot pass it indefinitely. A head blocked on coordination is
+  parked without holding an engine thread and is reinserted at the back when notification makes it
+  eligible. Strict FIFO remains local to a pair: a later command cannot bypass its head. This
+  protects one active pair from another without imposing an order among waiters in the separate
+  coordination contract. It does not promise a wall-clock bound or eventual store progress.
+- **Safety and liveness are separate contracts.** The base `ClientSpec` permits the outcomes above
+  and checks exactly-once local completion, per-pair order, bounded completion capacity and the
+  uncertainty of lost completions. `ClientLiveSpec` adds weak fairness on pair readiness, completion
+  drainage and engine progress, and explicit assumptions that a selected store command can finish
+  and the coordination environment permits progress. A dependent must state which liveness
+  assumptions it supplies; the existing unordered coordination policy remains in force below the
+  ring. Round-robin service was chosen because it removes cross-pair starvation with a small,
+  checkable rule. Stronger store-fairness mechanisms are not justified without evidence that these
+  assumptions fail.
+- **The exported contract is versioned as an API.** A compatible implementation may refine the
+  contract by removing admitted behaviors. A change that adds an allowed outcome, weakens an
+  ordering or completion guarantee, changes the meaning of effect classification, or adds a new
+  environmental requirement to `ClientLiveSpec` is a major client-contract change. Additive
+  commands and parameters are compatible only when old dependents need not match or handle them.
+  A breaking TLA+ contract gets a new module name and the old module remains as a composition
+  target; the Rust crate's major version carries the same boundary.
+- **The boundary is proved by composition.** `ClientContract.tla` is independently checkable. A toy
+  dependent builds only on its exported names. The composed ring, coordination and publication
+  models prove their projection, and controls break completion correlation, effect classification,
+  pair order, uncertainty on loss and ready-pair service. A mechanism variable is never a client
+  dependency even if a public projection reads it.
+
+The exact vocabulary is implemented in M14-1 and checked from the mechanisms in M14-7. Alternatives
+and the cost comparison are recorded in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#the-queued-client-contract).
+
+## Store-evaluated transaction primitives stay byte-oriented, 2026-11-17
+
+- **Bodies remain opaque.** The store does not own a numeric, text or structured body format.
+  A transaction primitive therefore states an operation on raw bytes, or it is not admitted to
+  this layer. `add` and `maximum` would require a width, signedness, overflow rule and byte order;
+  canopy does not infer those choices from a builder method, so neither primitive is adopted.
+- **Append is the first adopted primitive.** `TransactionBuilder::append` names a document and a
+  raw suffix. Under writer exclusion, the store reads the settled current body, treats absence as
+  an empty body, concatenates the suffix without interpretation, and submits the resulting body
+  through the ordinary transaction prepare and recovery path. This avoids optimistic read-check
+  conflicts for append-only hot documents without running caller code under exclusion.
+- **The operation is bounded.** One suffix is limited to `MAX_APPEND_BYTES`, and one resulting body
+  to `MAX_APPEND_RESULT_BYTES`. The builder rejects an oversized suffix; submission refuses an
+  oversized result before a prepare record. Existing direct writes retain their body-size policy.
+- **The representation stays private.** The builder is the public primitive surface. A transaction's
+  operation list is opaque, and dependents do not receive an exhaustive enum to match. At apply
+  time each append becomes an ordinary `Swap`, so commit-log durability, recovery, observer output
+  and atomic multi-target application use the same path as other writes.
+
+## Ring and store outcomes refine the opaque client contract, 2026-11-17
+
+- **The composition has one public request history.** Ring acceptance, pair-local identity,
+  per-pair order, round-robin ready-pair service and completion availability project into
+  [ClientContract.tla](spec/ClientContract.tla). A queued or running request is `pending`; a
+  delivered request retains one completion; a pre-start withdrawal or pair loss is
+  `CompletionUnavailable`. The projection contains no `started` field and exposes no ring queue,
+  notification, cursor or engine state.
+- **Store outcomes supply contents and recovery.** A live request completes with one client
+  result and a definite-applied, definite-no-effect or uncertain effect. Uncertain effect can
+  require recovery. If the pair is already lost, no completion appears: the same store outcome can
+  settle later, changing logical contents while the request remains unavailable and uncertain to
+  the client. Recovery is an internal mechanism transition that clears the uncertainty flag; it
+  cannot change the completion unavailable outcome.
+- **The refinement is separate from the toy dependent.** [ToyClient.tla](spec/ToyClient.tla)
+  still instantiates only the public contract. The composition maps its state into that same
+  instance and checks the toy's state and delivery properties unchanged. A mechanism change is
+  admitted only if it is either invisible in this projection or expressible as an existing client
+  transition.
+- **Controls pin each promise.** Outcome, per-pair order, pair-loss ambiguity and ready-pair
+  service each have a negative control. The projection keeps the uncertainty state reachable,
+  and mutation probes require the refinement or the service property to fail when a promise is
+  altered.
