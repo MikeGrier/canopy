@@ -197,3 +197,15 @@ participants opened through aliased paths sharing one state.
 Readable data is reported first; otherwise `POLLNVAL`, `POLLERR` and `POLLHUP` are errors, as
 `wait_native_any` reports them. A Linux test on a pipe whose writer closed checks both, run under
 WSL through the `canopy-wsl` bridge.
+
+## Moved 2026-11-17 -- Splitting `mem.rs`
+
+### <a id="m17-1"></a>M17-1 -- [mem.rs](src/mem.rs) is split: its `Vfs` implementation moves to [vfs.rs](src/mem/vfs.rs). *(completed 2026-11-17 17:31:00 -05:00)*
+
+`impl Vfs for MemFs`, with the `Resolved` enum only it uses, moved whole into the child module
+`mem::vfs` in split commit `9086f92`. The fracture is the filesystem's operation surface against
+the two-tree model it operates on: the operations only call the parent's private types, fields and
+bookkeeping helpers, which a child module can see, so the cut needed no visibility change. The
+durable-tree helpers named as the first candidate were rejected because the parent calls them,
+which would have needed widening. `cargo fmt` was a no-op on the moved code, and `git blame -w
+-C1 -C1` attributes only the provenance header of [vfs.rs](src/mem/vfs.rs) to the split.

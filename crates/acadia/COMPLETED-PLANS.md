@@ -7,3 +7,4 @@
 | [CHECKLIST.md](CHECKLIST.md) | 2026-11-17 | M14: recursive directory removal in the MemFs durability reference, scenarios, controls, probes and replay | [DESIGN-NOTES.md](DESIGN-NOTES.md), [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) |
 | [CHECKLIST.md](CHECKLIST.md) | 2026-11-17 | M15: fixes from the 2026-11-17 acadia review -- stale publication staging names, abandonment racing a change, test atomics | [DESIGN-NOTES.md](DESIGN-NOTES.md), [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) |
 | [CHECKLIST.md](CHECKLIST.md) | 2026-11-17 | M16: fixes from the second 2026-11-17 acadia review -- lock-free sampling, creation liveness, MemFs moved-directory naming and lock checks, model key normalization, Linux `wait_native` hang-up | [DESIGN-NOTES.md](DESIGN-NOTES.md), [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) |
+| [CHECKLIST.md](CHECKLIST.md) | 2026-11-17 | M17: `mem.rs` split, its `Vfs` implementation moved to `mem/vfs.rs` | N/A |

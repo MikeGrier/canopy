@@ -61,8 +61,4 @@ store".
 
 ## M17 -- Splitting `mem.rs`
 
-- [ ] **M17-1** -- Split [mem.rs](src/mem.rs), which is past 64 KiB (XL), at a fracture point -- the
-  durable-tree bookkeeping helpers (materialize, refresh, renew, carried snapshots, reconcile,
-  unnamed marks) are the candidate -- as a pure-relocation commit with the provenance trail, after
-  checking the privacy graph; or record in [DESIGN-NOTES.md](DESIGN-NOTES.md) what makes it
-  indivisible.
+- [x] **M17-1** -- [mem.rs](src/mem.rs) is split: its `Vfs` implementation moves to [vfs.rs](src/mem/vfs.rs). -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m17-1)
