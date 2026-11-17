@@ -1402,3 +1402,29 @@ announces each such step before it acts[^ac-5]:
   nothing, as a death does. The shared implementation's held-resource guard gives the same
   property. A test harness that parks a call inside a change must make that call fail before it
   abandons the participant, or the abandonment waits for it forever.
+
+## Second review fixes: lock-free sampling, MemFs naming and lock checks, 2026-11-17
+
+- **A file-based sample takes no lock.** The abandoned flag sits beside the table of holds as an
+  atomic, set only while the table is held. `alive()` reads it without the table, so a sample --
+  promised to take no lock and wait for no writer -- never waits for a change its own participant
+  has in progress; `publishing`, `take_lock` and `abandon` read or set it under the table, which
+  keeps an abandonment serialized with every change.
+- **File-based creation checks liveness around each artifact**, as the shared implementation does,
+  so a creation whose participant is abandoned while an artifact is made stops there.
+- **MemFs names a moved directory's descendants by its snapshot.** A directory sync marks a path as
+  having no durable name only when the durable tree lacks it after the carried snapshots above it
+  are materialized, so syncing a descendant of a moved directory and then its parent keeps what the
+  move carried. A rename carries the unnamed marks beneath the moved directory to the new path, so
+  a descendant never named by syncing the moved directory stays unnamed after the move. Both are
+  `MemFsDurability.tla` behaviors, pinned by scenarios and replays.
+- **MemFs checks locks atomically with the change they guard.** An operation keeps the lock table
+  from its check of the holds until its change to the tree is made; the table is always taken
+  before the tree, as taking a lock already did. A lock taken while an operation is checked waits
+  for that operation, so a holder never sees its locked bytes change.
+- **The shared implementation's in-process model is keyed as MemFs resolves a path** (`..`
+  applied, prefixes and `.` dropped), so every spelling that reaches one MemFs directory shares one
+  model.
+- **Linux `wait_native` reports a dead descriptor.** Readable data is reported first; otherwise an
+  invalid, failed or hung-up descriptor is an error, as `wait_native_any` reports it, rather than a
+  poll that returns at once until the deadline.

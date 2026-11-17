@@ -48,6 +48,40 @@ fn live_participants_share_cells_and_last_exit_requires_recovery() {
 }
 
 #[test]
+fn every_spelling_of_one_directory_names_one_model() {
+    for alias in [
+        "/state",
+        "state",
+        "/./state",
+        "/state/.",
+        "/state/../state",
+        "/other/../state",
+        "/state/sub/..",
+    ] {
+        assert_eq!(
+            model_root(Path::new(alias)),
+            PathBuf::from("state"),
+            "{alias}"
+        );
+    }
+    assert_eq!(model_root(Path::new("/a/b/../c")), PathBuf::from("a/c"));
+}
+
+#[test]
+fn participants_through_aliased_paths_share_one_state() {
+    let fs = filesystem();
+    let first = SharedState::open(fs.clone(), Path::new("/state")).unwrap();
+    vouch(&first);
+    first
+        .words
+        .word(Word::Generation)
+        .store(7, Ordering::Release);
+    let aliased = SharedState::open(fs, Path::new("/state/../state")).unwrap();
+    assert_eq!(aliased.snapshot().unwrap().generation, 7);
+    assert_eq!(aliased.snapshot().unwrap().trust, Trust::Vouched);
+}
+
+#[test]
 fn host_restart_and_abandonment_are_not_clean_release() {
     let fs = filesystem();
     let first = SharedState::open(fs.clone(), Path::new("/state")).unwrap();

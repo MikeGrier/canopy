@@ -1154,17 +1154,15 @@ impl Vfs for MemFs {
                     sync_into_carried(&mut books, &parts, depth, live_children, path)?;
                     return Ok(());
                 }
-                // The implicit root cannot be fsync'd, so its direct entries count as named.
-                for depth in 2..=parts.len() {
-                    let prefix = &parts[..depth];
-                    if node_at(durable, prefix, "fsync", path).is_err() {
-                        unnamed.insert(prefix.to_vec());
-                    }
-                }
-                // A directory the durable tree does not hold once its ancestors are renewed
-                // starts empty there, so all of its entries are changes.
+                // A directory the durable tree does not hold once its ancestors are renewed has
+                // no durable name yet -- the implicit root cannot be fsync'd, so its direct
+                // entries count as named -- and starts empty there, so all of its entries are
+                // changes. One a renewed ancestor's carried snapshot holds is already named in it.
                 for depth in 1..=parts.len() {
                     let prefix = &parts[..depth];
+                    if depth >= 2 && node_at(durable, prefix, "fsync", path).is_err() {
+                        unnamed.insert(prefix.to_vec());
+                    }
                     renew(durable, carried, replaced, dirty, &mut refs, prefix, path)?;
                     if !matches!(node_at(durable, prefix, "fsync", path), Ok(Node::Dir(_))) {
                         mark_all(dirty, prefix);
@@ -1279,6 +1277,7 @@ impl Vfs for MemFs {
             durable_data,
             carried,
             replaced,
+            unnamed,
             refs,
             live_refs,
             dirty,
@@ -1409,6 +1408,19 @@ impl Vfs for MemFs {
                     }
                 }
             }
+            // A descendant whose name the moved directory has not made durable is just as
+            // unnamed in the snapshot; the mark stays at the old path too, which the durable tree
+            // keeps holding until the old parent syncs.
+            let moved_unnamed: Vec<Vec<OsString>> = unnamed
+                .iter()
+                .filter(|key| key.len() > from_parts.len() && key.starts_with(&from_parts))
+                .map(|key| {
+                    let mut rekeyed = to_parts.clone();
+                    rekeyed.extend_from_slice(&key[from_parts.len()..]);
+                    rekeyed
+                })
+                .collect();
+            unnamed.extend(moved_unnamed);
             // Whatever is at either path from now on is not what the durable tree holds there.
             replaced.insert(from_parts.clone());
             replaced.insert(to_parts.clone());

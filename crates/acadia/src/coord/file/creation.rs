@@ -175,7 +175,9 @@ impl Creation for FileCoordination {
         let root = self.layout().root();
         let created = self.settle_reservation(course, plan.inputs, plan.nonce)?;
         for artifact in plan.artifacts {
+            self.alive()?;
             maker.make(artifact, plan.inputs)?;
+            self.alive()?;
             self.vfs().fsync(root)?;
         }
         Ok(created)

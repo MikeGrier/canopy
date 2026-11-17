@@ -386,3 +386,57 @@ fn a_lock_can_be_made_to_fail_and_is_otherwise_forwarded() {
     drop(faulty.try_lock(lock, SHARED, LockSpan::File).unwrap());
     drop(held);
 }
+
+#[test]
+fn a_mem_lock_taken_while_a_write_is_checked_waits_for_that_write() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+
+    let fs = MemFs::new();
+    let path = Path::new("/f");
+    fs.write(path, b"old").unwrap();
+    let reader = fs.another_process();
+    let (checked_tx, checked) = mpsc::channel();
+    let (go, go_rx) = mpsc::channel::<()>();
+    let go_rx = Mutex::new(go_rx);
+    let armed = AtomicBool::new(true);
+    fs.after_lock_check(move || {
+        if armed.swap(false, Ordering::AcqRel) {
+            checked_tx.send(()).unwrap();
+            go_rx.lock().unwrap().recv().unwrap();
+        }
+    });
+    let (locked_tx, locked) = mpsc::channel();
+    let (reread, reread_rx) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| fs.write(path, b"new"));
+        checked.recv().unwrap();
+        let reader = &reader;
+        let holder = scope.spawn(move || {
+            let lock = reader.try_lock(path, SHARED, LockSpan::File).unwrap();
+            let first = reader.read(path).unwrap();
+            locked_tx.send(()).unwrap();
+            reread_rx.recv().unwrap();
+            let second = reader.read(path).unwrap();
+            drop(lock);
+            (first, second)
+        });
+        let locked_early =
+            test_timers::mpsc::recv_timeout(&locked, Duration::from_millis(100)).is_ok();
+        go.send(()).unwrap();
+        let written = writer.join().unwrap();
+        if !locked_early {
+            let _ = locked.recv();
+        }
+        // Released before any assertion, so a failure cannot leave the holder parked.
+        let _ = reread.send(());
+        let (first, second) = holder.join().unwrap();
+        written.expect("the checked write lands");
+        assert_eq!(
+            first, second,
+            "a shared lock's bytes changed while it was held"
+        );
+        assert_eq!(first, b"new", "the lock was taken after the checked write");
+    });
+}

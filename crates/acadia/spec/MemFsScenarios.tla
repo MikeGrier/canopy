@@ -10,7 +10,8 @@ EXTENDS MemFsDurability
 CONSTANT Scenario
 ASSUME Scenario \in {"double-name", "replace-file", "carried-move", "unnamed-child",
                      "remove-tree-unsynced", "remove-tree-synced", "remove-tree-recreate",
-                     "remove-empty-recreate"}
+                     "remove-empty-recreate", "moved-descendant-sync",
+                     "moved-unnamed-child"}
 
 MoveFromTo(from, to) == Move(CHOOSE move \in AvailableMoves :
     move.from = from /\ move.to = to)
@@ -117,6 +118,28 @@ RemoveTreeRecreateNext ==
            [] steps = 13 -> Crash
            [] OTHER -> UNCHANGED vars
 
+MovedDescendantSyncNext ==
+    IF steps < 10 THEN MovedTreeSteps
+    ELSE CASE steps = 10 -> SyncDir(11)
+           [] steps = 11 -> SyncDir(1)
+           [] steps = 12 -> Crash
+           [] OTHER -> UNCHANGED vars
+
+MovedUnnamedChildNext ==
+    CASE steps = 0 -> CreateDir(1)
+      [] steps = 1 -> SyncDir(1)
+      [] steps = 2 -> CreateDir(8)
+      [] steps = 3 -> SyncDir(8)
+      [] steps = 4 -> SyncDir(1)
+      [] steps = 5 -> CreateDir(9)
+      [] steps = 6 -> CreateFile(10, "A")
+      [] steps = 7 -> SyncFile(10)
+      [] steps = 8 -> SyncDir(9)
+      [] steps = 9 -> MoveFromTo(8, 6)
+      [] steps = 10 -> SyncDir(1)
+      [] steps = 11 -> Crash
+      [] OTHER -> UNCHANGED vars
+
 RemoveEmptyRecreateNext ==
     IF steps < 10 THEN MovedTreeSteps
     ELSE CASE steps = 10 -> RemoveFile(12)
@@ -136,6 +159,8 @@ ScenarioNext ==
       [] Scenario = "remove-tree-synced" -> RemoveTreeSyncedNext
       [] Scenario = "remove-tree-recreate" -> RemoveTreeRecreateNext
       [] Scenario = "remove-empty-recreate" -> RemoveEmptyRecreateNext
+      [] Scenario = "moved-descendant-sync" -> MovedDescendantSyncNext
+      [] Scenario = "moved-unnamed-child" -> MovedUnnamedChildNext
       [] OTHER -> UNCHANGED vars
 
 ScenarioSpec == Init /\ [][ScenarioNext]_vars
@@ -218,6 +243,27 @@ ScenarioWitness_RecreatedAfterEmptyRemovalEmpty == ~(
 )
 
 \* Audience: internal.
+ScenarioWitness_MovedDescendantSyncKeepsContents == ~(
+    /\ Scenario = "moved-descendant-sync"
+    /\ steps = 13
+    /\ live[6] = Directory
+    /\ live[11] = Directory
+    /\ live[12].kind = "file"
+    /\ liveData[live[12].inode] = "A"
+    /\ live[8] = Absent
+)
+
+\* Audience: internal.
+ScenarioWitness_MovedUnnamedChildLost == ~(
+    /\ Scenario = "moved-unnamed-child"
+    /\ steps = 12
+    /\ live[6] = Directory
+    /\ live[11] = Absent
+    /\ live[12] = Absent
+    /\ live[8] = Absent
+)
+
+\* Audience: internal.
 ScenarioExpected ==
     /\ (Scenario = "double-name" /\ steps = 11) =>
         /\ live[4] = live[5]
@@ -252,6 +298,17 @@ ScenarioExpected ==
         /\ live[12] = Absent
         /\ live[8] = Absent
     /\ (Scenario = "remove-empty-recreate" /\ steps = 16) =>
+        /\ live[6] = Directory
+        /\ live[11] = Absent
+        /\ live[12] = Absent
+        /\ live[8] = Absent
+    /\ (Scenario = "moved-descendant-sync" /\ steps = 13) =>
+        /\ live[6] = Directory
+        /\ live[11] = Directory
+        /\ live[12].kind = "file"
+        /\ liveData[live[12].inode] = "A"
+        /\ live[8] = Absent
+    /\ (Scenario = "moved-unnamed-child" /\ steps = 12) =>
         /\ live[6] = Directory
         /\ live[11] = Absent
         /\ live[12] = Absent

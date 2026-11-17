@@ -355,3 +355,58 @@ fn mem_model_directory_removal_traces() {
         &recreated_empty,
     );
 }
+
+#[test]
+fn mem_model_moved_directory_keeps_its_durable_descendant() {
+    replay(
+        "a moved directory's durable descendant survives syncing it and then the parent",
+        &[
+            Action::CreateDir("/d"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/src"),
+            Action::CreateDir("/d/src/sub"),
+            Action::Write("/d/src/sub/f", b"A"),
+            Action::Fsync("/d/src/sub/f"),
+            Action::Fsync("/d/src/sub"),
+            Action::Fsync("/d/src"),
+            Action::Fsync("/d"),
+            Action::Rename("/d/src", "/d/x"),
+            Action::Fsync("/d/x/sub"),
+            Action::Fsync("/d"),
+            Action::Crash,
+        ],
+        &[
+            Expected::Missing("/d/src"),
+            Expected::Dir("/d/x"),
+            Expected::Dir("/d/x/sub"),
+            Expected::File("/d/x/sub/f", b"A"),
+        ],
+    );
+}
+
+#[test]
+fn mem_model_moved_directory_does_not_name_its_unnamed_child() {
+    replay(
+        "a child never named in a moved directory stays unnamed after the move",
+        &[
+            Action::CreateDir("/d"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/src"),
+            Action::Fsync("/d/src"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/src/sub"),
+            Action::Write("/d/src/sub/f", b"A"),
+            Action::Fsync("/d/src/sub/f"),
+            Action::Fsync("/d/src/sub"),
+            Action::Rename("/d/src", "/d/x"),
+            Action::Fsync("/d"),
+            Action::Crash,
+        ],
+        &[
+            Expected::Missing("/d/src"),
+            Expected::Dir("/d/x"),
+            Expected::Missing("/d/x/sub"),
+            Expected::Missing("/d/x/sub/f"),
+        ],
+    );
+}

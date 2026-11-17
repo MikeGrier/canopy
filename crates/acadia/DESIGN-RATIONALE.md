@@ -211,3 +211,18 @@ change already running; a replay harness that parks such a change now fails it b
 Removing a stale staging sibling in `publish_new` was rejected for retrying under a fresh name:
 the process id in the name identifies a process only within one process-id namespace, and two
 namespaces sharing a filesystem could have a live publisher behind the same name.
+
+## Lock-free sampling beside a serialized abandonment, and MemFs naming fixes
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Second review fixes: lock-free
+sampling, MemFs naming and lock checks". A second code review found that serializing abandonment on
+the table of holds made `alive()` -- and so every sample -- wait for a change in progress on the
+same participant, breaking the sampling contract. Moving the flag out of the table into an atomic
+that is written only under the table keeps both properties: checks that must be serialized with
+an abandonment read it under the table, and checks that must not wait read it without.
+
+The two MemFs naming defects were found by tracing against `MemFsDurability.tla` and reproduced
+before fixing; the model already expressed both shapes, but no scenario or replay exercised them.
+Each is now a scenario with a witness and a replay. The MemFs lock-check fix keeps the table for
+the operation's duration rather than re-checking after the change, because a check after the
+change could only report a violation, not prevent one.

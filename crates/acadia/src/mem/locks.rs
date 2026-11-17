@@ -3,9 +3,9 @@
 //! The locks of a [`MemFs`]: which holder has which bytes of which file, in which mode, and the
 //! simulated processes those holders belong to.
 //!
-//! The table is never locked while the tree is: an operation that checks it takes what it needs
-//! and lets go before taking the tree, and taking a lock holds the table and then the tree, so
-//! the two locks are always taken in that order.
+//! The table is always taken before the tree. An operation that checks the holds keeps the table
+//! until its change to the tree is made, so a lock cannot be taken between its check and its
+//! change; taking a lock likewise holds the table and then the tree.
 
 use std::sync::Condvar;
 
@@ -24,6 +24,20 @@ pub(super) enum Access {
 pub(super) struct LockShared {
     table: Mutex<LockTable>,
     released: Condvar,
+    /// Run by every operation just after it takes the holds, while it keeps the table.
+    #[cfg(test)]
+    after_check: Mutex<Option<CheckHook>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct CheckHook(Arc<dyn Fn() + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for CheckHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CheckHook")
+    }
 }
 
 /// Every lock held in one filesystem, by every simulated process over it.
@@ -76,11 +90,13 @@ impl Hold {
 }
 
 /// The holds on one file, taken before an operation reads the tree so that it can check the
-/// bytes it touches once it knows them.
-#[derive(Debug, Default)]
-pub(super) struct Holds(Vec<Hold>);
+/// bytes it touches once it knows them. Keeps the table, so no lock is taken until it drops.
+pub(super) struct Holds<'a> {
+    table: MutexGuard<'a, LockTable>,
+    parts: &'a [OsString],
+}
 
-impl Holds {
+impl Holds<'_> {
     /// Refuses `access` to `[start, end)` with [`VfsErrorKind::Locked`] if a hold covers it.
     pub(super) fn check(
         &self,
@@ -90,7 +106,12 @@ impl Holds {
         op: &'static str,
         path: &Path,
     ) -> VfsResult<()> {
-        if self.0.iter().any(|hold| hold.refuses(access, start, end)) {
+        let holds = self
+            .table
+            .holds
+            .get(self.parts)
+            .map_or(&[][..], Vec::as_slice);
+        if holds.iter().any(|hold| hold.refuses(access, start, end)) {
             return Err(err(
                 VfsErrorKind::Locked,
                 op,
@@ -171,9 +192,31 @@ impl MemFs {
     }
 
     /// The holds on the file `parts` names, for an operation to check once it knows what bytes
-    /// it touches.
-    pub(super) fn holds_on(&self, parts: &[OsString]) -> Holds {
-        Holds(self.table().holds.get(parts).cloned().unwrap_or_default())
+    /// it touches, and to keep until its change is made.
+    pub(super) fn holds_on<'a>(&'a self, parts: &'a [OsString]) -> Holds<'a> {
+        let table = self.table();
+        #[cfg(test)]
+        if let Some(hook) = self
+            .locks
+            .after_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            (hook.0)();
+        }
+        Holds { table, parts }
+    }
+
+    /// Runs `hook` in every operation of this filesystem just after it takes the holds it
+    /// checks, while it keeps them.
+    #[cfg(test)]
+    pub(crate) fn after_lock_check(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self
+            .locks
+            .after_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(CheckHook(Arc::new(hook)));
     }
 
     /// Takes a lock of `mode` on `span` of the file at `path`, creating the file if absent, and

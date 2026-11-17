@@ -616,3 +616,36 @@ fn a_file_acquisition_raced_by_its_abandonment_leaves_a_state_a_death_could() {
         assert_eq!(found.acquired().found(), Generation::new(1));
     }
 }
+
+#[test]
+fn a_file_sample_does_not_wait_for_its_own_participant_s_change_in_progress() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let participant = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        recovered(&participant);
+        let settled = participant.sample().expect("sample");
+        let (paused_tx, paused) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel::<()>();
+        let (sampled_tx, sampled) = mpsc::channel();
+        thread::scope(|scope| {
+            let participant = &participant;
+            let record = root.join("in-flight");
+            let publisher = scope.spawn(move || {
+                participant.publishing(move |vfs| {
+                    paused_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    vfs.write(&record, b"in flight")
+                })
+            });
+            paused.recv().unwrap();
+            scope.spawn(move || sampled_tx.send(participant.sample()).unwrap());
+            let during = test_timers::mpsc::recv_timeout(&sampled, Duration::from_secs(10));
+            // Resumed before any assertion, so a failure cannot leave the publisher parked.
+            resume.send(()).unwrap();
+            let during = during.expect("a sample does not wait for the change in progress");
+            assert_eq!(during.expect("sample"), settled);
+            publisher.join().unwrap().expect("the change completes");
+        });
+    }
+}

@@ -48,3 +48,21 @@ store".
 
 - [x] **M15-3** -- The coordination tests' atomics use acquire and release orderings rather than
   `SeqCst`.
+
+## M16 -- Fixes from the second 2026-11-17 acadia review
+
+- [x] **M16-1** -- A file-based sample takes no lock, so it never waits for its own participant's change in progress. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-1)
+- [x] **M16-2** -- File-based creation stops when its participant is abandoned while an artifact is made. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-2)
+- [x] **M16-3** -- `MemFs` keeps a moved directory's durable descendants when the descendant and then the parent are synced. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-3)
+- [x] **M16-4** -- `MemFs` does not let a directory rename name a descendant the moved directory never named. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-4)
+- [x] **M16-5** -- `MemFs` checks locks atomically with the operation they guard. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-5)
+- [x] **M16-6** -- The shared implementation's in-process model is keyed as `MemFs` resolves a path. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-6)
+- [x] **M16-7** -- Linux `wait_native` reports a hung-up or failed descriptor as an error. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m16-7)
+
+## M17 -- Splitting `mem.rs`
+
+- [ ] **M17-1** -- Split [mem.rs](src/mem.rs), which is past 64 KiB (XL), at a fracture point -- the
+  durable-tree bookkeeping helpers (materialize, refresh, renew, carried snapshots, reconcile,
+  unnamed marks) are the candidate -- as a pure-relocation commit with the provenance trail, after
+  checking the privacy graph; or record in [DESIGN-NOTES.md](DESIGN-NOTES.md) what makes it
+  indivisible.

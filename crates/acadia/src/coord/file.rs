@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::{LockMode, LockSpan, Vfs, VfsErrorKind, VfsLock, VfsResult};
@@ -146,7 +146,7 @@ impl Coordination for FileCoordination {
     fn abandon(&self) {
         let (released, watchers) = {
             let mut table = self.holds.table();
-            table.abandoned = true;
+            self.holds.abandoned.store(true, Ordering::Release);
             (
                 std::mem::take(&mut table.locks),
                 std::mem::take(&mut table.watchers),
@@ -177,11 +177,13 @@ pub(crate) struct HoldId(u64);
 #[derive(Default)]
 struct Holds {
     table: Mutex<HoldTable>,
+    /// Set only while the table is held, so a check made under the table is serialized with the
+    /// abandonment; read without it where an operation must not wait for one in progress.
+    abandoned: AtomicBool,
 }
 
 #[derive(Default)]
 struct HoldTable {
-    abandoned: bool,
     next: u64,
     locks: HashMap<u64, Box<dyn VfsLock>>,
     /// Registrations notified by the operating system, which an abandonment rings: nothing
@@ -199,13 +201,17 @@ impl Holds {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn is_abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Acquire)
+    }
+
     /// Has `watcher` told when the participant is abandoned; reports whether it already is.
     #[cfg(windows)]
     fn watch(&self, watcher: Weak<dyn Watcher>) -> bool {
         let mut table = self.table();
         table.watchers.retain(|held| held.strong_count() > 0);
         table.watchers.push(watcher);
-        table.abandoned
+        self.is_abandoned()
     }
 }
 
@@ -218,9 +224,10 @@ impl FileCoordination {
         &self.layout
     }
 
-    /// Refuses with [`CoordError::Abandoned`] once the participant is abandoned.
+    /// Refuses with [`CoordError::Abandoned`] once the participant is abandoned. Takes no lock, so
+    /// it never waits for a change in progress.
     pub(crate) fn alive(&self) -> CoordResult<()> {
-        if self.holds.table().abandoned {
+        if self.holds.is_abandoned() {
             return Err(CoordError::Abandoned);
         }
         Ok(())
@@ -248,7 +255,7 @@ impl FileCoordination {
             }
         };
         let mut table = self.holds.table();
-        if table.abandoned {
+        if self.holds.is_abandoned() {
             drop(table);
             drop(lock);
             return Err(CoordError::Abandoned);
@@ -274,7 +281,7 @@ impl FileCoordination {
         publish: impl FnOnce(&dyn Vfs) -> VfsResult<T>,
     ) -> CoordResult<T> {
         let table = self.holds.table();
-        if table.abandoned {
+        if self.holds.is_abandoned() {
             return Err(CoordError::Abandoned);
         }
         let published = publish(&*self.vfs);

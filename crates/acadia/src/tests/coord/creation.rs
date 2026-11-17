@@ -336,6 +336,35 @@ fn something_that_appears_while_a_creator_waits_refuses_it() {
 }
 
 #[test]
+fn a_creator_abandoned_by_its_maker_makes_no_further_artifact_and_is_resumed() {
+    on_every_implementation("coord-create-abandoned", &|implementation, backend| {
+        let root = backend.root();
+        let vfs = backend.process();
+        let creator: Arc<dyn Coordination> = implementation
+            .open(Arc::clone(&vfs), &root)
+            .expect("open")
+            .into();
+        let dying = Arc::clone(&creator);
+        let mut maker = FileMaker::new(Arc::clone(&vfs), &root).before(0, move || dying.abandon());
+        assert!(matches!(
+            create(&*creator, INPUTS, nonce(1), &mut maker),
+            Err(CoordError::Abandoned)
+        ));
+        assert_eq!(
+            maker.made.len(),
+            1,
+            "only the artifact being made when it died"
+        );
+        assert!(!vfs.exists(&root.join(MARKER)).unwrap());
+        assert_eq!(
+            create_through(implementation, backend.process(), &root, INPUTS, 2).expect("resume"),
+            Created::Resumed
+        );
+        assert_created(&*vfs, &root, INPUTS);
+    });
+}
+
+#[test]
 fn an_interrupted_creation_is_resumed_with_identical_inputs() {
     on_every_implementation("coord-resume", &|implementation, backend| {
         let root = backend.root();

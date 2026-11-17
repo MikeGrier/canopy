@@ -271,6 +271,38 @@ fn a_wait_only_handle_sees_the_signals_level() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn the_native_wait_reports_a_hung_up_descriptor_rather_than_spinning_to_its_deadline() {
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+
+    let mut ends = [0; 2];
+    // SAFETY: `ends` has room for the two descriptors `pipe` writes.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: `pipe` just opened both, and nothing else owns them.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    // SAFETY: one byte from a live buffer, to the pipe's open write end.
+    assert_eq!(
+        unsafe { libc::write(write.as_fd().as_raw_fd(), b"x".as_ptr().cast(), 1) },
+        1
+    );
+    drop(write);
+    assert!(
+        crate::wait_native(read.as_fd(), Duration::MAX).unwrap(),
+        "data still to read is reported before the hang-up"
+    );
+    let mut byte = [0u8; 1];
+    // SAFETY: one byte into a live buffer, from the pipe's open read end.
+    assert_eq!(
+        unsafe { libc::read(read.as_fd().as_raw_fd(), byte.as_mut_ptr().cast(), 1) },
+        1
+    );
+    assert!(
+        crate::wait_native(read.as_fd(), Duration::MAX).is_err(),
+        "a hung-up descriptor with nothing to read is an error"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn the_platform_wait_on_the_descriptor_sees_the_same_level() {
     use std::os::fd::{AsFd, AsRawFd};
 

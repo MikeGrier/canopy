@@ -311,7 +311,8 @@ impl Drop for EpollWatch {
 /// Waits with `poll` until `fd` is readable or `timeout` has passed, and reports whether it was
 /// readable: the platform's own wait, for a caller that holds only the descriptor a signal or a
 /// doorbell lends through `AsFd`. Like [`Signal::wait`], it never reports `false` before
-/// `timeout` has passed.
+/// `timeout` has passed. A descriptor that is invalid, failed or hung up with nothing to read is
+/// an error, not a wait until the timeout.
 pub fn wait_native(fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
     wait_until_deadline(timeout, |remaining| {
         let millis = millis_rounded_up(remaining, i32::MAX as u64) as i32;
@@ -323,7 +324,20 @@ pub fn wait_native(fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
         // SAFETY: one valid `pollfd`, for a descriptor open for the whole call.
         match unsafe { libc::poll(&mut ready, 1, millis) } {
             0 => Ok(false),
-            n if n > 0 => Ok(ready.revents & libc::POLLIN != 0),
+            n if n > 0 => {
+                if ready.revents & libc::POLLIN != 0 {
+                    Ok(true)
+                } else if ready.revents & libc::POLLNVAL != 0 {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid wait descriptor",
+                    ))
+                } else if ready.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                    Err(io::Error::other("wait descriptor failed or hung up"))
+                } else {
+                    Ok(false)
+                }
+            }
             _ => {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {

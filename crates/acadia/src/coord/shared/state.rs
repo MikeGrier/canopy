@@ -156,17 +156,21 @@ fn boot(vfs: &dyn Vfs) -> CoordResult<Option<Vec<u8>>> {
 }
 
 /// The in-process model's name for the state directory `directory`, the same however it is
-/// spelled from the filesystem's root.
+/// spelled from the filesystem's root: normalized as `MemFs` resolves a path, so every spelling
+/// that reaches one directory there names one model.
 fn model_root(directory: &Path) -> PathBuf {
-    directory
-        .components()
-        .filter(|part| {
-            !matches!(
-                part,
-                std::path::Component::RootDir | std::path::Component::CurDir
-            )
-        })
-        .collect()
+    use std::path::Component;
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for part in directory.components() {
+        match part {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(name) => parts.push(name),
+        }
+    }
+    parts.into_iter().collect()
 }
 
 fn read_optional(vfs: &dyn Vfs, path: &Path) -> CoordResult<Option<Vec<u8>>> {

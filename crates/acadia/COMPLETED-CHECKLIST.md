@@ -150,3 +150,50 @@ first, as the coordination replay already did. Decision: [DESIGN-NOTES.md](DESIG
 "Review fixes: stale staging names and abandonment during a change".
 
 ### <a id="m15-3"></a>M15-3 -- The coordination tests' atomics use acquire and release orderings rather than `SeqCst`. *(completed 2026-11-17 16:13:31 -05:00)*
+
+## Moved 2026-11-17 -- Fixes from the second 2026-11-17 acadia review
+
+Decision for every item below: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Second review fixes: lock-free
+sampling, MemFs naming and lock checks".
+
+### <a id="m16-1"></a>M16-1 -- A file-based sample takes no lock, so it never waits for its own participant's change in progress. *(completed 2026-11-17 17:12:24 -05:00)*
+
+The abandoned flag is an atomic beside the table of holds, written only under the table. A test
+parks a change and samples the same participant; a revert-probe taking the table in `alive()` made
+the sample wait and the test fail.
+
+### <a id="m16-2"></a>M16-2 -- File-based creation stops when its participant is abandoned while an artifact is made. *(completed 2026-11-17 17:12:24 -05:00)*
+
+`create` checks liveness before and after each `make`. A test whose maker abandons the participant
+checks that creation stops after that artifact and is resumed by the next participant; removing
+the checks made it fail.
+
+### <a id="m16-3"></a>M16-3 -- `MemFs` keeps a moved directory's durable descendants when the descendant and then the parent are synced. *(completed 2026-11-17 17:12:24 -05:00)*
+
+A directory sync marks a path unnamed only when the durable tree lacks it after the snapshots above
+it are materialized. Scenario `moved-descendant-sync` and replay
+`mem_model_moved_directory_keeps_its_durable_descendant` pin it; the replay failed against the
+previous `mem.rs`.
+
+### <a id="m16-4"></a>M16-4 -- `MemFs` does not let a directory rename name a descendant the moved directory never named. *(completed 2026-11-17 17:12:24 -05:00)*
+
+A rename carries the unnamed marks beneath the moved directory to its new path. Scenario
+`moved-unnamed-child` and replay `mem_model_moved_directory_does_not_name_its_unnamed_child` pin
+it; the replay failed against the previous `mem.rs`.
+
+### <a id="m16-5"></a>M16-5 -- `MemFs` checks locks atomically with the operation they guard. *(completed 2026-11-17 17:12:24 -05:00)*
+
+`Holds` keeps the lock table guard until the operation's change is made. A test-only hook pauses
+a write just after its check while another process takes a shared lock; the test shows the lock
+waits for the write and its bytes do not change. Releasing the table across the hook made it fail.
+
+### <a id="m16-6"></a>M16-6 -- The shared implementation's in-process model is keyed as `MemFs` resolves a path. *(completed 2026-11-17 17:12:24 -05:00)*
+
+`model_root` applies `..` and drops prefixes and `.`. Tests cover the spellings and two
+participants opened through aliased paths sharing one state.
+
+### <a id="m16-7"></a>M16-7 -- Linux `wait_native` reports a hung-up or failed descriptor as an error. *(completed 2026-11-17 17:12:24 -05:00)*
+
+Readable data is reported first; otherwise `POLLNVAL`, `POLLERR` and `POLLHUP` are errors, as
+`wait_native_any` reports them. A Linux test on a pipe whose writer closed checks both, run under
+WSL through the `canopy-wsl` bridge.
