@@ -109,3 +109,18 @@ unsynced names, directory-name boundaries, removal and full durability cases. Th
 rationale are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs durability reference and
 replay" and [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "A finite path model carries the durability
 facts MemFs must preserve".
+
+## Moved 2026-11-17 -- Recursive removal in the MemFs durability reference
+
+### <a id="m14-1"></a>M14-1 -- The MemFs durability reference models recursive directory removal, with scenarios, controls, probes and replay. *(completed 2026-11-17 15:01:39 -05:00)*
+
+[MemFsDurability.tla](spec/MemFsDurability.tla) gains `RemoveTree` for `remove_dir_all`, and both
+removals now drop carried snapshots at or beneath the removed path, as `MemFs` does.
+[MemFsScenarios.tla](spec/MemFsScenarios.tla) witnesses an unsynced recursive removal undone by a
+crash, a synced one surviving it, and a moved directory recreated empty after a recursive or an
+empty-directory removal. Four controls and probes break the snapshot drop on each removal, leave
+descendants behind, and make removal durable without a sync; each is caught.
+[mem_model.rs](src/tests/mem_model.rs) replays the four scenarios through `MemFs`. A revert-probe
+that skipped `drop_carried_under` in `remove_dir`, and then in `remove_dir_all`, failed the
+matching recreate replay each time, so the replay pins the snapshot drop on both paths. Decision:
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs directory removal in the durability reference".

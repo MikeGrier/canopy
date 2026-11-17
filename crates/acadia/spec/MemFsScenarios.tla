@@ -8,7 +8,9 @@
 EXTENDS MemFsDurability
 
 CONSTANT Scenario
-ASSUME Scenario \in {"double-name", "replace-file", "carried-move", "unnamed-child"}
+ASSUME Scenario \in {"double-name", "replace-file", "carried-move", "unnamed-child",
+                     "remove-tree-unsynced", "remove-tree-synced", "remove-tree-recreate",
+                     "remove-empty-recreate"}
 
 MoveFromTo(from, to) == Move(CHOOSE move \in AvailableMoves :
     move.from = from /\ move.to = to)
@@ -70,11 +72,70 @@ UnnamedChildNext ==
       [] steps = 8 -> Crash
       [] OTHER -> UNCHANGED vars
 
+DurableTreeSteps ==
+    CASE steps = 0 -> CreateDir(1)
+      [] steps = 1 -> SyncDir(1)
+      [] steps = 2 -> CreateDir(6)
+      [] steps = 3 -> CreateDir(11)
+      [] steps = 4 -> CreateFile(12, "A")
+      [] steps = 5 -> SyncFile(12)
+      [] steps = 6 -> SyncDir(11)
+      [] steps = 7 -> SyncDir(6)
+      [] steps = 8 -> SyncDir(1)
+      [] steps = 9 -> RemoveTree(6)
+      [] OTHER -> UNCHANGED vars
+
+RemoveTreeUnsyncedNext ==
+    IF steps < 10 THEN DurableTreeSteps
+    ELSE CASE steps = 10 -> Crash
+           [] OTHER -> UNCHANGED vars
+
+RemoveTreeSyncedNext ==
+    IF steps < 10 THEN DurableTreeSteps
+    ELSE CASE steps = 10 -> SyncDir(1)
+           [] steps = 11 -> Crash
+           [] OTHER -> UNCHANGED vars
+
+MovedTreeSteps ==
+    CASE steps = 0 -> CreateDir(1)
+      [] steps = 1 -> SyncDir(1)
+      [] steps = 2 -> CreateDir(8)
+      [] steps = 3 -> CreateDir(9)
+      [] steps = 4 -> CreateFile(10, "A")
+      [] steps = 5 -> SyncFile(10)
+      [] steps = 6 -> SyncDir(9)
+      [] steps = 7 -> SyncDir(8)
+      [] steps = 8 -> SyncDir(1)
+      [] steps = 9 -> MoveFromTo(8, 6)
+      [] OTHER -> UNCHANGED vars
+
+RemoveTreeRecreateNext ==
+    IF steps < 10 THEN MovedTreeSteps
+    ELSE CASE steps = 10 -> RemoveTree(6)
+           [] steps = 11 -> CreateDir(6)
+           [] steps = 12 -> SyncDir(1)
+           [] steps = 13 -> Crash
+           [] OTHER -> UNCHANGED vars
+
+RemoveEmptyRecreateNext ==
+    IF steps < 10 THEN MovedTreeSteps
+    ELSE CASE steps = 10 -> RemoveFile(12)
+           [] steps = 11 -> RemoveEmptyDir(11)
+           [] steps = 12 -> RemoveEmptyDir(6)
+           [] steps = 13 -> CreateDir(6)
+           [] steps = 14 -> SyncDir(1)
+           [] steps = 15 -> Crash
+           [] OTHER -> UNCHANGED vars
+
 ScenarioNext ==
     CASE Scenario = "double-name" -> DoubleNameNext
       [] Scenario = "replace-file" -> ReplaceFileNext
       [] Scenario = "carried-move" -> CarriedMoveNext
       [] Scenario = "unnamed-child" -> UnnamedChildNext
+      [] Scenario = "remove-tree-unsynced" -> RemoveTreeUnsyncedNext
+      [] Scenario = "remove-tree-synced" -> RemoveTreeSyncedNext
+      [] Scenario = "remove-tree-recreate" -> RemoveTreeRecreateNext
+      [] Scenario = "remove-empty-recreate" -> RemoveEmptyRecreateNext
       [] OTHER -> UNCHANGED vars
 
 ScenarioSpec == Init /\ [][ScenarioNext]_vars
@@ -117,6 +178,46 @@ ScenarioWitness_UnnamedChildLost == ~(
 )
 
 \* Audience: internal.
+ScenarioWitness_UnsyncedRemovalUndone == ~(
+    /\ Scenario = "remove-tree-unsynced"
+    /\ steps = 11
+    /\ live[6] = Directory
+    /\ live[11] = Directory
+    /\ live[12].kind = "file"
+    /\ liveData[live[12].inode] = "A"
+)
+
+\* Audience: internal.
+ScenarioWitness_SyncedRemovalSurvives == ~(
+    /\ Scenario = "remove-tree-synced"
+    /\ steps = 12
+    /\ live[1] = Directory
+    /\ live[6] = Absent
+    /\ live[11] = Absent
+    /\ live[12] = Absent
+)
+
+\* Audience: internal.
+ScenarioWitness_RecreatedAfterRemovalEmpty == ~(
+    /\ Scenario = "remove-tree-recreate"
+    /\ steps = 14
+    /\ live[6] = Directory
+    /\ live[11] = Absent
+    /\ live[12] = Absent
+    /\ live[8] = Absent
+)
+
+\* Audience: internal.
+ScenarioWitness_RecreatedAfterEmptyRemovalEmpty == ~(
+    /\ Scenario = "remove-empty-recreate"
+    /\ steps = 16
+    /\ live[6] = Directory
+    /\ live[11] = Absent
+    /\ live[12] = Absent
+    /\ live[8] = Absent
+)
+
+\* Audience: internal.
 ScenarioExpected ==
     /\ (Scenario = "double-name" /\ steps = 11) =>
         /\ live[4] = live[5]
@@ -135,5 +236,25 @@ ScenarioExpected ==
         /\ live[6] = Directory
         /\ live[13] = Absent
         /\ live[14] = Absent
+    /\ (Scenario = "remove-tree-unsynced" /\ steps = 11) =>
+        /\ live[6] = Directory
+        /\ live[11] = Directory
+        /\ live[12].kind = "file"
+        /\ liveData[live[12].inode] = "A"
+    /\ (Scenario = "remove-tree-synced" /\ steps = 12) =>
+        /\ live[1] = Directory
+        /\ live[6] = Absent
+        /\ live[11] = Absent
+        /\ live[12] = Absent
+    /\ (Scenario = "remove-tree-recreate" /\ steps = 14) =>
+        /\ live[6] = Directory
+        /\ live[11] = Absent
+        /\ live[12] = Absent
+        /\ live[8] = Absent
+    /\ (Scenario = "remove-empty-recreate" /\ steps = 16) =>
+        /\ live[6] = Directory
+        /\ live[11] = Absent
+        /\ live[12] = Absent
+        /\ live[8] = Absent
 
 =============================================================================

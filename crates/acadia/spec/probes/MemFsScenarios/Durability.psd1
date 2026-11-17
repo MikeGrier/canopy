@@ -30,5 +30,33 @@
             Property = 'ScenarioExpected'
             Overrides = @{ Control = '"crash-keeps-live"' }
         }
+        @{
+            Name = 'recursive-removal-keeps-carried-snapshot'
+            Base = 'MemFsScenarios-RemoveTreeRecreate'
+            Kind = 'INVARIANTS'
+            Property = 'ScenarioExpected'
+            Overrides = @{ Control = '"removal-keeps-carried"' }
+        }
+        @{
+            Name = 'empty-removal-keeps-carried-snapshot'
+            Base = 'MemFsScenarios-RemoveEmptyRecreate'
+            Kind = 'INVARIANTS'
+            Property = 'ScenarioExpected'
+            Overrides = @{ Control = '"removal-keeps-carried"' }
+        }
+        @{
+            Name = 'recursive-removal-leaves-descendants'
+            Base = 'MemFsScenarios-RemoveTreeSynced'
+            Kind = 'INVARIANTS'
+            Property = 'TreeShape'
+            Overrides = @{ Control = '"remove-tree-leaves-descendants"' }
+        }
+        @{
+            Name = 'recursive-removal-is-durable-without-sync'
+            Base = 'MemFsScenarios-RemoveTreeUnsynced'
+            Kind = 'INVARIANTS'
+            Property = 'ScenarioExpected'
+            Overrides = @{ Control = '"remove-tree-is-durable"' }
+        }
     )
 }

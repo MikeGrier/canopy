@@ -14,7 +14,7 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 enum Effect {
     None,
     Applied,
-    NoEffect,
+    NotApplied,
     Unknown,
 }
 
@@ -144,7 +144,10 @@ impl ClientOracle {
         }
         let index = self.request_index(pair, request)?;
         let request = &mut self.requests[index];
-        if !matches!(effect, Effect::Applied | Effect::NoEffect | Effect::Unknown) {
+        if !matches!(
+            effect,
+            Effect::Applied | Effect::NotApplied | Effect::Unknown
+        ) {
             return Err("a completed request needs an effect class".to_owned());
         }
         if recovery_required && effect != Effect::Unknown {
@@ -252,7 +255,7 @@ fn observe_completion(
             if outcome.is_committed() {
                 Effect::Applied
             } else {
-                Effect::NoEffect
+                Effect::NotApplied
             },
             false,
         ),
@@ -261,9 +264,9 @@ fn observe_completion(
             | CommandValue::Children(_)
             | CommandValue::Documents(_)
             | CommandValue::Snapshot(_),
-        ) => (Effect::NoEffect, false),
+        ) => (Effect::NotApplied, false),
         Err(_) if store_recovery_required => (Effect::Unknown, true),
-        Err(_) => (Effect::NoEffect, false),
+        Err(_) => (Effect::NotApplied, false),
     };
     oracle.complete(pair, request, effect, recovery_required)?;
     oracle.deliver(pair, request)?;
@@ -705,7 +708,7 @@ fn a_failure_before_prepare_completes_with_definite_no_effect() {
     .unwrap();
     assert!(!store.recovery_required().unwrap());
     assert_eq!(text(&store, "alpha", "one"), None);
-    assert_eq!(oracle.effect(1, request), Effect::NoEffect);
+    assert_eq!(oracle.effect(1, request), Effect::NotApplied);
 }
 
 #[test]
@@ -719,7 +722,11 @@ fn the_client_oracle_rejects_out_of_order_and_known_loss() {
     oracle.open(1, 2);
     oracle.submit(1, Ok(first)).unwrap();
     oracle.submit(1, Ok(second)).unwrap();
-    assert!(oracle.complete(1, second, Effect::NoEffect, false).is_err());
+    assert!(
+        oracle
+            .complete(1, second, Effect::NotApplied, false)
+            .is_err()
+    );
     oracle.complete(1, first, Effect::Applied, false).unwrap();
     oracle.close(1);
     assert_eq!(oracle.effect(1, first), Effect::Unknown);

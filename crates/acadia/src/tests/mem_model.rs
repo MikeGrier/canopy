@@ -13,6 +13,7 @@ enum Action {
     CreateDir(&'static str),
     Write(&'static str, &'static [u8]),
     RemoveFile(&'static str),
+    RemoveDir(&'static str),
     RemoveDirAll(&'static str),
     Rename(&'static str, &'static str),
     Fsync(&'static str),
@@ -25,6 +26,7 @@ impl fmt::Display for Action {
             Action::CreateDir(path) => write!(formatter, "create-dir {path}"),
             Action::Write(path, _) => write!(formatter, "write {path}"),
             Action::RemoveFile(path) => write!(formatter, "remove-file {path}"),
+            Action::RemoveDir(path) => write!(formatter, "remove-dir {path}"),
             Action::RemoveDirAll(path) => write!(formatter, "remove-dir-all {path}"),
             Action::Rename(from, to) => write!(formatter, "rename {from} -> {to}"),
             Action::Fsync(path) => write!(formatter, "fsync {path}"),
@@ -47,6 +49,7 @@ fn replay(name: &str, actions: &[Action], expected: &[Expected<'_>]) {
             Action::CreateDir(path) => fs.create_dir(Path::new(path)),
             Action::Write(path, contents) => fs.write(Path::new(path), contents),
             Action::RemoveFile(path) => fs.remove_file(Path::new(path)),
+            Action::RemoveDir(path) => fs.remove_dir(Path::new(path)),
             Action::RemoveDirAll(path) => fs.remove_dir_all(Path::new(path)),
             Action::Rename(from, to) => fs.rename(Path::new(from), Path::new(to)),
             Action::Fsync(path) => fs.fsync(Path::new(path)),
@@ -104,7 +107,9 @@ fn mem_model_double_name_after_a_one_parent_sync() {
             Action::Rename(from, to) => fs.rename(Path::new(from), Path::new(to)).unwrap(),
             Action::Fsync(path) => fs.fsync(Path::new(path)).unwrap(),
             Action::Crash => fs.simulate_crash(),
-            Action::RemoveFile(_) | Action::RemoveDirAll(_) => unreachable!(),
+            Action::RemoveFile(_) | Action::RemoveDir(_) | Action::RemoveDirAll(_) => {
+                unreachable!()
+            }
         }
         fs.audit_refs();
     }
@@ -262,4 +267,91 @@ fn mem_model_normal_write_sync_and_removal_traces() {
     for (name, actions, expected) in cases {
         replay(name, &actions, &expected);
     }
+}
+
+#[test]
+fn mem_model_directory_removal_traces() {
+    let durable_tree = [
+        Action::CreateDir("/d"),
+        Action::Fsync("/d"),
+        Action::CreateDir("/d/x"),
+        Action::CreateDir("/d/x/y"),
+        Action::Write("/d/x/y/f", b"A"),
+        Action::Fsync("/d/x/y/f"),
+        Action::Fsync("/d/x/y"),
+        Action::Fsync("/d/x"),
+        Action::Fsync("/d"),
+        Action::RemoveDirAll("/d/x"),
+    ];
+    let moved_tree = [
+        Action::CreateDir("/d"),
+        Action::Fsync("/d"),
+        Action::CreateDir("/d/src"),
+        Action::CreateDir("/d/src/sub"),
+        Action::Write("/d/src/sub/f", b"A"),
+        Action::Fsync("/d/src/sub/f"),
+        Action::Fsync("/d/src/sub"),
+        Action::Fsync("/d/src"),
+        Action::Fsync("/d"),
+        Action::Rename("/d/src", "/d/x"),
+    ];
+    let recreated_empty = [
+        Expected::Dir("/d/x"),
+        Expected::Missing("/d/x/sub"),
+        Expected::Missing("/d/x/sub/f"),
+        Expected::Missing("/d/src"),
+    ];
+
+    replay(
+        "unsynced recursive removal is undone by a crash",
+        &[&durable_tree[..], &[Action::Crash]].concat(),
+        &[
+            Expected::Dir("/d/x"),
+            Expected::Dir("/d/x/y"),
+            Expected::File("/d/x/y/f", b"A"),
+        ],
+    );
+
+    replay(
+        "recursive removal survives a crash after its parent sync",
+        &[&durable_tree[..], &[Action::Fsync("/d"), Action::Crash]].concat(),
+        &[
+            Expected::Dir("/d"),
+            Expected::Missing("/d/x"),
+            Expected::Missing("/d/x/y"),
+            Expected::Missing("/d/x/y/f"),
+        ],
+    );
+
+    replay(
+        "directory recreated after recursive removal starts empty",
+        &[
+            &moved_tree[..],
+            &[
+                Action::RemoveDirAll("/d/x"),
+                Action::CreateDir("/d/x"),
+                Action::Fsync("/d"),
+                Action::Crash,
+            ],
+        ]
+        .concat(),
+        &recreated_empty,
+    );
+
+    replay(
+        "directory recreated after emptying and removing it starts empty",
+        &[
+            &moved_tree[..],
+            &[
+                Action::RemoveFile("/d/x/sub/f"),
+                Action::RemoveDir("/d/x/sub"),
+                Action::RemoveDir("/d/x"),
+                Action::CreateDir("/d/x"),
+                Action::Fsync("/d"),
+                Action::Crash,
+            ],
+        ]
+        .concat(),
+        &recreated_empty,
+    );
 }

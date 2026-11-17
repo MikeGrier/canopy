@@ -1363,3 +1363,24 @@ announces each such step before it acts[^ac-5]:
   directory, rename and removal traces. Scenario witnesses prove the expected states are reachable;
   controls and probes make file-data, name, carried-snapshot and crash errors fail
   `ScenarioExpected`.
+
+## MemFs directory removal in the durability reference, 2026-11-17
+
+- **Removing a directory changes only the live tree and the carried snapshots.**
+  [MemFsDurability.tla](spec/MemFsDurability.tla) models `remove_dir` as `RemoveEmptyDir` and
+  `remove_dir_all` as `RemoveTree`. Both leave the durable tree to the parent's next directory sync:
+  a crash before that sync restores the whole removed subtree, and a crash after it loses the whole
+  subtree. `RemoveTree` empties every live path beneath the removed directory in one step, so the
+  live tree never names a child of a missing directory.
+- **Removal discards the carried snapshots at or beneath the removed path.** A snapshot carried by a
+  directory that was moved, or that stands where the durable tree still names a file, describes
+  that directory's contents. Once the directory is removed the snapshot describes nothing, and a
+  directory created later at the same path must start empty rather than adopt it. This holds for
+  an empty-directory removal too, because the snapshot outlives the live entries it was taken from.
+  `MemFs` does the same through `drop_carried_under`.
+- **Scenarios, controls and replay cover each rule.** [MemFsScenarios.tla](spec/MemFsScenarios.tla)
+  witnesses an unsynced recursive removal undone by a crash, a synced one surviving it, and a
+  moved directory recreated empty after either kind of removal. Controls that keep the carried
+  snapshot, leave descendants behind or make the removal durable without a sync each fail, and the
+  probe corpus catches each one. [mem_model.rs](src/tests/mem_model.rs) replays the four scenarios
+  through `MemFs`.

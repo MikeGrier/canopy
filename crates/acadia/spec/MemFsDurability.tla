@@ -6,7 +6,9 @@
 (* may perform. Files carry inode identity, while directory fsync reconciles *)
 (* names without syncing child data. Carried snapshots preserve durable      *)
 (* directory contents across a rename or while an ancestor still names a    *)
-(* file. A crash replaces live names and bytes with their durable state.     *)
+(* file. Removing a directory, empty or not, drops the carried snapshots at  *)
+(* or beneath it and leaves the durable tree to its parent's next sync. A    *)
+(* crash replaces live names and bytes with their durable state.             *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
@@ -20,7 +22,9 @@ ASSUME Paths \subseteq 1..14
 ASSUME Values # {}
 ASSUME MaxSteps \in Nat
 ASSUME Control \in {"none", "file-fsync-skips-data", "dir-fsync-fails-to-name",
-                    "rename-loses-carried", "crash-keeps-live"}
+                    "rename-loses-carried", "crash-keeps-live",
+                    "removal-keeps-carried", "remove-tree-leaves-descendants",
+                    "remove-tree-is-durable"}
 
 Absent == [kind |-> "absent", inode |-> 0]
 Directory == [kind |-> "dir", inode |-> 0]
@@ -106,6 +110,10 @@ Materialize(root, snapshot, state) == [p \in Paths |->
     IF p \in Below(root) THEN snapshot[p]
     ELSE state[p]]
 
+DropCarriedUnder(p) ==
+    IF Control = "removal-keeps-carried" THEN carried
+    ELSE [q \in Paths |-> IF q \in Below(p) THEN NoSnapshot ELSE carried[q]]
+
 ParentLive(parent) == IF parent = 0 THEN TRUE ELSE live[parent] = Directory
 
 CreateDir(p) ==
@@ -148,8 +156,22 @@ RemoveEmptyDir(p) ==
     /\ live[p] = Directory
     /\ \A q \in DirectChildren(p) : live[q] = Absent
     /\ live' = [live EXCEPT ![p] = Absent]
+    /\ carried' = DropCarriedUnder(p)
     /\ steps' = steps + 1
-    /\ UNCHANGED <<durable, liveData, durableData, carried, replaced, nextInode>>
+    /\ UNCHANGED <<durable, liveData, durableData, replaced, nextInode>>
+
+RemoveTree(p) ==
+    /\ steps < MaxSteps
+    /\ live[p] = Directory
+    /\ live' = IF Control = "remove-tree-leaves-descendants"
+               THEN [live EXCEPT ![p] = Absent]
+               ELSE [q \in Paths |-> IF q \in Below(p) THEN Absent ELSE live[q]]
+    /\ durable' = IF Control = "remove-tree-is-durable"
+                  THEN [q \in Paths |-> IF q \in Below(p) THEN Absent ELSE durable[q]]
+                  ELSE durable
+    /\ carried' = DropCarriedUnder(p)
+    /\ steps' = steps + 1
+    /\ UNCHANGED <<liveData, durableData, replaced, nextInode>>
 
 SyncFile(p) ==
     /\ steps < MaxSteps
@@ -288,7 +310,7 @@ Crash ==
     /\ UNCHANGED <<durable, durableData, nextInode>>
 
 Next ==
-    \/ \E p \in Paths : CreateDir(p) \/ RemoveEmptyDir(p)
+    \/ \E p \in Paths : CreateDir(p) \/ RemoveEmptyDir(p) \/ RemoveTree(p)
     \/ \E p \in Paths, value \in Values : CreateFile(p, value) \/ WriteFile(p, value)
     \/ \E p \in Paths : RemoveFile(p) \/ SyncFile(p) \/ SyncDir(p)
     \/ \E move \in AvailableMoves : Move(move)

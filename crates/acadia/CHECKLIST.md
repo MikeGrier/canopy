@@ -35,3 +35,7 @@ store".
 ## M13 -- MemFs durability reference model
 
 - [x] **M13-1** (from canopy `M13-1`) -- `MemFs` has an independent durability reference model, replay bridge, controls and probes. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m13-1)
+
+## M14 -- Recursive removal in the MemFs durability reference
+
+- [x] **M14-1** -- The MemFs durability reference models recursive directory removal, with scenarios, controls, probes and replay. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-1)

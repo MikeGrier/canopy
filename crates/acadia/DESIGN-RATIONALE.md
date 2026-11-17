@@ -181,3 +181,18 @@ historical failures, while the smaller unrestricted model explores create, write
 rename and crash combinations around the file-alias shape. Controls break one durability promise at
 a time, and the Rust bridge checks the same final projections against MemFs while auditing inode
 reference counts after every replay step.
+
+## Directory removal belongs in the durability reference
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs directory removal in the
+durability reference". The reference's first form had only an empty-directory removal, and that
+action left carried snapshots in place, while `MemFs` drops them on both removals. Recursive
+removal was covered by `MemFs` unit tests and by the differential oracle against full directory
+reconciliation, but both of those share `MemFs`'s own bookkeeping, so neither could say
+independently that a directory recreated after removal starts empty.
+
+Modeling recursive removal as repeated empty-directory removals was rejected: it would hide the
+single-step contract that `remove_dir_all` provides and would need a deeper step bound to reach the
+same states. The scenarios recreate a directory that arrived by a move because a move is what
+leaves a carried snapshot at that path; a directory created in place has none, and its
+recreation could not tell whether removal drops snapshots.
