@@ -57,12 +57,12 @@
             Def       = 'OpenFails'
             Old = @'
     /\ pc' = Set(pc, p, "closed")
-    /\ UNCHANGED <<req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, store, handle, reader, diedIn, counts>>
 '@
             New = @'
     /\ pc' = Set(pc, p, "closed")
     /\ count' = Nx(count)
-    /\ UNCHANGED <<req, eligible, lockHolder, owner, fence, trusted, gen, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, lockHolder, owner, fence, trusted, gen, store, handle, reader, diedIn, counts>>
 '@
         }
 
@@ -108,12 +108,12 @@ fence' = fence
     /\ a' = b
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, eligible, coord, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, b, mygen, reader, diedIn, counts>>
 '@
             New = @'
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, eligible, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, a, b, mygen, reader, diedIn, counts>>
 '@
         }
 
@@ -241,12 +241,12 @@ Cleared == scache
             Def       = 'OpenFails'
             Old = @'
     /\ pc' = Set(pc, p, "closed")
-    /\ UNCHANGED <<req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, store, handle, reader, diedIn, counts>>
 '@
             New = @'
     /\ pc' = Set(pc, p, "closed")
     /\ count' = Nx(count)
-    /\ UNCHANGED <<req, eligible, lockHolder, owner, fence, trusted, gen, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, lockHolder, owner, fence, trusted, gen, store, handle, reader, diedIn, counts>>
 '@
         }
 
@@ -260,12 +260,12 @@ Cleared == scache
     /\ a' = b
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, eligible, coord, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, b, mygen, reader, diedIn, counts>>
 '@
             New = @'
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, eligible, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, a, b, mygen, reader, diedIn, counts>>
 '@
         }
 

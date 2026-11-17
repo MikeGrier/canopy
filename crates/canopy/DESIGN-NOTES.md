@@ -778,6 +778,10 @@ only the monitor's.
 
 ## Several processes may open one store, 2026-11-10
 
+> **SUPERSEDED in part, 2026-11-16, by "A writer's request ends served, withdrawn or dead".**
+> No request becomes ineligible: in the progress statement below a request is served, withdrawn
+> by giving up, or ended by its process's death, and a request that persists counts as starved.
+
 - **The target is several processes on one host opening the same root, readers and writers
   alike.** Writers take turns: each write holds writer exclusion for its duration, across
   every thread of every process, instead of one process holding the root for its whole lifetime
@@ -1214,6 +1218,11 @@ pass. Cost is not part of the contract.
   module well past 2 s.
 
 ## Writer exclusion and its ownership record, modelled in `Coordination.tla`, 2026-11-10
+
+> **SUPERSEDED in part, 2026-11-16, by "A writer's request ends served, withdrawn or dead".**
+> A wait ends in one of three outcomes, not four: no request is refused as ineligible,
+> acquisition is enabled for every waiter whenever the lock is free, and the witness of the
+> unserved outcomes reaches withdrawn and dead requests.
 
 - **The coordination contract is modelled in its own module, [Coordination.tla](spec/Coordination.tla),
   and [PointerPublication.tla](spec/PointerPublication.tla) stays the model of one document's
@@ -5227,6 +5236,10 @@ Decided with the engineer when the `SharedPublication` bridge began. Rationale i
 
 ## The contract's writer actions in the code, 2026-11-15
 
+> **SUPERSEDED in part, 2026-11-16, by "A writer's request ends served, withdrawn or dead".**
+> No request is refused and nothing is bound to eligibility; withdrawing and giving up are what
+> remain of the escapes below.
+
 How `Coordination`'s writer actions are bound to the two implementations of the contract, which
 the replay of its writer traces rests on[^m11-4]. Rationale is in
 [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#writer-action-binding).
@@ -5412,6 +5425,10 @@ and the alternatives are in
 
 ## State-space reduction for recovery-unit verification, 2026-11-16
 
+> **SUPERSEDED in part, 2026-11-16, by "A reduction keeps the original it answers to".** The
+> unreduced composition is not retired or folded once the reduction is established; it is kept
+> as the reference the reduction answers to.
+
 The composition's recovery units are verified with a justified state-space reduction. A
 reduction may identify states only when the distinction cannot change a checked outcome or
 the future actions that lead to one. Fresh exclusion acquisitions, a writer refused between
@@ -5471,3 +5488,29 @@ Walk selection uses declared control-state transitions when TLC labels every act
 same enclosing operator. Explicit reachable-state witnesses supplement random walks, so
 collection, directory clear durability and stale-recovery restart remain replay obligations.
 The corpus table is [corpus.psd1](spec/corpus.psd1); the bridge work is tracked separately[^m11-6].
+
+## A writer's request ends served, withdrawn or dead, 2026-11-16
+
+A request for writer exclusion ends in exactly one of three outcomes: it is served when the lock
+is granted, withdrawn when its requester gives up, or dead with its process. Whenever the lock is
+free, acquisition is enabled for every waiter, and the checker chooses among them.
+[Coordination.tla](spec/Coordination.tla) has no per-request eligibility, no external event that
+disqualifies a waiter, and no refusal of a pending request.
+
+Schema compatibility is checked when a handle attaches, under the tiers it needs, and is refused
+there. An attached writer holds the writer tier shared while it waits for exclusion, and an
+upgrade cannot finish without holding that tier exclusively. So no upgrade makes a waiting writer
+inadmissible while it stays attached, and the model needs no second admission check on its wait.
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#writer-request-outcomes).
+
+## A reduction keeps the original it answers to, 2026-11-16
+
+Where a check is made through a reduction -- a `VIEW` that identifies states, an
+over-approximation, or any other loss of information -- the unreduced form stays in the
+repository beside it, generated from the same tables. The reduced form is what is checked as the
+model is revised; the unreduced form stays runnable, so a result reached through the reduction can
+always be checked against the original. An unreduced form is dropped only when it is superseded,
+or when it is too large to keep, which is decided with the engineer. For the publication
+composition, each `SharedPublicationCheck`
+configuration keeps its `SharedPublication` counterpart. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#reductions-keep-their-original).

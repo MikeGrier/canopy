@@ -39,11 +39,11 @@
             Property  = 'AbandonmentIsNeverForgotten'
             Def       = 'Die'
             Old = @'
-    /\ UNCHANGED <<eligible, owner, fence, trusted, store, requests, crashes>>
+    /\ UNCHANGED <<owner, fence, trusted, store, requests, crashes>>
 '@
             New = @'
     /\ owner' = IF owner = p THEN None ELSE owner
-    /\ UNCHANGED <<eligible, fence, trusted, store, requests, crashes>>
+    /\ UNCHANGED <<fence, trusted, store, requests, crashes>>
 '@
         }
 
@@ -111,11 +111,11 @@ b' = IF pc[p] = "writing" THEN a ELSE b
             Property  = 'AbandonmentIsNeverForgotten'
             Def       = 'Release'
             Old = @'
-    /\ UNCHANGED <<req, eligible, fence, trusted, store, diedIn, counts>>
+    /\ UNCHANGED <<req, fence, trusted, store, diedIn, counts>>
 '@
             New = @'
     /\ fence' = FALSE
-    /\ UNCHANGED <<req, eligible, trusted, store, diedIn, counts>>
+    /\ UNCHANGED <<req, trusted, store, diedIn, counts>>
 '@
         }
 
@@ -190,34 +190,6 @@ THEN "told" ELSE "told")
         }
 
         @{
-            Name      = 'serve-ineligible'
-            Base      = 'Coordination'
-            Kind      = 'PROPERTIES'
-            Property  = 'EveryRequestEndsInExactlyOneOutcome'
-            Def       = 'Lock'
-            Old = @'
-    /\ pc[p] = "waiting" /\ eligible[p]
-'@
-            New = @'
-    /\ pc[p] = "waiting"
-'@
-        }
-
-        @{
-            Name      = 'refuse-eligible'
-            Base      = 'Coordination'
-            Kind      = 'INVARIANTS'
-            Property  = 'OutcomeIsJustified'
-            Def       = 'Refuse'
-            Old = @'
-    /\ pc[p] = "waiting" /\ ~eligible[p]
-'@
-            New = @'
-    /\ pc[p] = "waiting"
-'@
-        }
-
-        @{
             Name      = 'withdraw-wrong-outcome'
             Base      = 'Coordination'
             Kind      = 'INVARIANTS'
@@ -227,7 +199,7 @@ THEN "told" ELSE "told")
     /\ req' = Set(req, p, "withdrawn")
 '@
             New = @'
-    /\ req' = Set(req, p, "refused")
+    /\ req' = Set(req, p, "dead")
 '@
         }
 
@@ -256,7 +228,7 @@ UNCHANGED <<schema, rest>>
 '@
             New = @'
 a' = Nx(a)
-    /\ UNCHANGED <<schema, lease, reg, req, eligible, coord, b, shared, log, stage, ptgt, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<schema, lease, reg, req, coord, b, shared, log, stage, ptgt, handle, reader, diedIn, counts>>
 '@
         }
 

@@ -473,3 +473,25 @@ future versions use; an explicit pending-debt fixture exercises the recovery bou
 pretending to verify directory creation or torn appends. Those broader rules remain separately
 scheduled. Ignoring the returned phase would let a replay pass while the Store performs a
 different sequence of exclusion holds, and was rejected.
+
+## Writer request outcomes
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "A writer's request ends served, withdrawn or
+dead". The model had carried a per-request eligibility flag, an external `Disqualify` step that
+cleared it, and a `Refuse` step that ended a pending request when it was clear. They entered when
+the model was drafted, and no decision of the engineer's defined what event they stood for. The
+nearest stated reason was that eligibility follows upgrades, but the attachment tiers already keep
+an upgrade from finishing while a writer stays attached. Binding the model to the code would have
+meant inventing a policy to give the flag a meaning. The engineer chose the simpler model, with
+the understanding that a real cause for refusing a waiting writer would be added back with its own
+decision.
+
+## Reductions keep their original
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "A reduction keeps the original it answers
+to". A reduction is justified by an argument and by comparison with the unreduced form. Retiring
+the unreduced form once the two matched would leave the argument as the only link to the original,
+and a later revision of the model could break the argument with nothing left that could show it.
+Keeping the original costs space and, when it runs, time. The engineer judged that cost acceptable
+while the model is developed, and wants any compression or loss of information to keep a way back
+to the original unless the original is superseded or excessively large.

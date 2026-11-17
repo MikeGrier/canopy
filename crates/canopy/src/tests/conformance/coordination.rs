@@ -95,6 +95,18 @@ fn writer_traces() -> Vec<Trace> {
 }
 
 #[test]
+fn release_at_the_end_of_a_trace_clears_ownership() {
+    for implementation in [Implementation::File, Implementation::Shared] {
+        let (mut trace, step) = first("Release", implementation);
+        trace.steps.truncate(step + 1);
+        trace.states.truncate(step + 2);
+        if let Err(error) = judge(&trace, implementation) {
+            panic!("{} ({implementation:?}): {error}", trace.file);
+        }
+    }
+}
+
+#[test]
 fn the_contract_follows_every_writer_trace() {
     let traces = writer_traces();
     assert!(!traces.is_empty(), "the corpus holds no writer trace");

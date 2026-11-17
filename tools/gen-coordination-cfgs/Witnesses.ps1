@@ -6,8 +6,8 @@
 $ex = Plain 2
 $ex3 = Plain 3
 $witnesses = @(
-    @('AllThreeUnservedOutcomes', 'INVARIANTS', $ex3, 3, 1, 0, 0,
-      'three requests end in three different unserved outcomes -- refused, withdrawn, and dead with its process while waiting'),
+    @('BothUnservedOutcomes', 'INVARIANTS', $ex, 2, 1, 0, 0,
+      'two requests end in the two unserved outcomes -- withdrawn, and dead with its process while waiting'),
     @('ToldAfterDeathBeforeFirstEffect', 'INVARIANTS', $ex, 3, 1, 0, 0,
       'a holder dies before its first effect and the next acquirer is told recovery is required'),
     @('ToldAfterDeathMidWrite', 'INVARIANTS', $ex, 3, 1, 0, 0,

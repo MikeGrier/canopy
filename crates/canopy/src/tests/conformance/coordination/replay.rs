@@ -265,7 +265,11 @@ impl<'t> Replay<'t> {
     }
 
     fn act(&mut self, k: usize, p: usize, action: &str) -> Result<(), String> {
-        let stop = self.stop_after(k, p)?;
+        let stop = if action == "Release" {
+            None
+        } else {
+            self.stop_after(k, p)?
+        };
         match kind(self.implementation, action) {
             Kind::Command(command) => {
                 if self.processes[p - 1].is_none() {

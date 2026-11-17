@@ -19,15 +19,8 @@ Exit(p) ==
           ELSE /\ pc' = Set(pc, p, "exited")
                /\ att' = Set(att, p, "off")
                /\ Forget(p)
-    /\ UNCHANGED <<areq, lease, schema, req, eligible, coord, store, diedIn,
+    /\ UNCHANGED <<areq, lease, schema, req, coord, store, diedIn,
                    counts, reg>>
-
-\* EXTERNAL: the admission rules stop admitting p's handle.
-Disqualify(p) ==
-    /\ Escapes
-    /\ pc[p] \in {"idle", "waiting"} /\ eligible[p]
-    /\ eligible' = Set(eligible, p, FALSE)
-    /\ UNCHANGED <<adm, pc, req, coord, store, handle, reader, diedIn, counts>>
 
 Request(p) ==
     /\ CanWrite(p)
@@ -35,7 +28,7 @@ Request(p) ==
     /\ pc' = Set(pc, p, "waiting")
     /\ req' = Set(req, p, "pending")
     /\ requests' = Tick(requests)
-    /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, deaths,
+    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, deaths,
                    crashes, reads, discoveries, upgrades, woken>>
 
 \* The waiter gives up.
@@ -44,15 +37,7 @@ Withdraw(p) ==
     /\ pc[p] = "waiting"
     /\ pc' = Set(pc, p, "idle")
     /\ req' = Set(req, p, "withdrawn")
-    /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, counts>>
-
-\* A request that is no longer eligible is refused rather than served.
-Refuse(p) ==
-    /\ Escapes
-    /\ pc[p] = "waiting" /\ ~eligible[p]
-    /\ pc' = Set(pc, p, "idle")
-    /\ req' = Set(req, p, "refused")
-    /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, counts>>
 
 -----------------------------------------------------------------------------
 (* The admission gate and the attachment tiers (DESIGN-NOTES "Schemas and *)
@@ -180,7 +165,7 @@ StartUpgrade(p) ==
     /\ pc' = Set(pc, p, "converting")
     /\ att' = Set(att, p, "draining")
     /\ areq' = Set(areq, p, "pending")
-    /\ UNCHANGED <<schema, lease, reg, req, eligible, coord, store, handle, reader,
+    /\ UNCHANGED <<schema, lease, reg, req, coord, store, handle, reader,
                    diedIn, requests, deaths, crashes, reads, discoveries, woken>>
 
 RefuseUpgrade(p) ==
@@ -271,7 +256,7 @@ BeginUpgrade(p) ==
                /\ UNCHANGED <<oldest, current, dfloor, ustep, rtier, pc, areq, rest>>
           ELSE /\ lockHolder' = p
                /\ pc' = Set(pc, p, "locked")
-               /\ UNCHANGED <<schema, areq, lease, reg, req, eligible, owner, fence,
+               /\ UNCHANGED <<schema, areq, lease, reg, req, owner, fence,
                               trusted, count, gen, store, handle, reader, diedIn,
                               counts>>
 
@@ -450,7 +435,7 @@ Detach(p) ==
           ELSE /\ att' = Set(att, p, IF Control = "upgrader-keeps-tiers"
                                         THEN "uWGateT" ELSE "uWGate")
                /\ UNCHANGED <<pc, handle, reader>>
-    /\ UNCHANGED <<areq, lease, schema, req, eligible, coord, store, diedIn,
+    /\ UNCHANGED <<areq, lease, schema, req, coord, store, diedIn,
                    counts, reg>>
 
 \* A listing runs on a thread of its own, on a process that need not be

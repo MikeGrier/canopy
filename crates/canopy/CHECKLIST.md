@@ -43,9 +43,16 @@ Each item here names the event it waits on; it joins a milestone once that event
 - [x] **M11-6** -- The SharedPublication Store replay binds document and recovery steps to both coordination implementations. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m11-6)
 
 - [ ] **M11-7** -- The rest of `Coordination`'s bridge: the registry, the upgrade, clones and
-  leases, reads and discovery, and the escapes -- a waiting writer withdrawing or refused, a handle
-  giving up attaching -- with the eligibility that refusal follows, bound as M11-5 binds the writer
-  actions, so that every `Coordination` trace replays.
+  leases, reads and discovery, and the escapes -- a waiting writer withdrawing, a handle giving up
+  attaching -- bound as M11-5 binds the writer actions, so that every `Coordination` trace replays.
+  Before binding a writer's withdrawal, agree with the engineer how a pending request is cancelled
+  in production: a cancellable acquisition contract, or a client request loop over nonblocking
+  acquisition. The model's `Withdraw` must exercise that production path, not a test-only
+  simulation. The acquisition contract is in acadia's
+  [exclusion.rs](../acadia/src/coord/exclusion.rs); Store's acquisition is in
+  [coordinated.rs](src/store/coordinated.rs). Also classify the negative-control timelines'
+  expected departures explicitly in their scenario tables before requiring the full corpus to
+  pass; T14's early count publication is not a behaviour of correct recovery.
 
 - [ ] **M11-8** (was `FM-3.3`) -- Prove the harness bites: remove the namespace sync that
   collection performs before deleting, and confirm that the replay of a trace of the protocol as
@@ -53,6 +60,23 @@ Each item here names the event it waits on; it joins a milestone once that event
   at that `CollSync` step. The `DANGLING-DURABLE` counterexample is not that trace: it is read
   from a model without the record guard, and with the record guard the model reaches no
   `DANGLING-DURABLE` state even without the sync (decided with the engineer, 2026-11-15).
+
+- [ ] **M11-9** -- Establish the recovery quotient, so that the publication composition is checked
+  through a reduction shown to match its reference, not one resting on its argument alone
+  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "State-space reduction for recovery-unit verification" and
+  "A reduction keeps the original it answers to"; the argument is in
+  [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#recovery-quotient-argument)). First finish checking
+  the removal of writer-request eligibility ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A writer's
+  request ends served, withdrawn or dead"), whose `Coordination` item tier and replay bridges were
+  checked before it was committed: the `SharedPublication` and `SharedPublicationCheck` item
+  tiers, `ReplayCoordination`, `ReplaySharedPublication`, and the rewritten probe
+  `withdraw-wrong-outcome`. Each `SharedPublicationCheck` configuration and its unreduced
+  `SharedPublication` counterpart reach
+  the same outcome -- every invariant and property holding, or the same one violated -- and the
+  controls and the collection, refusal, completion and stale-progress witnesses keep theirs under
+  the view. Then make the view's configurations the ones the sweep checks on each revision of the
+  model, and keep each unreduced counterpart runnable as the reference, in a tier chosen from its
+  measured cost. Until then the unreduced configurations stay as they are.
 
 ## M12 -- Extend the protocol model
 
@@ -102,6 +126,14 @@ decision about fairness and on what MP-4 and CQ-1 find, the refinement is writte
 MP-3 and MP-4 change, the oracle for tests at the API uses M11's harness, and the documentation for
 dependents describes the multi-process behaviour of M7 to M10. CM-1, which needed none of them and steers
 MP-3 and MP-4, was done in M3.
+
+**Parallel track (decided with the engineer, 2026-11-16).** The store's hardening, M11 to M13,
+stays the first and primary work. While it waits, M14-1 and M14-2 may proceed in another session
+or on another machine, provided they take nothing from it: no long checks on the machine doing the
+hardening, no edits to the specs, generated configurations or traces the hardening is changing, and
+where both touch the same code the hardening's change goes first. M14-5 and M14-6 may be discussed
+in the same way. M14-6 and M14-7 start from a model whose writer requests end served, withdrawn or
+dead. The rest of M14 follows its dependencies as written.
 
 - [ ] **M14-1** (was `API-2`) -- Transactions built without exclusion and submitted once
   ([DESIGN-NOTES.md](DESIGN-NOTES.md) "No caller code runs under exclusion but the commit

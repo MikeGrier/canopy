@@ -7,14 +7,14 @@ EXTENDS CoordinationAttachment
 (* Writer exclusion (DESIGN-NOTES "Writer exclusion", "Ownership").        *)
 
 \* The request is served when the lock is granted. Whenever it is free this is
-\* enabled for every eligible waiter.
+\* enabled for every waiter.
 Lock(p) ==
-    /\ pc[p] = "waiting" /\ eligible[p]
+    /\ pc[p] = "waiting"
     /\ lockHolder = None
     /\ lockHolder' = p
     /\ pc' = Set(pc, p, "locked")
     /\ req' = Set(req, p, "served")
-    /\ UNCHANGED <<adm, eligible, owner, fence, trusted, count, gen, store, handle,
+    /\ UNCHANGED <<adm, owner, fence, trusted, count, gen, store, handle,
                    reader, diedIn, counts>>
 
 \* Under the lock the ownership record, the fence and the trust flag cannot
@@ -27,7 +27,7 @@ SetFence(p) ==
     /\ pc[p] = "locked" /\ owner # None /\ ~fence
     /\ Control # "replace-without-fence"
     /\ fence' = TRUE
-    /\ UNCHANGED <<adm, pc, req, eligible, lockHolder, owner, trusted, count, gen,
+    /\ UNCHANGED <<adm, pc, req, lockHolder, owner, trusted, count, gen,
                    store, handle, reader, diedIn, counts>>
 
 \* The acquirer records itself as holder, advances the generation, and is told
@@ -51,14 +51,14 @@ Record(p) ==
                     /\ ~(att[p] = "uBody"
                          /\ Control = "upgrade-ignores-recovery-required")
                     THEN "told" ELSE "held")
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, fence, trusted, count, store,
+    /\ UNCHANGED <<adm, req, lockHolder, fence, trusted, count, store,
                    reader, diedIn, counts>>
 
 \* The opening raise is prepared, then published.
 BeginOpen(p) ==
     /\ pc[p] = "held"
     /\ pc' = Set(pc, p, "opening")
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
 
 \* Publishing makes the new count visible at once, and any cached sample of the
 \* old one is invalidated before the publication takes effect.
@@ -70,7 +70,7 @@ EndOpen(p) ==
     /\ count' = Nx(count)
     /\ pc' = Set(pc, p, "open")
     /\ scache' = Cleared
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, fence, trusted, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, fence, trusted, gen, store,
                    handle, rphase, rbefore, rseenA, rseenB, rpart, disc, diedIn,
                    counts>>
 
@@ -79,7 +79,7 @@ OpenFails(p) ==
     /\ PublicationsFail
     /\ pc[p] = "opening"
     /\ pc' = Set(pc, p, "closed")
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
 
 \* Where a transaction's first swap is made from: after the prepare record, or
 \* under a control before it.
@@ -114,14 +114,14 @@ FirstEffect(p) ==
           ELSE /\ a' = Nx(a)
                /\ shared' = Nx(shared)
                /\ cache' = Set(cache, p, Nx(shared))
-    /\ UNCHANGED <<adm, req, eligible, coord, b, log, stage, ptgt, mygen, reader,
+    /\ UNCHANGED <<adm, req, coord, b, log, stage, ptgt, mygen, reader,
                    diedIn, counts>>
 
 LastEffect(p) ==
     /\ pc[p] = "writing"
     /\ pc' = Set(pc, p, IF TxnOp THEN "applied" ELSE "wrote")
     /\ b' = IF TxnOp THEN (IF ptgt # 0 THEN ptgt ELSE stage) ELSE Nx(b)
-    /\ UNCHANGED <<adm, req, eligible, coord, a, shared, log, stage, ptgt, handle,
+    /\ UNCHANGED <<adm, req, coord, a, shared, log, stage, ptgt, handle,
                    reader, diedIn, counts>>
 
 \* An operation that finds nothing to change ends without an effect, and one
@@ -130,7 +130,7 @@ LastEffect(p) ==
 EndEmpty(p) ==
     /\ pc[p] = "open"
     /\ pc' = Set(pc, p, "wrote")
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
 
 Rollback(p) ==
     /\ ~TxnOp /\ pc[p] = "writing"
@@ -138,7 +138,7 @@ Rollback(p) ==
     /\ a' = b
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<adm, req, eligible, coord, b, log, stage, ptgt, mygen, reader,
+    /\ UNCHANGED <<adm, req, coord, b, log, stage, ptgt, mygen, reader,
                    diedIn, counts>>
 
 \* An operation that fails after its first effect and cannot be rolled back sets
@@ -153,7 +153,7 @@ FailUnresolved(p) ==
     /\ pc[p] \in FailStates
     /\ pc' = Set(pc, p, "told")
     /\ fence' = TRUE
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 \* The prepare record's append fails, and the record may or may not have been
@@ -171,7 +171,7 @@ PrepareFails(p) ==
           /\ cache' = Set(cache, p, Nx(shared))
     /\ pc' = Set(pc, p, "told")
     /\ fence' = TRUE
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, a, b,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, a, b,
                    stage, mygen, reader, diedIn, counts>>
 
 \* Under Callbacks the store calls back into the caller once the effects are done, inside
@@ -184,22 +184,22 @@ Observe(p) ==
     /\ pc' = Set(pc, p, "observed")
     /\ IF Control = "callback-changes-the-store"
           THEN /\ a' = Nx(a)
-               /\ UNCHANGED <<adm, req, eligible, coord, b, shared, log, stage, ptgt,
+               /\ UNCHANGED <<adm, req, coord, b, shared, log, stage, ptgt,
                               handle, reader, diedIn, counts>>
-          ELSE UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
+          ELSE UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
 
 \* The closing raise is prepared, then published.
 BeginClose(p) ==
     /\ pc[p] = IF Callbacks THEN "observed" ELSE "wrote"
     /\ pc' = Set(pc, p, "closing")
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
 
 EndClose(p) ==
     /\ pc[p] = "closing"
     /\ count' = Nx(count)
     /\ pc' = Set(pc, p, "closed")
     /\ scache' = Cleared
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, fence, trusted, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, fence, trusted, gen, store,
                    handle, rphase, rbefore, rseenA, rseenB, rpart, disc, diedIn,
                    counts>>
 
@@ -210,7 +210,7 @@ CloseFails(p) ==
     /\ pc[p] = "closing"
     /\ pc' = Set(pc, p, "told")
     /\ fence' = TRUE
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 \* A clean release clears the ownership record while still holding the lock,
@@ -225,7 +225,7 @@ Release(p) ==
           ELSE /\ lockHolder' = lockHolder
                /\ owner' = None
                /\ pc' = Set(pc, p, "releasing")
-    /\ UNCHANGED <<adm, req, eligible, fence, trusted, count, gen, store, handle,
+    /\ UNCHANGED <<adm, req, fence, trusted, count, gen, store, handle,
                    reader, diedIn, counts>>
 
 \* An upgrader that lets go of exclusion has finished with its handle too: the
@@ -243,7 +243,7 @@ Unlock(p) ==
                /\ UNCHANGED <<recorded, lease, reg>>
           ELSE /\ pc' = Set(pc, p, "idle")
                /\ UNCHANGED adm
-    /\ UNCHANGED <<req, eligible, owner, fence, trusted, count, gen, store,
+    /\ UNCHANGED <<req, owner, fence, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 \* Only under Control = "unlock-before-clear": removes whatever record is
@@ -252,7 +252,7 @@ ClearRecord(p) ==
     /\ pc[p] = "unlocked"
     /\ owner' = None
     /\ pc' = Set(pc, p, "idle")
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, fence, trusted, count, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, fence, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 -----------------------------------------------------------------------------
@@ -272,7 +272,7 @@ Begin(p) ==
     /\ log' = "begun"
     /\ pc' = Set(pc, p, "begun")
     /\ Logged(p)
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, stage, ptgt, mygen, reader,
+    /\ UNCHANGED <<adm, req, coord, a, b, stage, ptgt, mygen, reader,
                    diedIn, counts>>
 
 \* Ingest stages every body the transaction writes, durably. A transaction
@@ -281,7 +281,7 @@ Ingest(p) ==
     /\ pc[p] = "begun"
     /\ stage' = Nx(a)
     /\ pc' = Set(pc, p, "ingested")
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, shared, log, ptgt, handle,
+    /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt, handle,
                    reader, diedIn, counts>>
 
 \* Where the prepare record is written: after ingest, or at another point under
@@ -300,7 +300,7 @@ Prepare(p) ==
     /\ pc' = Set(pc, p, IF Control = "apply-before-prepare" THEN "applied"
                         ELSE "prepared")
     /\ Logged(p)
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, stage, mygen, reader, diedIn,
+    /\ UNCHANGED <<adm, req, coord, a, b, stage, mygen, reader, diedIn,
                    counts>>
 
 \* A failure before the prepare record is written is rolled back: nothing in the
@@ -318,7 +318,7 @@ Abort(p) ==
     /\ ptgt' = 0
     /\ pc' = Set(pc, p, "wrote")
     /\ Logged(p)
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, a, b, mygen, reader, diedIn, counts>>
 
 \* The end record follows the last swap. Under Control = "end-before-the-swaps"
 \* it may be written before every swap has landed.
@@ -330,7 +330,7 @@ End(p) ==
     /\ ptgt' = 0
     /\ pc' = Set(pc, p, "ended")
     /\ Logged(p)
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, stage, mygen, reader, diedIn,
+    /\ UNCHANGED <<adm, req, coord, a, b, stage, mygen, reader, diedIn,
                    counts>>
 
 \* The sweep removes the transaction's staging.
@@ -338,7 +338,7 @@ Sweep(p) ==
     /\ Logs /\ pc[p] = "ended"
     /\ stage' = 0
     /\ pc' = Set(pc, p, "wrote")
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, shared, log, ptgt, handle,
+    /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt, handle,
                    reader, diedIn, counts>>
 
 \* The commit log is reset by a holder with nothing in flight, and only once
@@ -356,7 +356,7 @@ Quiesce(p) ==
     /\ log' = "empty"
     /\ ptgt' = 0
     /\ Logged(p)
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, a, b, stage, mygen, reader,
+    /\ UNCHANGED <<adm, pc, req, coord, a, b, stage, mygen, reader,
                    diedIn, counts>>
 
 -----------------------------------------------------------------------------
@@ -386,7 +386,7 @@ ReadBefore(p) ==
                /\ scache' = Set(scache, p, Sampled(p))
                /\ rphase' = Set(rphase, p, "obsA")
                /\ UNCHANGED rpart
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rseenA, rseenB,
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, rseenA, rseenB,
                    disc, diedIn, requests, deaths, crashes, discoveries, upgrades,
                    woken>>
 
@@ -394,21 +394,21 @@ ReadBefore2(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "before2"
     /\ rbefore' = Set(rbefore, p, 2 * rpart[p] + (count % 2))
     /\ rphase' = Set(rphase, p, "obsA")
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rseenA, rseenB,
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, rseenA, rseenB,
                    rpart, scache, disc, diedIn, counts>>
 
 ObserveA(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "obsA"
     /\ rseenA' = Set(rseenA, p, a)
     /\ rphase' = Set(rphase, p, "obsB")
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rbefore, rseenB,
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, rbefore, rseenB,
                    rpart, scache, disc, diedIn, counts>>
 
 ObserveB(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "obsB"
     /\ rseenB' = Set(rseenB, p, b)
     /\ rphase' = Set(rphase, p, "after1")
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rbefore, rseenA,
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, rbefore, rseenA,
                    rpart, scache, disc, diedIn, counts>>
 
 \* The second sample ends the read: it is settled when the two samples are
@@ -416,25 +416,25 @@ ObserveB(p) ==
 ReadAfter(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "after1" /\ Control # "assembled-sample"
     /\ FinishRead(p, Sampled(p))
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, diedIn, counts>>
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, diedIn, counts>>
 
 ReadAfter1(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "after1" /\ Control = "assembled-sample"
     /\ rpart' = Set(rpart, p, count \div 2)
     /\ rphase' = Set(rphase, p, "after2")
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rbefore, rseenA,
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, rbefore, rseenA,
                    rseenB, scache, disc, diedIn, counts>>
 
 ReadAfter2(p) ==
     /\ pc[p] = "idle" /\ rphase[p] = "after2"
     /\ FinishRead(p, 2 * rpart[p] + (count % 2))
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, diedIn, counts>>
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, diedIn, counts>>
 
 \* A cached sample may be dropped at any time.
 Invalidate(p) ==
     /\ scache[p] # NoVal
     /\ scache' = Set(scache, p, NoVal)
-    /\ UNCHANGED <<adm, pc, req, eligible, coord, store, handle, rphase, rbefore,
+    /\ UNCHANGED <<adm, pc, req, coord, store, handle, rphase, rbefore,
                    rseenA, rseenB, rpart, disc, diedIn, counts>>
 
 -----------------------------------------------------------------------------
@@ -502,7 +502,7 @@ UpFails(p) ==
     /\ UpSteps > 0 /\ pc[p] = "upBody"
     /\ pc' = Set(pc, p, "told")
     /\ fence' = TRUE
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 -----------------------------------------------------------------------------
@@ -533,14 +533,14 @@ RecStart(p) ==
                  ELSE IF ~Txn /\ Partial THEN "recWhole"
                  ELSE "recEnd")
     /\ fence' = IF Control = "fence-cleared-at-recovery-start" THEN FALSE ELSE fence
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 RecSwap1(p) ==
     /\ pc[p] = "recSwap1" /\ log = "prepared"
     /\ a' = ptgt
     /\ pc' = Set(pc, p, "recSwap2")
-    /\ UNCHANGED <<adm, req, eligible, coord, b, shared, log, stage, ptgt, handle,
+    /\ UNCHANGED <<adm, req, coord, b, shared, log, stage, ptgt, handle,
                    reader, diedIn, counts>>
 
 \* An unlogged write's half-applied store is made whole, forward or back: the
@@ -554,14 +554,14 @@ RecWhole(p) ==
           /\ cache' = Set(cache, p, Pv(shared))
           /\ UNCHANGED b
     /\ pc' = Set(pc, p, "recEnd")
-    /\ UNCHANGED <<adm, req, eligible, coord, log, stage, ptgt, mygen, reader,
+    /\ UNCHANGED <<adm, req, coord, log, stage, ptgt, mygen, reader,
                    diedIn, counts>>
 
 RecSwap2(p) ==
     /\ pc[p] = "recSwap2" /\ log = "prepared"
     /\ b' = ptgt
     /\ pc' = Set(pc, p, "recEnd")
-    /\ UNCHANGED <<adm, req, eligible, coord, a, shared, log, stage, ptgt, handle,
+    /\ UNCHANGED <<adm, req, coord, a, shared, log, stage, ptgt, handle,
                    reader, diedIn, counts>>
 
 \* A prepared transaction is ended; one that was only begun has its staging swept
@@ -587,7 +587,7 @@ RecEnd(p) ==
        \/ /\ log \in {"empty", "ended"}
           /\ pc' = Set(pc, p, "recSweep")
           /\ UNCHANGED <<log, ptgt, stage, shared, cache>>
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, a, b, mygen, reader, diedIn, counts>>
 
 RecReset(p) ==
      /\ pc[p] = "recReset" /\ log # "prepared"
@@ -596,14 +596,14 @@ RecReset(p) ==
      /\ pc' = Set(pc, p,
                       IF Control = "count-published-before-the-namespace-is-whole"
                           THEN "recClear" ELSE "recCount")
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, stage, ptgt, mygen, reader,
+    /\ UNCHANGED <<adm, req, coord, a, b, stage, ptgt, mygen, reader,
                    diedIn, counts>>
 
 RecSweep(p) ==
     /\ pc[p] = "recSweep"
     /\ stage' = 0
     /\ pc' = Set(pc, p, "recReset")
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, shared, log, ptgt, handle,
+    /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt, handle,
                    reader, diedIn, counts>>
 
 \* The count is published even, together with the trust that only a completed
@@ -622,7 +622,7 @@ RecCount(p) ==
                           ELSE IF ~Txn /\ Partial THEN "recWhole"
                           ELSE "recEnd")
                     ELSE "recClear")
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, fence, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, fence, gen, store,
                    handle, rphase, rbefore, rseenA, rseenB, rpart, disc, counts>>
 
 \* The last step: only now is the fence cleared.
@@ -630,7 +630,7 @@ RecClear(p) ==
     /\ pc[p] = "recClear"
     /\ fence' = FALSE
     /\ pc' = Set(pc, p, "closed")
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, store,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, store,
                    handle, reader, diedIn, counts>>
 
 \* A recoverer stops between steps, holding exclusion and leaving the rest for
@@ -639,7 +639,7 @@ RecClear(p) ==
 RecStop(p) ==
     /\ pc[p] \in RecStates \ {"recClear"}
     /\ pc' = Set(pc, p, "told")
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
 
 \* What discovery reports: recovery is required when the fence is set, when the
 \* coordination state cannot be vouched for, or when a record names a holder
@@ -661,7 +661,7 @@ Discover(p) ==
     /\ discoveries' = Tick(discoveries)
     /\ fence' = IF Control = "discovery-clears-the-fence" /\ lockHolder = None
                    THEN FALSE ELSE fence
-    /\ UNCHANGED <<adm, pc, req, eligible, lockHolder, owner, trusted, count, gen,
+    /\ UNCHANGED <<adm, pc, req, lockHolder, owner, trusted, count, gen,
                    store, handle, rphase, rbefore, rseenA, rseenB, rpart, scache,
                    diedIn, requests, deaths, crashes, reads, upgrades, woken>>
 

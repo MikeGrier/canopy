@@ -53,7 +53,7 @@ RelevantIntervention ==
                           /\ requestRecovery[holder] /\ unitIntervened[holder]]
 
 QuotientView ==
-    <<adm, pc, req, eligible, lockHolder, owner, fence, trusted, count % 2,
+    <<adm, pc, req, lockHolder, owner, fence, trusted, count % 2,
       VersionRank(gen), RelativeTransaction, reader, diedIn, counts, RankedDocuments,
       wph, wdoc, wix, RankedVersions(wkeep), txnDoc, runPhase, SavedCountClasses,
     RelevantUnitReadiness, RelevantRequestIntent, directoryLive, directoryDurable, runDirectories,
@@ -95,7 +95,7 @@ RecoveryRequest(holder) ==
     /\ pc' = Set(pc, holder, "waiting")
     /\ req' = Set(req, holder, "pending")
     /\ requestRecovery' = Set(requestRecovery, holder, TRUE)
-    /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, counts,
+    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, counts,
                    docs, work, writes, ordinaryRequests>>
     /\ TxnTargets /\ RunState /\ Kinds /\ DirectoryState /\ RecoveryInterleaving
 

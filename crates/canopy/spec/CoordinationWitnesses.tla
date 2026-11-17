@@ -8,9 +8,8 @@ EXTENDS CoordinationUpgradeProperties
 
 HoldsTold == \E p \in Procs : pc[p] = "told"
 
-Witness_AllThreeUnservedOutcomes ==
-    ~( (\E p \in Procs : req[p] = "refused")
-       /\ (\E p \in Procs : req[p] = "withdrawn")
+Witness_BothUnservedOutcomes ==
+    ~( (\E p \in Procs : req[p] = "withdrawn")
        /\ (\E p \in Procs : req[p] = "dead") )
 
 Witness_ToldAfterDeathBeforeFirstEffect ==

@@ -112,13 +112,13 @@
             Def       = 'Request'
             Old = @'
     /\ requests' = Tick(requests)
-    /\ UNCHANGED <<adm, eligible, coord, store, handle, reader, diedIn, deaths,
+    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, deaths,
                    crashes, reads>>
 '@
             New = @'
     /\ requests' = Tick(requests)
     /\ log' = "empty"
-    /\ UNCHANGED <<adm, eligible, coord, a, b, shared, stage, ptgt, handle, reader,
+    /\ UNCHANGED <<adm, coord, a, b, shared, stage, ptgt, handle, reader,
                    diedIn, deaths, crashes, reads>>
 '@
         }
@@ -131,11 +131,11 @@
             Overrides = @{ MaxRequests = '1' }
             Def       = 'Abort'
             Old = @'
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, a, b, mygen, reader, diedIn, counts>>
 '@
             New = @'
     /\ a' = IF stage # 0 THEN stage ELSE a
-    /\ UNCHANGED <<adm, req, eligible, coord, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, b, mygen, reader, diedIn, counts>>
 '@
         }
 
@@ -168,12 +168,12 @@
             Old = @'
     /\ pc' = Set(pc, p, "told")
     /\ fence' = TRUE
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, a, b,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, a, b,
 '@
             New = @'
     /\ pc' = Set(pc, p, "told")
     /\ fence' = fence
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen, a, b,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, a, b,
 '@
         }
 

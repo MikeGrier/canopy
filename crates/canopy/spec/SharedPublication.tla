@@ -236,14 +236,14 @@ SRunStart(holder) ==
           /\ wdoc' = IF phase = "collection" THEN txnDoc ELSE 0
     /\ wix' = 1 /\ wkeep' = {}
     /\ fence' = IF Control = "fence-cleared-at-recovery-start" THEN FALSE ELSE fence
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen,
                    store, handle, reader, diedIn, counts, docs>>
 
 RunUnitEnd(holder) ==
     /\ W(holder) /\ RunUnitFinished(holder)
     /\ pc' = Set(pc, holder, "told")
     /\ NoWork
-    /\ UNCHANGED <<adm, req, eligible, coord, store, handle, reader, diedIn, counts, docs>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts, docs>>
 
 DirectorySync(holder) ==
     /\ W(holder) /\ wph = "dirSync"
@@ -594,7 +594,7 @@ RbBegin(holder) ==
     /\ pc' = Set(pc, holder, "begun")
     /\ wph' = IF txnDoc = 0 THEN "rbDone" ELSE "rbCollRead"
     /\ wdoc' = txnDoc /\ wix' = 1
-    /\ UNCHANGED <<adm, req, eligible, coord, a, b, shared, log, ptgt,
+    /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt,
                    handle, reader, diedIn, counts, docs, wkeep>>
 
 RbCollected ==
@@ -642,7 +642,7 @@ RbCollFails(holder) ==
     /\ wph \in {"rbCollRead", "rbCollSync", "rbCollRem", "rbCollFsync"}
     /\ pc' = Set(pc, holder, "told") /\ fence' = TRUE
     /\ NoWork
-    /\ UNCHANGED <<adm, req, eligible, lockHolder, owner, trusted, count, gen,
+    /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen,
                    store, handle, reader, diedIn, counts, docs>>
 
 \* "resolve": every replica is set to the document's majority and synced.

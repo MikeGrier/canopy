@@ -110,16 +110,14 @@ CrashLeavesNoLiveProcess ==
 RequestStateMatchesProcess ==
     \A p \in Procs : (req[p] = "pending") <=> (pc[p] = "waiting")
 
-\* Audience: client. A request is reported dead only if its process died, and refused only if the
-\* rules did not admit it. Shows through: the outcome of a request.
+\* Audience: client. A request is reported dead only if its process died. Shows through: the
+\* outcome of a request.
 OutcomeIsJustified ==
-    \A p \in Procs :
-        /\ req[p] = "dead" => pc[p] = "dead"
-        /\ req[p] = "refused" => ~eligible[p]
+    \A p \in Procs : req[p] = "dead" => pc[p] = "dead"
 
-\* Audience: client. Every request ends in exactly one outcome -- served, refused, withdrawn or
-\* dead -- and keeps it. Shows through: the outcome of a request.
-\* A request leaves "pending" in exactly one of the four outcomes, which then
+\* Audience: client. Every request ends in exactly one outcome -- served, withdrawn or dead -- and
+\* keeps it. Shows through: the outcome of a request.
+\* A request leaves "pending" in exactly one of the three outcomes, which then
 \* does not change until the process makes another request, and each outcome
 \* comes with the process state that explains it.
 EveryRequestEndsInExactlyOneOutcome ==
@@ -127,10 +125,9 @@ EveryRequestEndsInExactlyOneOutcome ==
           /\ req[p] = "none" => req'[p] \in {"none", "pending"}
           /\ req[p] \in Outcomes => req'[p] \in {req[p], "pending"}
           /\ (pc[p] = "waiting" /\ pc'[p] # "waiting") =>
-                \/ pc'[p] = "locked" /\ req'[p] = "served" /\ eligible[p]
+                \/ pc'[p] = "locked" /\ req'[p] = "served"
                 \/ pc'[p] = "dead" /\ req'[p] = "dead"
                 \/ pc'[p] = "idle" /\ req'[p] = "withdrawn"
-                \/ pc'[p] = "idle" /\ req'[p] = "refused" /\ ~eligible[p]
       ]_vars
 
 \* Audience: internal.
@@ -231,7 +228,7 @@ ACallbackChangesOnlyWhereItsHolderIs ==
     [][\A p \in Procs :
           (pc[p] = "wrote" /\ pc'[p] = "observed") =>
               /\ \A q \in Procs \ {p} : pc'[q] = pc[q]
-              /\ UNCHANGED <<req, eligible, coord, store, handle, reader, diedIn, counts,
+              /\ UNCHANGED <<req, coord, store, handle, reader, diedIn, counts,
                              att, areq, lease, schema, reg>>]_vars
 
 \* A read whose last step this is, and the value of its second sample.

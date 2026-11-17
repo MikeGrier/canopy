@@ -62,12 +62,11 @@
 (* PointerPublication.tla's concern, so a crash here leaves it alone.      *)
 (*                                                                         *)
 (* Waiting. A request is an individual object that ends in exactly one of  *)
-(* four outcomes: served, withdrawn, dead with its process, or refused as  *)
-(* ineligible (req). There is no queue or ticket in the state: whenever    *)
-(* the lock is free, acquisition is enabled for every eligible waiting     *)
-(* process and the checker chooses among them, so every invariant is       *)
-(* checked against every service order. "eligible" stands for the          *)
-(* admission rules and only ever goes from true to false.                  *)
+(* three outcomes: served, withdrawn, or dead with its process (req).      *)
+(* There is no queue or ticket in the state: whenever the lock is free,    *)
+(* acquisition is enabled for every waiting process and the checker        *)
+(* chooses among them, so every invariant is checked against every service *)
+(* order.                                                                  *)
 (*                                                                         *)
 (* Attachment. A process is a reader, a writer, or an upgrader of one      *)
 (* layer, and speaks a schema in each layer (Scenario). It attaches        *)
@@ -540,7 +539,6 @@ MaxShared == 6 * Acquisitions
 VARIABLES
     pc,          \* [Procs -> process states]: each process's execution state
     req,         \* [Procs -> request states]: the state of its latest request
-    eligible,    \* [Procs -> BOOLEAN]: whether the admission rules admit it
     lockHolder,  \* the process holding the OS lock, or None
     owner,       \* the process the ownership record names, or None
     fence,       \* recovery is required until it is cleared; survives a death
@@ -606,7 +604,7 @@ VARIABLES
     woken        \* [Procs -> Notices]: whether each process samples what it waits
                  \* for, sleeps registered for a notification, or has lost it
 
-vars == <<pc, req, eligible, lockHolder, owner, fence, trusted, count, gen,
+vars == <<pc, req, lockHolder, owner, fence, trusted, count, gen,
           a, b, shared, log, stage, ptgt, mygen, cache, rphase, rbefore, rseenA,
           rseenB, rpart, scache, disc, att, areq, lease, cl, ll, etok, edr, ovf,
           rst, rscan, rcur, lph, lcur, ltok, lrep, lunk, lfree, lres, lists,
@@ -634,7 +632,7 @@ reg    == <<rlock, rdata, ovf, rown, rlist>>
 adm    == <<att, areq, lease, reg, schema>>
 \* Everything but the process state, the attachment state, its request, the
 \* leases, the registry and the schema state.
-bystanders == <<req, eligible, coord, store, handle, reader, diedIn, counts>>
+bystanders == <<req, coord, store, handle, reader, diedIn, counts>>
 rest   == <<lease, reg, bystanders>>
 \* Everything but the registry.
 core   == <<pc, att, areq, lease, schema, bystanders>>
@@ -863,8 +861,7 @@ Undisturbed(x, y) == x = y /\ Even(x)
 \* Audience: internal.
 TypeOK ==
     /\ pc \in [Procs -> States]
-    /\ req \in [Procs -> {"none", "pending"} \cup Outcomes]
-    /\ eligible \in [Procs -> BOOLEAN]
+    /\ req \in [Procs -> {"none", "pending"} \cup (Outcomes \ {"refused"})]
     /\ lockHolder \in Procs \cup {None}
     /\ owner \in Procs \cup {None}
     /\ fence \in BOOLEAN
@@ -926,7 +923,6 @@ TypeOK ==
 Init ==
     /\ pc = [p \in Procs |-> "new"]
     /\ req = [p \in Procs |-> "none"]
-    /\ eligible = [p \in Procs |-> TRUE]
     /\ lockHolder = None
     /\ owner = None
     /\ fence = FALSE

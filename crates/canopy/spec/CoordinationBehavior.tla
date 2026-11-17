@@ -35,7 +35,7 @@ Die(p) ==
     /\ lfree' = Set(lfree, p, FALSE)
     /\ lres' = Set(lres, p, "none")
     /\ UNCHANGED <<rdata, ovf, lists>>
-    /\ UNCHANGED <<recorded, eligible, owner, fence, trusted, count, gen, store,
+    /\ UNCHANGED <<recorded, owner, fence, trusted, count, gen, store,
                    requests, crashes, reads, discoveries, upgrades, woken>>
 
 \* EXTERNAL: power loss. Every process dies and every lock is released. The
@@ -83,7 +83,7 @@ Crash ==
     /\ lunk' = [p \in Procs |-> FALSE]
     /\ lfree' = [p \in Procs |-> FALSE]
     /\ lres' = [p \in Procs |-> "none"]
-    /\ UNCHANGED <<recorded, eligible, gen, store, requests, deaths, reads, lists,
+    /\ UNCHANGED <<recorded, gen, store, requests, deaths, reads, lists,
                    discoveries, upgrades, woken>>
 
 -----------------------------------------------------------------------------
@@ -108,7 +108,7 @@ WaitSteps(p) ==
 \* What a waiter waits for is there: one of WaitSteps(p) is enabled, which
 \* ReadyMatchesTheWaits checks.
 Ready(p) ==
-    \/ pc[p] = "waiting" /\ eligible[p] /\ lockHolder = None
+    \/ pc[p] = "waiting" /\ lockHolder = None
     \/ att[p] = "wGate" /\ ~GateXHeld
     \/ att[p] = "hasGate" /\ ~ReaderXHeld
     \/ /\ \/ att[p] = "rd" /\ Control # "check-before-writer-tier"
@@ -128,7 +128,7 @@ Ready(p) ==
 Sampling(p) == ~Notifications \/ woken[p] = "sample"
 
 \* Everything but the notices.
-Unnoticed == <<pc, att, areq, lease, schema, reg, req, eligible, coord, store, handle,
+Unnoticed == <<pc, att, areq, lease, schema, reg, req, coord, store, handle,
                reader, diedIn, requests, deaths, crashes, reads, discoveries, upgrades>>
 
 \* A waiter that samples and finds what it waits for absent registers and sleeps.
@@ -159,7 +159,7 @@ Terminal ==
 
 Next ==
     \/ \E p \in Procs :
-          \/ Exit(p) \/ Disqualify(p)
+          \/ Exit(p)
           \/ BeginAttach(p) \/ DropGate(p) \/ KeepGate(p) \/ CheckEarly(p) \/ Admit(p)
           \/ GiveUp(p) \/ BeginOp(p) \/ EndOp(p)
           \/ StartUpgrade(p) \/ RefuseUpgrade(p)
@@ -173,7 +173,7 @@ Next ==
           \/ ListStart(p) \/ ListClaim(p) \/ ListRead(p) \/ ListProbe(p)
           \/ ListDone(p)
           \/ BeginUpgrade(p) \/ UpgradeMoved(p) \/ EndUpgrade(p)
-          \/ Request(p) \/ Withdraw(p) \/ Refuse(p)
+          \/ Request(p) \/ Withdraw(p)
           \/ SetFence(p) \/ Record(p)
           \/ BeginOpen(p) \/ EndOpen(p) \/ OpenFails(p)
           \/ Begin(p) \/ Ingest(p) \/ Prepare(p) \/ PrepareFails(p) \/ Abort(p)
