@@ -197,14 +197,16 @@ impl FileCoordination {
                 }
             };
             let token = next_token();
-            let written = self.vfs().write(
-                &layout.registry_entry(index),
-                &encode(token, tiers, payload),
-            );
+            let written = self.publishing(|vfs| {
+                vfs.write(
+                    &layout.registry_entry(index),
+                    &encode(token, tiers, payload),
+                )
+            });
             if let Err(error) = written {
                 drop(self.release_lock(liveness));
                 drop(self.release_lock(claim));
-                return Err(error.into());
+                return Err(error);
             }
             drop(self.release_lock(claim));
             *entry = Some(Entry {
@@ -224,9 +226,8 @@ impl FileCoordination {
     pub(crate) fn unregister_entry(&self, entry: Entry) {
         let claim = self.try_claim(entry.index).ok().flatten();
         if claim.is_some() {
-            let _ = self
-                .vfs()
-                .remove_file(&self.layout().registry_entry(entry.index));
+            let _ =
+                self.publishing(|vfs| vfs.remove_file(&self.layout().registry_entry(entry.index)));
         }
         drop(self.release_lock(entry.liveness));
         if let Some(claim) = claim {

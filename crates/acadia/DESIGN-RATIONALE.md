@@ -196,3 +196,18 @@ single-step contract that `remove_dir_all` provides and would need a deeper step
 same states. The scenarios recreate a directory that arrived by a move because a move is what
 leaves a carried snapshot at that path; a directory created in place has none, and its
 recreation could not tell whether removal drops snapshots.
+
+## Abandonment waits for a change in progress rather than racing it
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Review fixes: stale staging names
+and abandonment during a change". A code review found that `FileCoordination::abandon` released the
+participant's locks while one of its operations could still be writing records, so a simulated
+death could keep writing after another participant took exclusion -- a state no real crash
+produces. Checking liveness before each write was rejected: the check and the write would still
+race the abandonment. Holding the table of holds across each individual change, as the shared
+implementation holds its guard, closes the window at the cost that an abandonment waits for a
+change already running; a replay harness that parks such a change now fails it before abandoning.
+
+Removing a stale staging sibling in `publish_new` was rejected for retrying under a fresh name:
+the process id in the name identifies a process only within one process-id namespace, and two
+namespaces sharing a filesystem could have a live publisher behind the same name.

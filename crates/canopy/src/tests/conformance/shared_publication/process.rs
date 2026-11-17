@@ -262,6 +262,11 @@ impl Process {
     }
 
     pub(super) fn end(&mut self) {
+        // A call parked inside a change to the coordination state fails first: abandonment waits
+        // for a change in progress, and a parked one would never finish.
+        self.recorder.kill();
+        self.turnstile.gate().ended = true;
+        self.turnstile.moved.notify_all();
         if let Some(store) = self
             .store
             .lock()
@@ -270,10 +275,7 @@ impl Process {
         {
             store.abandon_for_replay();
         }
-        self.recorder.kill();
-        self.turnstile.gate().ended = true;
         self.recorder.mem().abandon();
-        self.turnstile.moved.notify_all();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

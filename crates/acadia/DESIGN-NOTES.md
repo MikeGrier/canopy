@@ -1384,3 +1384,21 @@ announces each such step before it acts[^ac-5]:
   snapshot, leave descendants behind or make the removal durable without a sync each fail, and the
   probe corpus catches each one. [mem_model.rs](src/tests/mem_model.rs) replays the four scenarios
   through `MemFs`.
+
+## Review fixes: stale staging names and abandonment during a change, 2026-11-17
+
+- **A publication's staging name being taken never fails it.** `OsFs::publish_new` stages under
+  `<name>.publishing.<process id>-<counter>`, so a sibling can be left by a crashed process whose
+  id this one reuses, with its counter restarted. A taken staging name is skipped for a fresh
+  one, a bounded number of times, and is never removed: in another process-id namespace it may
+  belong to a live publisher. Running out of names fails as `Other`, never `AlreadyExists`, which
+  is the answer that the target itself is taken.
+- **An abandoned file-based participant changes nothing after `abandon` returns.** Every change
+  the file-based implementation makes to a record goes through `FileCoordination::publishing`,
+  which holds the participant's table of holds for its duration and refuses once the participant
+  is abandoned; `abandon` takes the same table. An abandonment therefore waits for a change in
+  progress and, once it returns, no further change lands, as for a dead process whose locks may
+  already be another participant's. A release whose bookkeeping races an abandonment reports
+  nothing, as a death does. The shared implementation's held-resource guard gives the same
+  property. A test harness that parks a call inside a change must make that call fail before it
+  abandons the participant, or the abandonment waits for it forever.

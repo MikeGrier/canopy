@@ -124,3 +124,29 @@ descendants behind, and make removal durable without a sync; each is caught.
 that skipped `drop_carried_under` in `remove_dir`, and then in `remove_dir_all`, failed the
 matching recreate replay each time, so the replay pins the snapshot drop on both paths. Decision:
 [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs directory removal in the durability reference".
+
+## Moved 2026-11-17 -- Fixes from the 2026-11-17 acadia review
+
+### <a id="m15-1"></a>M15-1 -- `OsFs::publish_new` skips a staging name a crashed process left behind instead of failing. *(completed 2026-11-17 16:13:31 -05:00)*
+
+`publish_new` stages through `publish_staged`, which tries up to `STAGING_ATTEMPTS` names, skips a
+taken one without removing it, and fails as `Other` -- never `AlreadyExists` -- if every name is
+taken. Unit tests beside `os.rs` pre-create the colliding sibling, exhaust every name, and check
+that a taken target is still refused after a skipped staging name. Decision:
+[DESIGN-NOTES.md](DESIGN-NOTES.md) "Review fixes: stale staging names and abandonment during a
+change".
+
+### <a id="m15-2"></a>M15-2 -- An abandoned file-based participant changes no record once `abandon` returns. *(completed 2026-11-17 16:13:31 -05:00)*
+
+`FileCoordination::publishing` holds the table of holds across each change to a record --
+`replace_whole`, the fence, the ownership record, registry entries and the reservation -- and
+refuses once the participant is abandoned; a release whose bookkeeping races an abandonment
+reports nothing. Two tests pause a change in flight and abandon the participant from another
+thread: one shows the abandonment waits and refuses every later change, the other races a real
+acquisition and checks the state left is one a death could leave. A revert-probe that released the
+table before the change failed both. canopy's shared-publication replay abandoned a store while
+its call was parked inside a change, which now waits forever; its process end fails the parked call
+first, as the coordination replay already did. Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md)
+"Review fixes: stale staging names and abandonment during a change".
+
+### <a id="m15-3"></a>M15-3 -- The coordination tests' atomics use acquire and release orderings rather than `SeqCst`. *(completed 2026-11-17 16:13:31 -05:00)*

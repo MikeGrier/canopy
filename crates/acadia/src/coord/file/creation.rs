@@ -138,8 +138,8 @@ impl FileCoordination {
                     inputs: inputs.to_vec(),
                 }
                 .encode();
-                match self.vfs().publish_new(&reservation, &bytes) {
-                    Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {
+                match self.publishing(|vfs| vfs.publish_new(&reservation, &bytes)) {
+                    Err(CoordError::Vfs(error)) if error.kind() == VfsErrorKind::AlreadyExists => {
                         return Err(CoordError::Reserved);
                     }
                     published => published?,

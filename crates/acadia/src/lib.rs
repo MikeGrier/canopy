@@ -583,7 +583,8 @@ pub trait Vfs: Send + Sync {
     ///
     /// The bytes are staged in a sibling whose name is the file's name followed by
     /// `.publishing.` and a suffix, removed whether the publication succeeds or fails. A crash
-    /// can leave one behind; it carries no meaning and may be removed.
+    /// can leave one behind; it carries no meaning, may be removed, and does not keep a later
+    /// publication from succeeding.
     ///
     /// The default implementation reports [`VfsErrorKind::Unsupported`], and **a decorator must
     /// forward this explicitly**, for the reason given at [`lock_exclusive`](Vfs::lock_exclusive).

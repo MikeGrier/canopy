@@ -6,8 +6,9 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use super::{Backend, implementations, on_every_implementation, participant, participant_on};
 use crate::coord::file::{FileCoordination, FileFactory};
@@ -156,7 +157,7 @@ fn a_live_holder_releasing_is_never_reported_dead() {
                     for _ in 0..ROUNDS {
                         let hold = participant.acquire(Waiting::Wait).expect("acquire");
                         if hold.acquired().holder_died() {
-                            reported_dead.store(true, Ordering::SeqCst);
+                            reported_dead.store(true, Ordering::Release);
                         }
                         hold.release().expect("release");
                     }
@@ -166,7 +167,7 @@ fn a_live_holder_releasing_is_never_reported_dead() {
         for contender in contenders {
             contender.join().expect("a contender");
         }
-        assert!(!reported_dead.load(Ordering::SeqCst), "{}", backend.name());
+        assert!(!reported_dead.load(Ordering::Acquire), "{}", backend.name());
     });
 }
 
@@ -500,5 +501,118 @@ fn exclusion_is_reached_through_the_interface() {
             .expect("end");
         hold.release().expect("release");
         assert!(participant.sample().expect("sample").is_settled());
+    }
+}
+
+#[test]
+fn a_file_abandonment_waits_for_a_publication_in_progress_and_refuses_every_later_one() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let dying = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let record = root.join("in-flight");
+        let (paused_tx, paused) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel::<()>();
+        let (abandoned_tx, abandoned) = mpsc::channel();
+        thread::scope(|scope| {
+            let (dying, record, mem) = (&dying, &record, &mem);
+            let publisher = scope.spawn(move || {
+                dying.publishing(move |vfs| {
+                    paused_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    vfs.write(record, b"in flight")
+                })
+            });
+            paused.recv().unwrap();
+            scope.spawn(move || {
+                dying.abandon();
+                abandoned_tx.send(mem.exists(record).unwrap()).unwrap();
+            });
+            let returned_early =
+                test_timers::mpsc::recv_timeout(&abandoned, Duration::from_millis(50)).is_ok();
+            // Resumed before any assertion, so a failure cannot leave the publisher parked.
+            resume.send(()).unwrap();
+            assert!(
+                !returned_early,
+                "an abandonment waits for the publication in progress"
+            );
+            assert!(
+                abandoned.recv().unwrap_or(true),
+                "the publication in progress landed before the abandonment returned"
+            );
+            publisher
+                .join()
+                .unwrap()
+                .expect("the publication in progress completes");
+        });
+        assert!(mem.exists(&record).unwrap());
+        let ran = AtomicBool::new(false);
+        let refused = dying.publishing(|_| {
+            ran.store(true, Ordering::Release);
+            Ok(())
+        });
+        assert!(matches!(refused, Err(CoordError::Abandoned)));
+        assert!(
+            !ran.load(Ordering::Acquire),
+            "nothing runs after abandonment"
+        );
+    }
+}
+
+#[test]
+fn a_file_acquisition_raced_by_its_abandonment_leaves_a_state_a_death_could() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let (paused_tx, paused) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel::<()>();
+        let resume_rx = Mutex::new(resume_rx);
+        let policy = FaultPolicy::new().inject_matching(
+            FaultOp::Write,
+            PathMatcher::FileNamePrefix("generation.staging.".into()),
+            Fault::observe_with(move |_, _| {
+                paused_tx.send(()).unwrap();
+                resume_rx.lock().unwrap().recv().unwrap();
+            }),
+            When::Once,
+        );
+        let dying = participant_on(
+            &implementation,
+            Arc::new(FaultyFs::new(mem.another_process(), policy)),
+            &root,
+        );
+        let (abandoned_tx, abandoned) = mpsc::channel();
+        let acquired = thread::scope(|scope| {
+            let dying = &dying;
+            let acquirer = scope.spawn(move || dying.acquire(Waiting::Wait));
+            paused.recv().unwrap();
+            scope.spawn(move || {
+                dying.abandon();
+                abandoned_tx.send(()).unwrap();
+            });
+            let returned_early =
+                test_timers::mpsc::recv_timeout(&abandoned, Duration::from_millis(50)).is_ok();
+            // Resumed before any assertion, so a failure cannot leave the acquirer parked.
+            resume.send(()).unwrap();
+            assert!(
+                !returned_early,
+                "an abandonment waits for the generation being published"
+            );
+            let _ = abandoned.recv();
+            acquirer.join().unwrap()
+        });
+        let wrote_its_record = match acquired {
+            Ok(hold) => {
+                drop(hold);
+                true
+            }
+            Err(CoordError::Abandoned) => false,
+            Err(error) => panic!("unexpected {error:?}"),
+        };
+        let next = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        assert_eq!(owner_recorded(&next), wrote_its_record);
+        let found = acquire(&next);
+        assert_eq!(found.acquired().holder_died(), wrote_its_record);
+        assert_eq!(found.acquired().found(), Generation::new(1));
     }
 }

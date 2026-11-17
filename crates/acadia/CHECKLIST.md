@@ -39,3 +39,12 @@ store".
 ## M14 -- Recursive removal in the MemFs durability reference
 
 - [x] **M14-1** -- The MemFs durability reference models recursive directory removal, with scenarios, controls, probes and replay. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-1)
+
+## M15 -- Fixes from the 2026-11-17 acadia review
+
+- [x] **M15-1** -- `OsFs::publish_new` skips a staging name a crashed process left behind instead of failing. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-1)
+
+- [x] **M15-2** -- An abandoned file-based participant changes no record once `abandon` returns. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-2)
+
+- [x] **M15-3** -- The coordination tests' atomics use acquire and release orderings rather than
+  `SeqCst`.

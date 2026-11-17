@@ -92,10 +92,10 @@ impl FileCoordination {
     }
 
     fn clear_owner(&self) -> CoordResult<()> {
-        match self.vfs().remove_file(&self.layout().owner()) {
-            Err(error) if error.kind() != VfsErrorKind::NotFound => Err(error.into()),
+        self.publishing(|vfs| match vfs.remove_file(&self.layout().owner()) {
+            Err(error) if error.kind() != VfsErrorKind::NotFound => Err(error),
             _ => Ok(()),
-        }
+        })
     }
 
     pub(super) fn fence_is_set(&self) -> CoordResult<bool> {
@@ -161,6 +161,11 @@ impl FileHold {
             })(),
             Err(_) => Ok(()),
         };
+        // An abandonment racing the bookkeeping leaves it undone, as a death would.
+        let cleared = match cleared {
+            Err(CoordError::Abandoned) => Ok(()),
+            cleared => cleared,
+        };
         drop(exclusion);
         cleared
     }
@@ -206,10 +211,10 @@ impl ExclusionHold for FileHold {
         };
         participant.publish_count(even, Standing::Vouched)?;
         participant.record_boot(Standing::Vouched)?;
-        match participant.vfs().remove_file(&participant.layout().fence()) {
-            Err(error) if error.kind() != VfsErrorKind::NotFound => return Err(error.into()),
-            _ => {}
-        }
+        participant.publishing(|vfs| match vfs.remove_file(&participant.layout().fence()) {
+            Err(error) if error.kind() != VfsErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        })?;
         self.recovered = true;
         self.fenced = false;
         Ok(())

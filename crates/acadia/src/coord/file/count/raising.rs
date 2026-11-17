@@ -57,8 +57,7 @@ impl FileCoordination {
         self.alive()?;
         let layout = self.layout();
         self.vfs().create_dir_all(&layout.state_dir())?;
-        self.vfs().write(&layout.fence(), &[])?;
-        Ok(())
+        self.publishing(|vfs| vfs.write(&layout.fence(), &[]))
     }
 
     /// Begins a modification. The outermost raises an even count to odd before the caller's

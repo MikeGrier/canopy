@@ -27,6 +27,9 @@ use crate::{
 #[cfg(not(any(unix, windows)))]
 compile_error!("acadia's OsFs supports Unix and Windows targets only");
 
+#[cfg(test)]
+mod tests;
+
 /// The real filesystem: a [`Vfs`] implemented as a thin passthrough over
 /// `std::fs`.
 ///
@@ -459,6 +462,58 @@ fn take_span_lock(
     }
 }
 
+/// How many staging names a publication tries before giving up. A name is already taken only when
+/// a crashed process that had this one's process id left its staging sibling behind.
+const STAGING_ATTEMPTS: usize = 16;
+
+/// Publishes `contents` at `path` through the first staging sibling `next_staging` names that is
+/// free, trying at most [`STAGING_ATTEMPTS`] of them. A taken staging name is skipped, never
+/// removed: it may belong to a live process in another process-id namespace.
+fn publish_staged(
+    path: &Path,
+    contents: &[u8],
+    mut next_staging: impl FnMut() -> Option<PathBuf>,
+) -> VfsResult<()> {
+    let mut opened = None;
+    for _ in 0..STAGING_ATTEMPTS {
+        let Some(staging) = next_staging() else {
+            return Err(VfsError::new(
+                VfsErrorKind::InvalidInput,
+                "publish_new",
+                "the path names no file",
+            )
+            .with_path(path));
+        };
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)
+        {
+            Ok(file) => {
+                opened = Some((file, staging));
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(err("publish_new", path, &e)),
+        }
+    }
+    // Not `AlreadyExists`: that would claim the target is taken.
+    let Some((mut file, staging)) = opened else {
+        return Err(VfsError::new(
+            VfsErrorKind::Other,
+            "publish_new",
+            "every staging name tried was taken",
+        )
+        .with_path(path));
+    };
+    let staged = file.write_all(contents).and_then(|()| file.sync_all());
+    drop(file);
+    // A hard link fails where anything has the name, which a replacing rename would not.
+    let published = staged.and_then(|()| fs::hard_link(&staging, path));
+    let _ = fs::remove_file(&staging);
+    published.map_err(|e| err("publish_new", path, &e))
+}
+
 /// A sibling of `path` to stage a publication in, unique to this process and call.
 fn publishing_path(path: &Path) -> Option<PathBuf> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -674,25 +729,7 @@ impl Vfs for OsFs {
     }
 
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
-        let Some(staging) = publishing_path(path) else {
-            return Err(VfsError::new(
-                VfsErrorKind::InvalidInput,
-                "publish_new",
-                "the path names no file",
-            )
-            .with_path(path));
-        };
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staging)
-            .map_err(|e| err("publish_new", path, &e))?;
-        let staged = file.write_all(contents).and_then(|()| file.sync_all());
-        drop(file);
-        // A hard link fails where anything has the name, which a replacing rename would not.
-        let published = staged.and_then(|()| fs::hard_link(&staging, path));
-        let _ = fs::remove_file(&staging);
-        published.map_err(|e| err("publish_new", path, &e))
+        publish_staged(path, contents, || publishing_path(path))
     }
 
     fn is_os_filesystem(&self) -> bool {

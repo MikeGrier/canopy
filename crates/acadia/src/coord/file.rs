@@ -11,7 +11,8 @@
 //!
 //! Every lock a participant holds is kept in its table of holds, so that
 //! [`abandon`](Coordination::abandon) releases all of them without any bookkeeping, as a death
-//! does.
+//! does. Every change a participant makes to the state's records is made through
+//! `FileCoordination::publishing`, which an abandonment waits for and which refuses afterwards.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -19,7 +20,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use crate::{LockMode, LockSpan, Vfs, VfsErrorKind, VfsLock};
+use crate::{LockMode, LockSpan, Vfs, VfsErrorKind, VfsLock, VfsResult};
 
 use super::{
     CoordError, CoordResult, Coordination, CoordinationFactory, ImplementationId, Waiting,
@@ -264,17 +265,35 @@ impl FileCoordination {
         self.holds.table().locks.remove(&id.0)
     }
 
+    /// Runs `publish`, one change to the state on disk, unless the participant is abandoned. The
+    /// table of holds is kept for its duration, so an abandonment waits for it, and after one
+    /// returns the participant changes nothing more, as a dead process changes nothing: its locks
+    /// may by then belong to another participant.
+    pub(crate) fn publishing<T>(
+        &self,
+        publish: impl FnOnce(&dyn Vfs) -> VfsResult<T>,
+    ) -> CoordResult<T> {
+        let table = self.holds.table();
+        if table.abandoned {
+            return Err(CoordError::Abandoned);
+        }
+        let published = publish(&*self.vfs);
+        drop(table);
+        Ok(published?)
+    }
+
     /// Replaces `target` whole with `bytes`, written to `staging` and renamed over it, so a reader
     /// sees the previous file or this one and never part of either. A staged file left by a
     /// failure is removed if it can be.
     fn replace_whole(&self, staging: &Path, target: &Path, bytes: &[u8]) -> CoordResult<()> {
-        let replaced = self
-            .vfs
-            .write(staging, bytes)
-            .and_then(|()| self.vfs.rename(staging, target));
-        if replaced.is_err() {
-            let _ = self.vfs.remove_file(staging);
-        }
-        Ok(replaced?)
+        self.publishing(|vfs| {
+            let replaced = vfs
+                .write(staging, bytes)
+                .and_then(|()| vfs.rename(staging, target));
+            if replaced.is_err() {
+                let _ = vfs.remove_file(staging);
+            }
+            replaced
+        })
     }
 }

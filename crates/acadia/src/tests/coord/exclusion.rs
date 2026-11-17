@@ -94,9 +94,9 @@ fn many_threads_each_hold_exclusion_alone() {
                         let held = participant
                             .acquire_exclusion(Waiting::Wait)
                             .expect("acquire");
-                        assert_eq!(inside.fetch_add(1, Ordering::SeqCst), 0, "two holders");
-                        entered.fetch_add(1, Ordering::SeqCst);
-                        inside.fetch_sub(1, Ordering::SeqCst);
+                        assert_eq!(inside.fetch_add(1, Ordering::AcqRel), 0, "two holders");
+                        entered.fetch_add(1, Ordering::AcqRel);
+                        inside.fetch_sub(1, Ordering::AcqRel);
                         drop(held);
                     }
                 })
@@ -106,7 +106,7 @@ fn many_threads_each_hold_exclusion_alone() {
             thread.join().expect("a contender");
         }
         assert_eq!(
-            entered.load(Ordering::SeqCst),
+            entered.load(Ordering::Acquire),
             THREADS * ROUNDS,
             "{}",
             backend.name()
@@ -134,8 +134,8 @@ fn releases_overlapping_tries_never_admit_two_holders() {
                         rounds += 1;
                         match participant.acquire_exclusion(Waiting::Never) {
                             Ok(held) => {
-                                assert_eq!(inside.fetch_add(1, Ordering::SeqCst), 0);
-                                inside.fetch_sub(1, Ordering::SeqCst);
+                                assert_eq!(inside.fetch_add(1, Ordering::AcqRel), 0);
+                                inside.fetch_sub(1, Ordering::AcqRel);
                                 drop(held);
                                 held_at_least_once = true;
                             }
