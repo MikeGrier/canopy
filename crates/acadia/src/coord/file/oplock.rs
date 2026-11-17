@@ -1,10 +1,10 @@
 // Copyright (c) Michael Grier.
 
-//! [`CountNotification`] on Windows, notified by the operating system instead of polling: a
-//! handle-caching opportunistic lock on the file holding the published count, which the operating
-//! system breaks when a writer renames a fresh count over it. The break arrives as an I/O
-//! completion on the thread pool, and the deadline as a pool timer, so a waiting registration
-//! holds no thread and samples nothing.
+//! [`CountNotification`](crate::coord::CountNotification) on Windows, notified by the operating
+//! system instead of polling: a handle-caching opportunistic lock on the file holding the
+//! published count, which the operating system breaks when a writer renames a fresh count over
+//! it. The break arrives as an I/O completion on the thread pool, and the deadline as a pool
+//! timer, so a waiting registration holds no thread and samples nothing.
 //!
 //! A read lock alone is not broken by the rename, and the break of a handle-caching one holds the
 //! renaming writer until this side answers it. It is answered in the completion, at once, by
