@@ -9,7 +9,7 @@
         @{ Id = 'LOCK1'; Actions = @('Lock(2)') }
         @{ Id = 'PUB'; Actions = @('Publish(2)') }
         @{ Id = 'SYNR'; Actions = @('SyncRes(2)') }
-        @{ Id = 'KILL'; Actions = @('Die(2)') }
+        @{ Id = 'KILL'; Actions = @('Terminate(2)') }
         @{ Id = 'LOCK2'; Actions = @('Lock(1)') }
         @{ Id = 'TAKE'; Actions = @('TakeOver(1)') }
         @{ Id = 'SYNR2'; Actions = @('SyncRes(1)') }

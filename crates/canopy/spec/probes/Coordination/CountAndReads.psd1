@@ -57,12 +57,12 @@
             Def       = 'OpenFails'
             Old = @'
     /\ pc' = Set(pc, p, "closed")
-    /\ UNCHANGED <<req, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, store, handle, reader, terminatedIn, counts>>
 '@
             New = @'
     /\ pc' = Set(pc, p, "closed")
     /\ count' = Nx(count)
-    /\ UNCHANGED <<req, lockHolder, owner, fence, trusted, gen, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, lockHolder, owner, fence, trusted, gen, store, handle, reader, terminatedIn, counts>>
 '@
         }
 
@@ -108,12 +108,12 @@ fence' = fence
     /\ a' = b
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, coord, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, b, mygen, reader, terminatedIn, counts>>
 '@
             New = @'
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, a, b, mygen, reader, terminatedIn, counts>>
 '@
         }
 
@@ -151,8 +151,8 @@ fence' = fence
             Name      = 'death-evens-the-count'
             Base      = 'Coordination'
             Kind      = 'PROPERTIES'
-            Property  = 'DeathLeavesTheFilesystemAsItWas'
-            Def       = 'Die'
+            Property  = 'TerminationLeavesTheFilesystemAsItWas'
+            Def       = 'Terminate'
             Old = @'
 UNCHANGED <<count>>
 '@
@@ -241,12 +241,12 @@ Cleared == scache
             Def       = 'OpenFails'
             Old = @'
     /\ pc' = Set(pc, p, "closed")
-    /\ UNCHANGED <<req, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, store, handle, reader, terminatedIn, counts>>
 '@
             New = @'
     /\ pc' = Set(pc, p, "closed")
     /\ count' = Nx(count)
-    /\ UNCHANGED <<req, lockHolder, owner, fence, trusted, gen, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, lockHolder, owner, fence, trusted, gen, store, handle, reader, terminatedIn, counts>>
 '@
         }
 
@@ -260,12 +260,12 @@ Cleared == scache
     /\ a' = b
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, coord, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, b, mygen, reader, terminatedIn, counts>>
 '@
             New = @'
     /\ shared' = Pv(shared)
     /\ cache' = Set(cache, p, Pv(shared))
-    /\ UNCHANGED <<req, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<req, coord, a, b, mygen, reader, terminatedIn, counts>>
 '@
         }
 
@@ -350,7 +350,7 @@ fence' = fence
             Base      = 'Coordination'
             Kind      = 'INVARIANTS'
             Property  = 'CountIsOddWhileAnOperationIsUnresolved'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
 UNCHANGED <<count>>
 '@

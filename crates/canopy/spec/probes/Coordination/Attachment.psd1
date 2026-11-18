@@ -90,17 +90,17 @@ THEN /\ ~ReaderXHeld
         }
 
         @{
-            Name      = 'die-keeps-attachment'
+            Name      = 'terminate-keeps-attachment'
             Base      = 'Coordination-Witness-AReaderIsRefusedDuringAnUnsafeUpgrade'
             Kind      = 'INVARIANTS'
             Property  = 'AttachmentMatchesTheProcess'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
-    /\ deaths' = deaths + 1
+    /\ terminations' = terminations + 1
     /\ att' = Set(att, p, "off")
 '@
             New = @'
-    /\ deaths' = deaths + 1
+    /\ terminations' = terminations + 1
     /\ att' = att
 '@
         }

@@ -5741,3 +5741,28 @@ reason to refuse.
 | 11 `FIND` | B | reads the root again, finds the marker under the reservation of its implementation and inputs, makes the marker durable, lets go of the exclusion and ends with the store existing | creation exclusion: none |
 
 Both creators succeed with one store, which A made: A's outcome is created and B's is existing.
+
+## A process ending is a termination in the formal models, 2026-11-18
+
+The models name the event of one process ending, and everything that counts or records it, as a
+termination. The names are identifiers only; what each one means is unchanged, and so is every
+model's behaviour. A committed decision, a design session or an archived checklist that cites an old
+name means the new one:
+
+| Old name | Name |
+|---|---|
+| `Die(p)`, `SDie(p)` | `Terminate(p)`, `STerminate(p)` |
+| `deaths`, `MaxDeaths`, `Deaths` | `terminations`, `MaxTerminations`, `Terminations` |
+| `diedIn`, `DiedKinds` | `terminatedIn`, `TerminatedKinds` |
+| the state and report value `"dead"` | `"terminated"` |
+| `Dies`, `Death`, `Dead` within a property, witness or configuration name | `Terminates`, `Termination`, `Terminated` |
+| probe names `die-*` | `terminate-*` |
+
+For example `DeathLeavesTheFilesystemAsItWas` is `TerminationLeavesTheFilesystemAsItWas`,
+`Witness_AnUpgraderDiesWhileDraining` is `Witness_AnUpgraderTerminatesWhileDraining`, and
+`Coordination-RegistryThreeProcsDeath.cfg` is `Coordination-RegistryThreeProcsTermination.cfg`. The
+replay harness's `Verdict::Die` and `Kind::Die` are `Terminate` likewise. Timeline step ids, and
+prose in comments and configuration headers, are left as they are[^voc-1].
+
+[^voc-1]: `VOC-1` in [COMPLETED-CHECKLIST.md](../../COMPLETED-CHECKLIST.md#voc-1)
+    [completed 2026-11-18]

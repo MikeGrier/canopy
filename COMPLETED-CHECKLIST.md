@@ -223,3 +223,14 @@ formal model, queued as `FM-2.1`/`FM-2.2` in [crates/canopy/CHECKLIST.md](crates
 - [x] **RV8-5** (E5) -- `OsFs::read_at` refuses a directory before considering the range.
 - [x] **RV8-6** (E6) -- The duplicate-target commit-log test reaches the duplicate check, with a
   distinct-target control.
+
+## Moved 2026-11-18 -- Model vocabulary
+
+Decision: [crates/canopy/DESIGN-NOTES.md](crates/canopy/DESIGN-NOTES.md) "A process ending is a
+termination in the formal models", which holds the full mapping.
+
+### <a id="voc-1"></a>VOC-1 -- A process ending is named a termination in the formal models, their configurations, probes, traces and replay harness. *(completed 2026-11-18 12:40:01 -05:00)*
+
+The configurations, timeline replays and trace corpus were regenerated; the canopy suite, including
+the replays, passed against the new corpus, and TLC confirmed the outcome of a sample of renamed
+witnesses, a main and the Acquisition item tier.

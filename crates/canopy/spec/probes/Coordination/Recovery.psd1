@@ -119,13 +119,13 @@
             Def       = 'RecStop'
             Old = @'
     /\ pc' = Set(pc, p, "told")
-    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, terminatedIn, counts>>
 '@
             New = @'
     /\ pc' = Set(pc, p, "told")
     /\ fence' = FALSE
     /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen, store,
-                   handle, reader, diedIn, counts>>
+                   handle, reader, terminatedIn, counts>>
 '@
         }
 

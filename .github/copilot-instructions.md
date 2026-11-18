@@ -632,7 +632,7 @@ header describes every field:
 
 ```powershell
 pwsh tools/run-probes.ps1 -Spec crates/canopy/spec/<Name>.tla -Check
-pwsh tools/run-probes.ps1 -Spec crates/canopy/spec/<Name>.tla -Filter 'die-*,*upgrade*' -Parallel 6
+pwsh tools/run-probes.ps1 -Spec crates/canopy/spec/<Name>.tla -Filter 'terminate-*,*upgrade*' -Parallel 6
 ```
 
 `Old` must occur exactly once -- in the body of the mutant's `Def` when it names one -- and an

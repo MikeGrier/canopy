@@ -3,9 +3,9 @@
   "spec": "Coordination",
   "configuration": "Coordination-ThreeProcs",
   "origin": {"kind":"timeline","timeline":"T1"},
-  "constants": {"Callbacks":"FALSE","Control":"\"none\"","CrashFences":"FALSE","Escapes":"TRUE","MaxCrashes":"0","MaxDeaths":"1","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"0","MaxReads":"0","MaxRequests":"3","MaxUpgrades":"0","MixedWrites":"FALSE","NSlots":"0","Notifications":"FALSE","Procs":"{1, 2, 3}","PublicationsFail":"TRUE","Scenario":"\"Plain3\"","Txn":"FALSE","UnloggedRecovery":"FALSE","UpSteps":"0"},
+  "constants": {"Callbacks":"FALSE","Control":"\"none\"","CrashFences":"FALSE","Escapes":"TRUE","MaxCrashes":"0","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"0","MaxReads":"0","MaxRequests":"3","MaxTerminations":"1","MaxUpgrades":"0","MixedWrites":"FALSE","NSlots":"0","Notifications":"FALSE","Procs":"{1, 2, 3}","PublicationsFail":"TRUE","Scenario":"\"Plain3\"","Txn":"FALSE","UnloggedRecovery":"FALSE","UpSteps":"0"},
   "departs": null,
-  "initial": {"a":0,"areq":["none","none","none"],"att":["off","off","off"],"b":0,"cache":[-1,-1,-1],"cl":[],"count":0,"crashes":0,"current":[1],"deaths":0,"dfloor":[1],"diedIn":"none","disc":["none","none","none"],"discoveries":0,"edr":[],"etok":[],"fence":false,"gen":0,"lcur":[1,1,1],"lease":[0,0,0],"lfree":[false,false,false],"lists":0,"ll":[],"lockHolder":0,"log":"empty","lph":["none","none","none"],"lrep":[[0,0,"none"],[0,0,"none"],[0,0,"none"]],"lres":["none","none","none"],"ltok":[0,0,0],"lunk":[false,false,false],"mygen":[-1,-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new","new"],"ptgt":0,"rbefore":[-1,-1,-1],"rcur":[0,0,0],"reads":0,"req":["none","none","none"],"requests":0,"rpart":[-1,-1,-1],"rphase":["none","none","none"],"rscan":[[],[],[]],"rseenA":[-1,-1,-1],"rseenB":[-1,-1,-1],"rst":["out","out","out"],"rtier":[false,false,false],"scache":[-1,-1,-1],"shared":0,"stage":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample","sample"]},
+  "initial": {"a":0,"areq":["none","none","none"],"att":["off","off","off"],"b":0,"cache":[-1,-1,-1],"cl":[],"count":0,"crashes":0,"current":[1],"dfloor":[1],"disc":["none","none","none"],"discoveries":0,"edr":[],"etok":[],"fence":false,"gen":0,"lcur":[1,1,1],"lease":[0,0,0],"lfree":[false,false,false],"lists":0,"ll":[],"lockHolder":0,"log":"empty","lph":["none","none","none"],"lrep":[[0,0,"none"],[0,0,"none"],[0,0,"none"]],"lres":["none","none","none"],"ltok":[0,0,0],"lunk":[false,false,false],"mygen":[-1,-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new","new"],"ptgt":0,"rbefore":[-1,-1,-1],"rcur":[0,0,0],"reads":0,"req":["none","none","none"],"requests":0,"rpart":[-1,-1,-1],"rphase":["none","none","none"],"rscan":[[],[],[]],"rseenA":[-1,-1,-1],"rseenB":[-1,-1,-1],"rst":["out","out","out"],"rtier":[false,false,false],"scache":[-1,-1,-1],"shared":0,"stage":0,"terminatedIn":"none","terminations":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample","sample"]},
   "steps": [
     {"action":"BeginAttach(1)","args":[1],"changes":{"areq":["pending","none","none"],"att":["wGate","off","off"],"pc":["attaching","new","new"]},"name":"BeginAttach","step":"before"},
     {"action":"TakeGateS(1)","args":[1],"changes":{"att":["hasGate","off","off"]},"name":"TakeGateS","step":"before"},
@@ -31,15 +31,15 @@
     {"action":"BeginOpen(1)","args":[1],"changes":{"pc":["opening","idle","idle"]},"name":"BeginOpen","step":"EFF1"},
     {"action":"EndOpen(1)","args":[1],"changes":{"count":1,"pc":["open","idle","idle"]},"name":"EndOpen","step":"EFF1"},
     {"action":"FirstEffect(1)","args":[1],"changes":{"a":1,"cache":[1,-1,-1],"pc":["writing","idle","idle"],"shared":1},"name":"FirstEffect","step":"EFF1"},
-    {"action":"Die(1)","args":[1],"changes":{"att":["off","attached","attached"],"cache":[-1,-1,-1],"deaths":1,"diedIn":"writing","lockHolder":0,"mygen":[-1,-1,-1],"pc":["dead","idle","idle"]},"name":"Die","step":"KILL"},
-    {"action":"Request(2)","args":[2],"changes":{"pc":["dead","waiting","idle"],"req":["served","pending","none"],"requests":2},"name":"Request","step":"REQ2"},
-    {"action":"Lock(2)","args":[2],"changes":{"lockHolder":2,"pc":["dead","locked","idle"],"req":["served","served","none"]},"name":"Lock","step":"LCK2"},
+    {"action":"Terminate(1)","args":[1],"changes":{"att":["off","attached","attached"],"cache":[-1,-1,-1],"lockHolder":0,"mygen":[-1,-1,-1],"pc":["terminated","idle","idle"],"terminatedIn":"writing","terminations":1},"name":"Terminate","step":"KILL"},
+    {"action":"Request(2)","args":[2],"changes":{"pc":["terminated","waiting","idle"],"req":["served","pending","none"],"requests":2},"name":"Request","step":"REQ2"},
+    {"action":"Lock(2)","args":[2],"changes":{"lockHolder":2,"pc":["terminated","locked","idle"],"req":["served","served","none"]},"name":"Lock","step":"LCK2"},
     {"action":"SetFence(2)","args":[2],"changes":{"fence":true},"name":"SetFence","step":"FNC"},
-    {"action":"Record(2)","args":[2],"changes":{"cache":[-1,1,-1],"gen":2,"mygen":[-1,2,-1],"owner":2,"pc":["dead","told","idle"]},"name":"Record","step":"REC2"},
-    {"action":"Release(2)","args":[2],"changes":{"owner":0,"pc":["dead","releasing","idle"]},"name":"Release","step":"CLR"},
-    {"action":"Unlock(2)","args":[2],"changes":{"lockHolder":0,"pc":["dead","idle","idle"]},"name":"Unlock","step":"ULK"},
-    {"action":"Request(3)","args":[3],"changes":{"pc":["dead","idle","waiting"],"req":["served","served","pending"],"requests":3},"name":"Request","step":"REQ3"},
-    {"action":"Lock(3)","args":[3],"changes":{"lockHolder":3,"pc":["dead","idle","locked"],"req":["served","served","served"]},"name":"Lock","step":"LCK3"},
-    {"action":"Record(3)","args":[3],"changes":{"cache":[-1,1,1],"gen":3,"mygen":[-1,2,3],"owner":3,"pc":["dead","idle","told"]},"name":"Record","step":"REC3"}
+    {"action":"Record(2)","args":[2],"changes":{"cache":[-1,1,-1],"gen":2,"mygen":[-1,2,-1],"owner":2,"pc":["terminated","told","idle"]},"name":"Record","step":"REC2"},
+    {"action":"Release(2)","args":[2],"changes":{"owner":0,"pc":["terminated","releasing","idle"]},"name":"Release","step":"CLR"},
+    {"action":"Unlock(2)","args":[2],"changes":{"lockHolder":0,"pc":["terminated","idle","idle"]},"name":"Unlock","step":"ULK"},
+    {"action":"Request(3)","args":[3],"changes":{"pc":["terminated","idle","waiting"],"req":["served","served","pending"],"requests":3},"name":"Request","step":"REQ3"},
+    {"action":"Lock(3)","args":[3],"changes":{"lockHolder":3,"pc":["terminated","idle","locked"],"req":["served","served","served"]},"name":"Lock","step":"LCK3"},
+    {"action":"Record(3)","args":[3],"changes":{"cache":[-1,1,1],"gen":3,"mygen":[-1,2,3],"owner":3,"pc":["terminated","idle","told"]},"name":"Record","step":"REC3"}
   ]
 }

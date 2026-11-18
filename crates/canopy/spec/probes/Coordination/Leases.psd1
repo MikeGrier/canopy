@@ -118,11 +118,11 @@ Leases(p) == (IF rphase[p] # "none" THEN 1 ELSE 0)
         }
 
         @{
-            Name      = 'die-keeps-leases'
-            Base      = 'Coordination-Witness-ADeathEndsTheLeases'
+            Name      = 'terminate-keeps-leases'
+            Base      = 'Coordination-Witness-ATerminationEndsTheLeases'
             Kind      = 'INVARIANTS'
             Property  = 'AttachmentMatchesTheProcess'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
     /\ lease' = Set(lease, p, 0)
 '@

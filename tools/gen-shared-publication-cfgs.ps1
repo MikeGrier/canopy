@@ -40,7 +40,7 @@ $milestoneTier = @('SharedPublication-ThreeDocs', 'SharedPublication-ThreeReques
 
 function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn,
                       [string[]]$invariants, [string[]]$properties = @(), [string]$control = 'none',
-                      [int]$procs = 2, [int]$docs = 2, [int]$requests = 2, [int]$deaths = 1,
+                      [int]$procs = 2, [int]$docs = 2, [int]$requests = 2, [int]$terminations = 1,
                       [int]$crashes = 1, [string]$coordControl = 'none', [bool]$mixed = $false,
                       [string]$recoverySchedule = 'all', [bool]$reference = $false,
                       [int]$directoryDebt = 0, [bool]$shared = $false) {
@@ -58,7 +58,7 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
         $lines += "    RecoverySchedule = `"$recoverySchedule`""
         $lines += "    InitialDirectoryDebt = $directoryDebt"
     }
-    $lines += "    MaxDeaths = $deaths"
+    $lines += "    MaxTerminations = $terminations"
     $lines += "    MaxCrashes = $crashes"
     $lines += '    MaxReads = 0'
     $lines += '    MaxLeases = 0'
@@ -178,7 +178,7 @@ $witnesses = @(
     @('ARecoverySettlesARecordOfTheSecondDocument', 'record', $false, 'Recovery rolls forward the record of the second document.'),
     @('ARecoveryResolvesTheSecondDocument', 'resolve', $false, 'Recovery sets a replica of the second document to its majority.'),
     @('ARecoveryRollsATransactionForward', 'record', $true, 'Recovery rolls a prepared transaction forward on its document.'),
-    @('AHolderDiesWithARecordPending', 'record', $false, 'A holder dies with a durable record pending.'),
+    @('AHolderTerminatesWithARecordPending', 'record', $false, 'A holder dies with a durable record pending.'),
     @('ARestartLosesTheFenceWithARecordPending', 'record', $false, 'A host crash loses the fence while a durable record is pending.')
 )
 foreach ($w in $witnesses) {

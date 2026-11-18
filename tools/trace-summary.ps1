@@ -11,7 +11,7 @@
 # transaction variables of Coordination.tla. A trace from one worker (tools/run-tlc.ps1 -Workers 1)
 # is the shortest and has no incidental steps.
 
-param([Parameter(Mandatory)][string]$Path, [string]$Vars = 'pc,lockHolder,owner,fence,trusted,count,a,b,log,stage,ptgt,disc,diedIn')
+param([Parameter(Mandatory)][string]$Path, [string]$Vars = 'pc,lockHolder,owner,fence,trusted,count,a,b,log,stage,ptgt,disc,terminatedIn')
 $want = $Vars -split ','
 $lines = Get-Content -LiteralPath $Path
 $state = $null

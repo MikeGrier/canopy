@@ -30,10 +30,10 @@ $allProperties = @(
     'ReservationIsPublishedOnlyIfAbsent', 'ThePublisherHoldsItsExclusion',
     'AnOpenSucceedsOnlyThroughTheRecordedImplementation', 'ARefusalChangesNothing',
     'CreationBeginsOnlyInAnUnoccupiedRoot', 'ACreatorFindsItsOwnStore', 'AStoreIsFoundOnlyWhereItIs',
-    'DeathLeavesTheRootAsItWas', 'ACrashKeepsEverythingDurable')
+    'TerminationLeavesTheRootAsItWas', 'ACrashKeepsEverythingDurable')
 
 function Write-Config([string]$name, [string[]]$header, [string]$scenario, [int]$art,
-                      [int]$deaths, [int]$crashes, [string]$control, [string[]]$invariants,
+                      [int]$terminations, [int]$crashes, [string]$control, [string[]]$invariants,
                       [string[]]$properties, [bool]$deadlock) {
     $n = $sizes[$scenario]
     $procs = (1..$n) -join ', '
@@ -42,7 +42,7 @@ function Write-Config([string]$name, [string[]]$header, [string]$scenario, [int]
     $lines += 'CONSTANTS'
     $lines += "    Procs = {$procs}"
     $lines += "    NArt = $art"
-    $lines += "    MaxDeaths = $deaths"
+    $lines += "    MaxTerminations = $terminations"
     $lines += "    MaxCrashes = $crashes"
     $lines += "    Intrusion = $(if ($script:intrusion) { 'TRUE' } else { 'FALSE' })"
     $lines += "    Scenario = `"$scenario`""
@@ -66,8 +66,8 @@ $pass = @(
     @('Creation-ThreeDifferent', 'ThreeDifferent', 2, 1, 1, 'Three creators, two implementations, two sets of inputs:', 'every invariant and property holds.'),
     @('Creation-CreatorAndOpeners', 'CreatorAndOpeners', 2, 2, 2, 'A creator and an opener through each of two implementations:', 'every invariant and property holds.'),
     @('Creation-TwoCreatorsAndOpener', 'TwoCreatorsAndOpener', 2, 2, 1, 'Two creators and an opener of one implementation:', 'every invariant and property holds.'),
-    @('Creation-Deep', 'ThreeCreators', 3, 2, 2, 'Three creators with three artifacts, two deaths and two host crashes:', 'every invariant and property holds.'),
-    @('Creation-Four', 'FourCreators', 3, 2, 1, 'Four creators, two implementations, two sets of inputs, two deaths and a host crash:', 'every invariant and property holds.')
+    @('Creation-Deep', 'ThreeCreators', 3, 2, 2, 'Three creators with three artifacts, two terminations and two host crashes:', 'every invariant and property holds.'),
+    @('Creation-Four', 'FourCreators', 3, 2, 1, 'Four creators, two implementations, two sets of inputs, two terminations and a host crash:', 'every invariant and property holds.')
 )
 foreach ($c in $pass) {
     Write-Config $c[0] @($c[5], $c[6]) $c[1] $c[2] $c[3] $c[4] 'none' $allInvariants $allProperties $false
@@ -78,7 +78,7 @@ Write-Config 'Creation-NoDeadlock-ThreeCreators' @('No deadlock with three creat
 Write-Config 'Creation-NoDeadlock-CreatorAndOpeners' @('No deadlock with a creator and two openers, none of which dies, and no host crash: every invariant', 'and property holds, and no state but every process ended has no successor.') 'CreatorAndOpeners' 3 0 0 'none' $allInvariants $allProperties $true
 Write-Config 'Creation-NoDeadlock-WithFailures' @('No deadlock with three creators, a death and a host crash: every invariant and property holds, and no', 'state but every process ended has no successor.') 'ThreeCreators' 2 1 1 'none' $allInvariants $allProperties $true
 
-# Negative controls: name, control, scenario, art, deaths, crashes, target, kind, description.
+# Negative controls: name, control, scenario, art, terminations, crashes, target, kind, description.
 $script:intrusion = $false
 $controls = @(
     @('ReservationInTwoWrites', 'reservation-in-two-writes', 'TwoCreators', 2, 0, 0, 'NeverObservedPartial', 'inv', 'The reservation is published as an empty file and then filled in, and another creator reads it between the two writes.'),
@@ -104,11 +104,11 @@ foreach ($c in $controls) {
     Write-Config ('Creation-Control-' + $c[0]) @("Negative control: $($c[8])", "TLC must report $($c[6]) violated.") $c[2] $c[3] $c[4] $c[5] $c[1] $inv $prop $false
 }
 
-# Witnesses: name, scenario, art, deaths, crashes, kind, description.
+# Witnesses: name, scenario, art, terminations, crashes, kind, description.
 $witnesses = @(
     @('ACreationCompletes', 'OneCreator', 2, 0, 0, 'inv', 'A creator creates the store.'),
     @('AnInterruptedCreationIsResumed', 'TwoCreators', 2, 1, 1, 'inv', 'A creation that was interrupted is resumed and completes.'),
-    @('AResumeFollowsAProcessDeath', 'TwoCreators', 2, 1, 0, 'inv', 'A creation interrupted by the death of its creator is resumed.'),
+    @('AResumeFollowsAProcessTermination', 'TwoCreators', 2, 1, 0, 'inv', 'A creation interrupted by the death of its creator is resumed.'),
     @('AResumeFollowsAHostCrash', 'TwoCreators', 2, 0, 1, 'inv', 'A creation interrupted by a host crash is resumed.'),
     @('ACrashLosesTheReservation', 'OneCreator', 2, 0, 1, 'inv', 'A host crash loses a reservation that was not yet durable.'),
     @('ACrashLeavesOnlyTheReservation', 'OneCreator', 2, 0, 1, 'inv', 'A host crash leaves a durable reservation and no other artifact.'),

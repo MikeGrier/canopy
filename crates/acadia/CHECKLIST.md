@@ -256,3 +256,54 @@ a failing test before it is fixed; a finding that does not hold is recorded in
 ## M43 -- Eighth review: records
 
 - [x] **M43-1** -- The eighth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m43-1)
+
+## M44 -- A crash is a host restart in every filesystem
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Three failures, two events: a panic, a process ending,
+a host restart". The ninth acadia review (GPT-6.2 Astra, 2026-11-18) found the two restart defects
+this milestone closes; each is shown by a failing test before the change that closes it.
+
+- [ ] **M44-1** -- The `Vfs` contract states that a host restart ends every process and that an
+  ended process issues nothing, and `MemFs::abandon` refuses the abandoned view's later operations
+  and fails its lock waits in progress.
+
+- [ ] **M44-2** -- `MemFs::simulate_crash` ends every process view made before it -- locks released,
+  waits failed, later operations refused -- and canopy's callers take a view made after the crash.
+  A writer waiting across a crash never takes exclusion on the lost lock file, and a registry
+  attachment from before a crash never changes its successor's entry.
+
+- [ ] **M44-3** -- The coordination's boot checks that defended against a process acting across a
+  simulated restart are removed: the one bound to a file hold, and the shared participant's over a
+  filesystem that is not the operating system's.
+
+## M45 -- A panic ends the participant it unwinds through
+
+- [ ] **M45-1** -- Every coordination guard that keeps bookkeeping, dropped while a panic unwinds,
+  ends its participant as `abandon` does and does no bookkeeping; a test panics inside each kind.
+
+- [ ] **M45-2** -- A participant mutex poisoned by a panic ends the participant and refuses with
+  `Abandoned`; each process-wide mutex that recovers from poison says why where it is taken.
+
+- [ ] **M45-3** -- The workspace's own binaries build with `panic = "abort"` in release.
+
+## M46 -- Ninth review: shared opening, generations, MemFs sync, Windows
+
+- [ ] **M46-1** -- A shared `abandon` never returns while an opening it raced still holds the
+  epoch's liveness lock.
+- [ ] **M46-2** -- A shared generation reservation missing or behind the mapped limit at renewal is
+  refused, not restarted at zero.
+- [ ] **M46-3** -- A `MemFs` directory sync across a carried snapshot never fails after changing
+  durable state.
+- [ ] **M46-4** -- `wait_native` on Windows accepts only events a wait does not reset.
+- [ ] **M46-5** -- A failed oplock acknowledgement rings only after the handle is closed, even when
+  no thread can be started to close it.
+
+## M47 -- Ninth review: creation, fault injection, tests
+
+- [ ] **M47-1** -- An artifact name with an embedded NUL is refused before the root is reserved.
+- [ ] **M47-2** -- `FaultyFs::read_at` never returns more than the range asked for.
+- [ ] **M47-3** -- The marker-abandonment test fails when publication is not exercised.
+
+## M48 -- Ninth review: records
+
+- [ ] **M48-1** -- The ninth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md).

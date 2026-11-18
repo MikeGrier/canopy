@@ -87,7 +87,7 @@ impl Watcher for Tracker {
             progress.check(index);
         }
         if progress.mismatch.is_some() {
-            return Verdict::Die;
+            return Verdict::Terminate;
         }
         if progress.dead {
             return Verdict::Proceed;
@@ -105,7 +105,7 @@ impl Watcher for Tracker {
                 if made == after && progress.injected == progress.faults.len() =>
             {
                 progress.dead = true;
-                Verdict::Die
+                Verdict::Terminate
             }
             _ => Verdict::Proceed,
         }

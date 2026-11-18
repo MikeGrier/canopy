@@ -84,7 +84,7 @@ NoHandleThatSpeaksOnlyTheSourceHoldsExclusionDuringAnUpgrade ==
 ABodyEndsServedOrRefused ==
     [][\A p \in Procs :
           (UpSteps > 0 /\ att[p] = "uBody" /\ att'[p] = "off"
-           /\ pc'[p] # "dead") =>
+           /\ pc'[p] # "terminated") =>
               IF Completed(p) THEN pc'[p] = "exited" /\ areq'[p] = "served"
                               ELSE pc'[p] = "detached" /\ areq'[p] = "refused"]_vars
 

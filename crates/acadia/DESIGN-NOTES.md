@@ -327,6 +327,12 @@ private copy instead of being rebuilt per test.
 
 ## Locks on a file or a range of one, taken without waiting, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-18, by "Three failures, two events: a panic, a process ending, a
+> host restart" below.** A `MemFs` crash is a host restart: it ends every process view from before
+> it, releasing their locks, failing their waits and refusing their later operations. An abandoned
+> view's later operations are refused too. Read that decision before acting on the crash and
+> abandonment bullets here.
+
 > **SUPERSEDED in part, 2026-11-17, by "Fourth review fixes: markers, plan names, recovery order,
 > foreign roots and MemFs locks" below.** A `MemFs` lock belongs to the file it was taken on, not
 > to the name: it follows the file through a rename, and a lock on a file that a crash erased does
@@ -832,6 +838,11 @@ the harness's own timeout ended the run.
 
 ## The hold of writer exclusion keeps its bookkeeping in files replaced whole, 2026-11-13
 
+> **SUPERSEDED in part, 2026-11-18, by "Three failures, two events: a panic, a process ending, a
+> host restart" below.** A hold dropped while a panic unwinds is not released: it ends its
+> participant as `abandon` does and does no bookkeeping, so its record stays as a process that
+> ended leaves it.
+
 > **SUPERSEDED in part, 2026-11-18, by "Eighth review fixes: a hold from an ended boot, the
 > recovered count, a missing generation, mutexes free of filesystem calls" below.** A missing
 > generation is refused within a boot as an unreadable one is, and a hold over `MemFs` from a boot a
@@ -1103,6 +1114,9 @@ This behavior supports store attachment[^m8-2]; it changes neither admission nor
 [^m8-2]: `M8-2` in [canopy's COMPLETED-CHECKLIST.md](../canopy/COMPLETED-CHECKLIST.md#m8-2) [completed 2026-11-14; `87a52e7`]
 
 ## Recovery discovery lends a read-only inspection, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-18, by "Three failures, two events: a panic, a process ending, a
+> host restart" below.** An inspection that unwinds ends the participant, which releases the probe.
 
 > **SUPERSEDED in part, 2026-11-18, by "Sixth review fixes: an unidentified boot, inspection
 > under abandonment, the reported fence, joining an ending epoch" below.** An abandonment of the
@@ -1902,6 +1916,11 @@ Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The seventh review,
 
 ## Eighth review fixes: a hold from an ended boot, the recovered count, a missing generation, mutexes free of filesystem calls, 2026-11-18
 
+> **SUPERSEDED in part, 2026-11-18, by "Three failures, two events: a panic, a process ending, a
+> host restart" below.** Every filesystem ends the processes a restart ends, so a hold from before
+> a restart cannot act after it; the boot check bound to a file hold, and the shared participant's
+> boot check over a filesystem that is not the operating system's, are removed.
+
 An eighth review of the crate, made on 2026-11-18, raised nine findings, two of them against fixes
 of the seventh. Each was shown by a failing test before it was fixed, except where noted; the work
 is milestones M40 to M43 in [CHECKLIST.md](CHECKLIST.md).
@@ -1953,3 +1972,41 @@ Windows and tests:
   reservation without the guard failed it.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The eighth review, 2026-11-18".
+
+## Three failures, two events: a panic, a process ending, a host restart, 2026-11-18
+
+Three failures are told apart, and each is mapped onto one of the two events every formal model
+already has: `Terminate(p)`, one process ending, and `Crash`, the host restarting, which ends every
+process and releases every lock ([CoordinationBehavior.tla](../canopy/spec/CoordinationBehavior.tla)
+`CrashLeavesNoLiveProcess`). No model gains an event; the filesystems and the coordination are made
+to behave as the models already say. The decision was reached in
+[DESIGN-SESSION-2026-11-18-crash-kinds.md](design-sessions/DESIGN-SESSION-2026-11-18-crash-kinds.md).
+
+- **A host restart ends every process.** Unsynced storage is lost, the boot identity changes, every
+  lock is released, a lock wait in progress never completes, and nothing a process from before the
+  restart issues takes effect after it. The `Vfs` contract states this for every backend. `OsFs`
+  has it from the operating system. `MemFs::simulate_crash` implements it: every process view made
+  before the crash is ended -- its locks released, its waits failed, its later operations refused --
+  and only views made after the crash act. A crash that loses storage while processes keep running
+  is not a state any host reaches, so `MemFs` does not offer one.
+- **A process that has ended issues nothing.** The `Vfs` contract states it; `MemFs::abandon`
+  implements it by refusing the abandoned view's later operations as well as releasing its locks.
+- **A panic that unwinds through a coordination participant ends that participant**, as `abandon`
+  does: its locks are released, its records stay as they stand, and it refuses every later
+  operation. A guard that keeps bookkeeping (a writer hold, a creation hold, a registry entry, an
+  admission or upgrade hold, a discovery probe) checks `std::thread::panicking()` when dropped and,
+  if it is, ends the participant instead of releasing cleanly. A participant mutex that a panic
+  poisoned ends the participant and refuses with `Abandoned`; a process-wide mutex -- a poller's,
+  the shared-state model table -- protects scheduling rather than a participant's state, recovers
+  from poison, and says so where it is taken. This is the same for `panic = "unwind"` and `"abort"`,
+  so the library is correct under either strategy, and an in-process test can show it.
+- **Code acadia does not own is run under `catch_unwind`** wherever acadia runs it on a thread of
+  its own, as rings, samples and watch callbacks already are.
+- **The workspace's own binaries build with `panic = "abort"`** in release, where a panic is then a
+  process ending in fact. A library cannot choose its consumers' strategy and does not try to.
+- **The coordination depends on the contract, not on boot checks.** Once every backend ends the
+  processes a restart ends, the boot check bound to a file hold and the shared participant's boot
+  check over a filesystem that is not the operating system's are removed.
+
+The storage model, [MemFsDurability.tla](spec/MemFsDurability.tla), models no processes or locks,
+and its `Crash` is unchanged. The work is milestones M44 and M45 in [CHECKLIST.md](CHECKLIST.md).

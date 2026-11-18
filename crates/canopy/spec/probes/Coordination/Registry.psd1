@@ -4,11 +4,11 @@
 @{
     Mutants = @(
         @{
-            Name      = 'die-keeps-registry-locks'
-            Base      = 'Coordination-Witness-ADeathBetweenTheClaimAndLivenessLocks'
+            Name      = 'terminate-keeps-registry-locks'
+            Base      = 'Coordination-Witness-ATerminationBetweenTheClaimAndLivenessLocks'
             Kind      = 'INVARIANTS'
             Property  = 'RegistryLocksAreHeldOnlyByLiveProcesses'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
     /\ cl' = [s \in Slots |-> IF cl[s] = p THEN None ELSE cl[s]]
     /\ ll' = [s \in Slots |-> IF ll[s] = p THEN None ELSE ll[s]]
@@ -95,12 +95,12 @@
 
         @{
             Name      = 'probe-ignores-liveness'
-            Base      = 'Coordination-Witness-AListingSeesADeadEntry'
+            Base      = 'Coordination-Witness-AListingSeesATerminatedEntry'
             Kind      = 'PROPERTIES'
             Property  = 'LiveReportIsJustified'
             Def       = 'ListProbe'
             Old = @'
-                     ELSE IF ll[lcur[p]] = None THEN "dead" ELSE "live">>)
+                     ELSE IF ll[lcur[p]] = None THEN "terminated" ELSE "live">>)
 '@
             New = @'
                      ELSE "live">>)
@@ -136,11 +136,11 @@
         }
 
         @{
-            Name      = 'die-clears-entry'
-            Base      = 'Coordination-Witness-ADeathWhileRegistered'
+            Name      = 'terminate-clears-entry'
+            Base      = 'Coordination-Witness-ATerminationWhileRegistered'
             Kind      = 'PROPERTIES'
-            Property  = 'DeathLeavesTheFilesystemAsItWas'
-            Def       = 'Die'
+            Property  = 'TerminationLeavesTheFilesystemAsItWas'
+            Def       = 'Terminate'
             Old = @'
 UNCHANGED <<rdata>>
 '@

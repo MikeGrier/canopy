@@ -3,10 +3,10 @@
   "spec": "Creation",
   "configuration": "Creation-Control-OpenTrustsALiveMarker",
   "origin": {"kind":"timeline","timeline":"T13"},
-  "constants": {"Control":"\"open-trusts-a-live-marker\"","Intrusion":"FALSE","MaxCrashes":"1","MaxDeaths":"1","NArt":"2","Procs":"{1, 2, 3}","Scenario":"\"CreatorAndOpeners\""},
+  "constants": {"Control":"\"open-trusts-a-live-marker\"","Intrusion":"FALSE","MaxCrashes":"1","MaxTerminations":"1","NArt":"2","Procs":"{1, 2, 3}","Scenario":"\"CreatorAndOpeners\""},
   "derived": {"scenario":{"impls":[1,1,2],"ins":[1,1,1],"roles":["creator","opener","opener"]}},
   "departs": "OPEN",
-  "initial": {"adur":[false,false],"ainp":[0,0],"ak":[0,0,0],"aliv":[false,false],"crashes":0,"cx":[0,0],"deaths":0,"everPub":false,"foreign":false,"out":["none","none","none"],"path":["none","none","none"],"pc":["new","new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}]},
+  "initial": {"adur":[false,false],"ainp":[0,0],"ak":[0,0,0],"aliv":[false,false],"crashes":0,"cx":[0,0],"everPub":false,"foreign":false,"out":["none","none","none"],"path":["none","none","none"],"pc":["new","new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}],"terminations":0},
   "steps": [
     {"action":"Look(1)","args":[1],"changes":{"path":["fresh","none","none"],"pc":["wantX","new","new"]},"name":"Look","step":"LOOK"},
     {"action":"Lock(1)","args":[1],"changes":{"cx":[1,0],"pc":["holdsX","new","new"]},"name":"Lock","step":"LOCK"},
@@ -15,8 +15,8 @@
     {"action":"WriteArt(1)","args":[1],"changes":{"ainp":[1,0],"aliv":[true,false],"pc":["syncArt","new","new"]},"name":"WriteArt","step":"WRA1"},
     {"action":"SyncArt(1)","args":[1],"changes":{"adur":[true,false],"ak":[2,0,0],"pc":["writeArt","new","new"]},"name":"SyncArt","step":"SYA1"},
     {"action":"WriteArt(1)","args":[1],"changes":{"ainp":[1,1],"aliv":[true,true],"pc":["syncArt","new","new"]},"name":"WriteArt","step":"WRM"},
-    {"action":"Die(1)","args":[1],"changes":{"ak":[0,0,0],"cx":[0,0],"deaths":1,"path":["none","none","none"],"pc":["dead","new","new"]},"name":"Die","step":"KILL"},
-    {"action":"OpenLook(2)","args":[2],"changes":{"out":["none","opened","none"],"pc":["dead","done","new"],"relied":true},"name":"OpenLook","step":"OPEN"},
+    {"action":"Terminate(1)","args":[1],"changes":{"ak":[0,0,0],"cx":[0,0],"path":["none","none","none"],"pc":["terminated","new","new"],"terminations":1},"name":"Terminate","step":"KILL"},
+    {"action":"OpenLook(2)","args":[2],"changes":{"out":["none","opened","none"],"pc":["terminated","done","new"],"relied":true},"name":"OpenLook","step":"OPEN"},
     {"action":"Crash","args":[],"changes":{"ainp":[1,0],"aliv":[true,false],"crashes":1},"name":"Crash","step":"CRSH"}
   ]
 }

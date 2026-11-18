@@ -43,7 +43,7 @@ ReplayT1 ==
     \/ tstep = 21 /\ BeginOpen(1)  \* EFF1
     \/ tstep = 22 /\ EndOpen(1)  \* EFF1
     \/ tstep = 23 /\ FirstEffect(1)  \* EFF1
-    \/ tstep = 24 /\ Die(1)  \* KILL
+    \/ tstep = 24 /\ Terminate(1)  \* KILL
     \/ tstep = 25 /\ Request(2)  \* REQ2
     \/ tstep = 26 /\ Lock(2)  \* LCK2
     \/ tstep = 27 /\ SetFence(2)  \* FNC
@@ -265,7 +265,7 @@ ReplayT9 ==
     \/ tstep = 7 /\ RegClaim(1, 1)  \* RGC1
     \/ tstep = 8 /\ RegLive(1)  \* RGL1
     \/ tstep = 9 /\ RegWrite(1)  \* RGW1
-    \/ tstep = 10 /\ Die(1)  \* KILL
+    \/ tstep = 10 /\ Terminate(1)  \* KILL
     \/ tstep = 11 /\ BeginAttach(2)  \* BGN2
     \/ tstep = 12 /\ TakeGateS(2)  \* GTS2
     \/ tstep = 13 /\ TakeReaderS(2)  \* RDS2
@@ -382,7 +382,7 @@ ReplayT16 ==
     \/ tstep = 19 /\ PrepareFails(1)  \* PRPF
     \/ tstep = 20 /\ RecStart(1)  \* RSRT1
     \/ tstep = 21 /\ RecSwap1(1)  \* RSWA1
-    \/ tstep = 22 /\ Die(1)  \* KILL
+    \/ tstep = 22 /\ Terminate(1)  \* KILL
     \/ tstep = 23 /\ Request(2)  \* REQ2
     \/ tstep = 24 /\ Lock(2)  \* LCK2
     \/ tstep = 25 /\ Record(2)  \* REC2
@@ -448,7 +448,7 @@ ReplayT18 ==
     \/ tstep = 13 /\ EndOpen(1)  \* PUB
     \/ tstep = 14 /\ RecordIntent(1)  \* INTN
     \/ tstep = 15 /\ UpStep(1)  \* STEP1
-    \/ tstep = 16 /\ Die(1)  \* KILL
+    \/ tstep = 16 /\ Terminate(1)  \* KILL
     \/ tstep = 17 /\ BeginAttach(2)  \* ATT
     \/ tstep = 18 /\ TakeGateS(2)  \* GATE
     \/ tstep = 19 /\ TakeReaderS(2)  \* RTIR
@@ -521,7 +521,7 @@ ReplayT20 ==
     \/ tstep = 13 /\ EndOpen(1)  \* PUB
     \/ tstep = 14 /\ RecordIntent(1)  \* INTN
     \/ tstep = 15 /\ UpFails(1)  \* FAIL
-    \/ tstep = 16 /\ Die(1)  \* KILL
+    \/ tstep = 16 /\ Terminate(1)  \* KILL
     \/ tstep = 17 /\ BeginAttach(2)  \* ATT
     \/ tstep = 18 /\ TakeGateS(2)  \* GATE
     \/ tstep = 19 /\ TakeReaderS(2)  \* RTIR

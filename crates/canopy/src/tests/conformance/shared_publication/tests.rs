@@ -228,7 +228,7 @@ fn torn_records_are_ignored_but_complete_invalid_or_duplicate_records_are_reject
 
 fn state(phase: &str, work: &str) -> Map<String, Value> {
     json!({"pc": [phase], "att": ["attached"], "wph": work, "wdoc": 1, "wix": 1,
-        "lockHolder": 1, "crashes": 0, "deaths": 0, "fence": false, "log": "empty"})
+        "lockHolder": 1, "crashes": 0, "terminations": 0, "fence": false, "log": "empty"})
     .as_object()
     .unwrap()
     .clone()
@@ -276,7 +276,7 @@ fn a_crash_can_change_all_participants() {
     let mut before = state("writing", "ptrSync");
     before.insert("pc".into(), json!(["writing", "waiting"]));
     let mut after = before.clone();
-    after.insert("pc".into(), json!(["dead", "dead"]));
+    after.insert("pc".into(), json!(["terminated", "terminated"]));
     after.insert("crashes".into(), json!(1));
     assert_eq!(infer(&before, &after).unwrap().name, "Crash");
 }

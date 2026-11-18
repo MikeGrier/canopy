@@ -42,7 +42,7 @@ RememberedGenerations ==
     [holder \in Procs |-> mygen[holder] = gen]
 
 RelevantRequestIntent ==
-    [holder \in Procs |-> pc[holder] \notin {"new", "idle", "exited", "dead"}
+    [holder \in Procs |-> pc[holder] \notin {"new", "idle", "exited", "terminated"}
                           /\ requestRecovery[holder]]
 
 RelevantUnitReadiness ==
@@ -54,7 +54,7 @@ RelevantIntervention ==
 
 QuotientView ==
     <<adm, pc, req, lockHolder, owner, fence, trusted, count % 2,
-      VersionRank(gen), RelativeTransaction, reader, diedIn, counts, RankedDocuments,
+      VersionRank(gen), RelativeTransaction, reader, terminatedIn, counts, RankedDocuments,
       wph, wdoc, wix, RankedVersions(wkeep), txnDoc, runPhase, SavedCountClasses,
     RelevantUnitReadiness, RelevantRequestIntent, directoryLive, directoryDurable, runDirectories,
     RelevantIntervention, RememberedGenerations,
@@ -95,7 +95,7 @@ RecoveryRequest(holder) ==
     /\ pc' = Set(pc, holder, "waiting")
     /\ req' = Set(req, holder, "pending")
     /\ requestRecovery' = Set(requestRecovery, holder, TRUE)
-    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, counts,
+    /\ UNCHANGED <<adm, coord, store, handle, reader, terminatedIn, counts,
                    docs, work, writes, ordinaryRequests>>
     /\ TxnTargets /\ RunState /\ Kinds /\ DirectoryState /\ RecoveryInterleaving
 

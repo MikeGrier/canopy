@@ -44,7 +44,7 @@ AcqAtt ==
 
 AcqPc ==
     [p \in Procs |->
-        IF pc[p] \in {"exited", "dead", "detached"} THEN "exited"
+        IF pc[p] \in {"exited", "terminated", "detached"} THEN "exited"
         ELSE IF pc[p] \in {"new", "attaching", "converting", "waiting"} THEN pc[p]
         ELSE IF att[p] = "uBody" THEN "converting"
         ELSE IF pc[p] \in {"idle", "detaching"} THEN "idle"
@@ -63,7 +63,7 @@ Acq(scenario) ==
         CountUpgrades <- UpSteps > 0,
         Escapes <- Escapes,
         Refusals <- TRUE,
-        Deaths <- MaxDeaths > 0 \/ MaxCrashes > 0,
+        Terminations <- MaxTerminations > 0 \/ MaxCrashes > 0,
         att <- AcqAtt,
         pc <- AcqPc,
         lockHolder <- AcqLockHolder,

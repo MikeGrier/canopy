@@ -8,7 +8,7 @@ EXTENDS CoordinationBehavior
 
 \* Something an acquirer can see that tells it a holder died or the state is
 \* not to be trusted.
-Evidence == fence \/ ~trusted \/ (owner # None /\ pc[owner] = "dead")
+Evidence == fence \/ ~trusted \/ (owner # None /\ pc[owner] = "terminated")
 
 \* Audience: client. Only one process writes a store at a time. Shows through: lost or interleaved
 \* updates.
@@ -25,14 +25,14 @@ LockMatchesHolders ==
 \* a process that is alive and not holding.
 OwnerRecordNamesItsHolder ==
     /\ \A p \in Procs : pc[p] \in OwnsRecord => owner = p
-    /\ owner # None => pc[owner] \in OwnsRecord \cup {"dead"}
+    /\ owner # None => pc[owner] \in OwnsRecord \cup {"terminated"}
 
 \* Audience: client. If a writer dies partway, the next writer is told recovery is required, even
 \* when it died before its first change or after its last. Shows through: the outcome of the next
 \* write and of discovery.
 \* A holder that died holding exclusion stays reported until recovery, even
 \* when it died before its first effect or after its last.
-AbandonmentIsNeverForgotten == diedIn # "none" => Evidence
+AbandonmentIsNeverForgotten == terminatedIn # "none" => Evidence
 
 \* Audience: client. Half-done work is never hidden: it belongs to a live writer, or the next
 \* writer and discovery are told recovery is required. Shows through: the outcome of the next
@@ -48,7 +48,7 @@ UnresolvedWorkIsNeverInvisible ==
 \* An abandoned record is replaced only after the fence (or the untrusted
 \* state) carries what it said.
 AbandonedRecordNeverReplacedUnfenced ==
-    [][(owner # None /\ pc[owner] = "dead" /\ owner' # owner)
+    [][(owner # None /\ pc[owner] = "terminated" /\ owner' # owner)
           => (fence' \/ ~trusted')]_vars
 
 \* Audience: client. A writer that is not told recovery is required finds a store with nothing to
@@ -76,7 +76,7 @@ ToldOnlyWithCause ==
 NoFalseAbandonmentReport ==
     [][\A p \in Procs :
           (pc[p] = "locked" /\ pc'[p] = "told" /\ owner # None)
-             => pc[owner] = "dead"]_vars
+             => pc[owner] = "terminated"]_vars
 
 \* Audience: client. Attaching, acquiring and a process dying never change the data; only a writer
 \* that owes no recovery, or a recovery, does. Shows through: data that changed without a write.
@@ -94,8 +94,8 @@ StoreDataChangesOnlyByAHealthyHolder ==
 \* Audience: internal.
 \* A process's death changes none of the coordination files, only its own
 \* state and the OS lock it held.
-DeathLeavesTheFilesystemAsItWas ==
-    [][((\E p \in Procs : pc[p] \in LiveStates /\ pc'[p] = "dead")
+TerminationLeavesTheFilesystemAsItWas ==
+    [][((\E p \in Procs : pc[p] \in LiveStates /\ pc'[p] = "terminated")
             /\ crashes' = crashes)
           => UNCHANGED <<recorded, store, rdata, ovf, owner, fence, trusted, count,
                          gen>>]_vars
@@ -113,7 +113,7 @@ RequestStateMatchesProcess ==
 \* Audience: client. A request is reported dead only if its process died. Shows through: the
 \* outcome of a request.
 OutcomeIsJustified ==
-    \A p \in Procs : req[p] = "dead" => pc[p] = "dead"
+    \A p \in Procs : req[p] = "terminated" => pc[p] = "terminated"
 
 \* Audience: client. Every request ends in exactly one outcome -- served, withdrawn or dead -- and
 \* keeps it. Shows through: the outcome of a request.
@@ -126,7 +126,7 @@ EveryRequestEndsInExactlyOneOutcome ==
           /\ req[p] \in Outcomes => req'[p] \in {req[p], "pending"}
           /\ (pc[p] = "waiting" /\ pc'[p] # "waiting") =>
                 \/ pc'[p] = "locked" /\ req'[p] = "served"
-                \/ pc'[p] = "dead" /\ req'[p] = "dead"
+                \/ pc'[p] = "terminated" /\ req'[p] = "terminated"
                 \/ pc'[p] = "idle" /\ req'[p] = "withdrawn"
       ]_vars
 
@@ -228,7 +228,7 @@ ACallbackChangesOnlyWhereItsHolderIs ==
     [][\A p \in Procs :
           (pc[p] = "wrote" /\ pc'[p] = "observed") =>
               /\ \A q \in Procs \ {p} : pc'[q] = pc[q]
-              /\ UNCHANGED <<req, coord, store, handle, reader, diedIn, counts,
+              /\ UNCHANGED <<req, coord, store, handle, reader, terminatedIn, counts,
                              att, areq, lease, schema, reg>>]_vars
 
 \* A read whose last step this is, and the value of its second sample.

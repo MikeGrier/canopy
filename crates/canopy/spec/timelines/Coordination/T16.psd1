@@ -1,6 +1,6 @@
 @{
     Timeline = 'T16'
-    Base = 'Coordination-Witness-ARecoveryIsResumedAfterADeathBetweenItsSwaps'
+    Base = 'Coordination-Witness-ARecoveryIsResumedAfterATerminationBetweenItsSwaps'
     Note = 'A is process 1 and B process 2. Completion attempts the log reset between the sweep and count publication.'
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)', 'BeginAttach(2)', 'TakeGateS(2)', 'TakeReaderS(2)', 'DropGate(2)', 'TakeWriterS(2)', 'Admit(2)'
@@ -16,7 +16,7 @@
         @{ Id = 'PRPF'; Actions = @('PrepareFails(1)') }
         @{ Id = 'RSRT1'; Actions = @('RecStart(1)') }
         @{ Id = 'RSWA1'; Actions = @('RecSwap1(1)') }
-        @{ Id = 'KILL'; Actions = @('Die(1)') }
+        @{ Id = 'KILL'; Actions = @('Terminate(1)') }
         @{ Id = 'REQ2'; Actions = @('Request(2)') }
         @{ Id = 'LCK2'; Actions = @('Lock(2)') }
         @{ Id = 'REC2'; Actions = @('Record(2)') }

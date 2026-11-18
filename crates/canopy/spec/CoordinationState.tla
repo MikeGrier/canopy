@@ -348,7 +348,7 @@ EXTENDS Naturals, Integers, FiniteSets, Sequences, TLC
 CONSTANTS
     Procs,        \* the processes that open the root, 1..Len(RoleOf)
     MaxRequests,  \* bound on exclusion requests, to keep the model finite
-    MaxDeaths,    \* bound on process deaths
+    MaxTerminations,    \* bound on process terminations
     MaxCrashes,   \* bound on host crashes
     MaxReads,     \* bound on reads
     MaxLeases,    \* bound on the operations one handle's clones have in flight
@@ -475,7 +475,7 @@ Tick(c) == c + 1
 
 ASSUME Scenario \in DOMAIN Scenarios
 ASSUME Procs # {} /\ Procs = 1..Len(RoleOf)
-ASSUME MaxRequests \in Nat /\ MaxDeaths \in Nat /\ MaxCrashes \in Nat
+ASSUME MaxRequests \in Nat /\ MaxTerminations \in Nat /\ MaxCrashes \in Nat
 ASSUME MaxReads \in Nat /\ MaxLeases \in Nat /\ Escapes \in BOOLEAN
 ASSUME Txn \in BOOLEAN /\ UnloggedRecovery \in BOOLEAN
 ASSUME UnloggedRecovery => ~Txn
@@ -594,9 +594,9 @@ VARIABLES
                  \* data of each layer as it is
     rtier,       \* [Procs -> BOOLEAN]: whether an upgrader holds the reader tier
                  \* exclusively, decided when it takes its first tier
-    diedIn,      \* ghost: where the latest holder died with the record present
+    terminatedIn,      \* ghost: where the latest holder died with the record present
     requests,
-    deaths,
+    terminations,
     crashes,
     reads,
     discoveries,
@@ -609,7 +609,7 @@ vars == <<pc, req, lockHolder, owner, fence, trusted, count, gen,
           rseenB, rpart, scache, disc, att, areq, lease, cl, ll, etok, edr, ovf,
           rst, rscan, rcur, lph, lcur, ltok, lrep, lunk, lfree, lres, lists,
           oldest, current, upState, ustep, ulayer, utgt, ufloor, dfloor, rtier,
-          diedIn, requests, deaths, crashes, reads,
+          terminatedIn, requests, terminations, crashes, reads,
           discoveries, upgrades, woken>>
 
 coord  == <<lockHolder, owner, fence, trusted, count, gen>>
@@ -618,7 +618,7 @@ handle == <<mygen, cache>>
 reader == <<rphase, rbefore, rseenA, rseenB, rpart, scache, disc>>
 \* The bounded steps' counters, and each process's notice of a change, which only the
 \* notification's own steps change, so that every step that names counts leaves it alone.
-counts == <<requests, deaths, crashes, reads, discoveries, upgrades, woken>>
+counts == <<requests, terminations, crashes, reads, discoveries, upgrades, woken>>
 \* What the store records about schemas and the upgrade in progress.
 recorded == <<oldest, current, dfloor, upState, ulayer, utgt, ufloor, ustep>>
 schema == <<recorded, rtier>>
@@ -632,7 +632,7 @@ reg    == <<rlock, rdata, ovf, rown, rlist>>
 adm    == <<att, areq, lease, reg, schema>>
 \* Everything but the process state, the attachment state, its request, the
 \* leases, the registry and the schema state.
-bystanders == <<req, coord, store, handle, reader, diedIn, counts>>
+bystanders == <<req, coord, store, handle, reader, terminatedIn, counts>>
 rest   == <<lease, reg, bystanders>>
 \* Everything but the registry.
 core   == <<pc, att, areq, lease, schema, bystanders>>
@@ -681,7 +681,7 @@ LiveStates == {"attaching", "converting", "convertingX", "idle", "waiting",
 \* to its release. A read is inside one while rphase is not "none".
 InOperationStates == LiveStates \ {"attaching", "converting", "convertingX",
                                    "idle", "detached", "detaching"}
-States == {"new", "exited", "dead"} \cup LiveStates
+States == {"new", "exited", "terminated"} \cup LiveStates
 OpenStates == {"open", "begun", "ingested", "prepared", "writing",
                "applied", "ended", "wrote", "observed", "closing", "upBody"}
 \* Where a holder is inside a transaction, between its begin record and the
@@ -695,8 +695,8 @@ DiscReports == {"none", "required", "notRequired"}
 OwnsRecord == OpenStates \cup {"held", "opening", "closed", "told", "convertingX"}
                          \cup RecStates
 HoldsLock == OwnsRecord \cup {"locked", "releasing"}
-Outcomes == {"served", "withdrawn", "dead", "refused"}
-DiedKinds == {"none", "crash", "unlocked"} \cup OwnsRecord
+Outcomes == {"served", "withdrawn", "terminated", "refused"}
+TerminatedKinds == {"none", "crash", "unlocked"} \cup OwnsRecord
 ReaderPhases == {"none", "before2", "obsA", "obsB", "after1", "after2"}
 \* A process "sample"s what it waits for before it waits, and again once woken; "asleep" is
 \* registered for a notification; "lost" was, and its notification will never come.
@@ -730,7 +730,7 @@ RegistryOn == NSlots > 0
 RegStates == {"out", "scan", "claimed", "locked", "written", "in", "upd", "uc",
               "ucl", "unreg"}
 ListPhases == {"none", "next", "held", "read"}
-ListStatuses == {"free", "dead", "live", "unknown"}
+ListStatuses == {"free", "terminated", "live", "unknown"}
 NoRep == <<0, 0, "none">>
 HoldsAttachment == {"registering", "attached", "unregistering", "draining"}
 
@@ -911,9 +911,9 @@ TypeOK ==
     /\ ufloor \in Nat
     /\ dfloor \in [Layers -> Nat]
     /\ rtier \in [Procs -> BOOLEAN]
-    /\ diedIn \in DiedKinds
+    /\ terminatedIn \in TerminatedKinds
     /\ requests \in 0..MaxRequests
-    /\ deaths \in 0..MaxDeaths
+    /\ terminations \in 0..MaxTerminations
     /\ crashes \in 0..MaxCrashes
     /\ reads \in 0..MaxReads
     /\ discoveries \in 0..MaxDiscoveries
@@ -972,9 +972,9 @@ Init ==
     /\ ufloor = 0
     /\ dfloor = [l \in Layers |-> Oldest[l]]
     /\ rtier = [p \in Procs |-> FALSE]
-    /\ diedIn = "none"
+    /\ terminatedIn = "none"
     /\ requests = 0
-    /\ deaths = 0
+    /\ terminations = 0
     /\ crashes = 0
     /\ reads = 0
     /\ discoveries = 0

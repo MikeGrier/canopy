@@ -80,7 +80,7 @@ ReplayT13 ==
     \/ tstep = 4 /\ WriteArt(1)  \* WRA1
     \/ tstep = 5 /\ SyncArt(1)  \* SYA1
     \/ tstep = 6 /\ WriteArt(1)  \* WRM
-    \/ tstep = 7 /\ Die(1)  \* KILL
+    \/ tstep = 7 /\ Terminate(1)  \* KILL
     \/ tstep = 8 /\ OpenLook(2)  \* OPEN
     \/ tstep = 9 /\ Crash  \* CRSH
 
@@ -99,7 +99,7 @@ ReplayT32 ==
     \/ tstep = 2 /\ Lock(2)  \* LOCK1
     \/ tstep = 3 /\ Publish(2)  \* PUB
     \/ tstep = 4 /\ SyncRes(2)  \* SYNR
-    \/ tstep = 5 /\ Die(2)  \* KILL
+    \/ tstep = 5 /\ Terminate(2)  \* KILL
     \/ tstep = 6 /\ Lock(1)  \* LOCK2
     \/ tstep = 7 /\ TakeOver(1)  \* TAKE
     \/ tstep = 8 /\ SyncRes(1)  \* SYNR2

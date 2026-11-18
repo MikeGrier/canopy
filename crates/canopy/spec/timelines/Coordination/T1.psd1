@@ -10,7 +10,7 @@
         @{ Id = 'LCK1'; Actions = @('Lock(1)') }
         @{ Id = 'REC1'; Actions = @('Record(1)') }
         @{ Id = 'EFF1'; Actions = @('BeginOpen(1)', 'EndOpen(1)', 'FirstEffect(1)') }
-        @{ Id = 'KILL'; Actions = @('Die(1)') }
+        @{ Id = 'KILL'; Actions = @('Terminate(1)') }
         @{ Id = 'REQ2'; Actions = @('Request(2)') }
         @{ Id = 'LCK2'; Actions = @('Lock(2)') }
         @{ Id = 'FNC'; Actions = @('SetFence(2)') }

@@ -127,7 +127,7 @@ pub(super) fn infer(
             replica,
         })
     };
-    if number(after, "deaths")? > number(before, "deaths")? {
+    if number(after, "terminations")? > number(before, "terminations")? {
         return result("ProcessEnds");
     }
     if previous == "open" && next == "wrote" {

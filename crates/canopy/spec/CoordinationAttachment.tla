@@ -19,7 +19,7 @@ Exit(p) ==
           ELSE /\ pc' = Set(pc, p, "exited")
                /\ att' = Set(att, p, "off")
                /\ Forget(p)
-    /\ UNCHANGED <<areq, lease, schema, req, coord, store, diedIn,
+    /\ UNCHANGED <<areq, lease, schema, req, coord, store, terminatedIn,
                    counts, reg>>
 
 Request(p) ==
@@ -28,7 +28,7 @@ Request(p) ==
     /\ pc' = Set(pc, p, "waiting")
     /\ req' = Set(req, p, "pending")
     /\ requests' = Tick(requests)
-    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, deaths,
+    /\ UNCHANGED <<adm, coord, store, handle, reader, terminatedIn, terminations,
                    crashes, reads, discoveries, upgrades, woken>>
 
 \* The waiter gives up.
@@ -37,7 +37,7 @@ Withdraw(p) ==
     /\ pc[p] = "waiting"
     /\ pc' = Set(pc, p, "idle")
     /\ req' = Set(req, p, "withdrawn")
-    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, coord, store, handle, reader, terminatedIn, counts>>
 
 -----------------------------------------------------------------------------
 (* The admission gate and the attachment tiers (DESIGN-NOTES "Schemas and *)
@@ -166,7 +166,7 @@ StartUpgrade(p) ==
     /\ att' = Set(att, p, "draining")
     /\ areq' = Set(areq, p, "pending")
     /\ UNCHANGED <<schema, lease, reg, req, coord, store, handle, reader,
-                   diedIn, requests, deaths, crashes, reads, discoveries, woken>>
+                   terminatedIn, requests, terminations, crashes, reads, discoveries, woken>>
 
 RefuseUpgrade(p) ==
     /\ Upgrader(p) /\ att[p] = "attached" /\ InsideOperation(p)
@@ -257,7 +257,7 @@ BeginUpgrade(p) ==
           ELSE /\ lockHolder' = p
                /\ pc' = Set(pc, p, "locked")
                /\ UNCHANGED <<schema, areq, lease, reg, req, owner, fence,
-                              trusted, count, gen, store, handle, reader, diedIn,
+                              trusted, count, gen, store, handle, reader, terminatedIn,
                               counts>>
 
 \* Otherwise it gives up, and its handle is left detached.
@@ -435,7 +435,7 @@ Detach(p) ==
           ELSE /\ att' = Set(att, p, IF Control = "upgrader-keeps-tiers"
                                         THEN "uWGateT" ELSE "uWGate")
                /\ UNCHANGED <<pc, handle, reader>>
-    /\ UNCHANGED <<areq, lease, schema, req, coord, store, diedIn,
+    /\ UNCHANGED <<areq, lease, schema, req, coord, store, terminatedIn,
                    counts, reg>>
 
 \* A listing runs on a thread of its own, on a process that need not be
@@ -446,7 +446,7 @@ Detach(p) ==
 \* may be incomplete.
 ListStart(p) ==
     /\ RegistryOn /\ lph[p] = "none" /\ Room(lists, MaxListings)
-    /\ pc[p] \notin {"exited", "dead"}
+    /\ pc[p] \notin {"exited", "terminated"}
     /\ lph' = Set(lph, p, "next")
     /\ lcur' = Set(lcur, p, 1)
     /\ lunk' = Set(lunk, p, FALSE)
@@ -482,7 +482,7 @@ ListProbe(p) ==
     /\ lrep' = Set(lrep, p,
                    <<lcur[p], ltok[p],
                      IF ltok[p] = None THEN "free"
-                     ELSE IF ll[lcur[p]] = None THEN "dead" ELSE "live">>)
+                     ELSE IF ll[lcur[p]] = None THEN "terminated" ELSE "live">>)
     /\ lfree' = Set(lfree, p, lfree[p] \/ ltok[p] = None \/ ll[lcur[p]] = None)
     /\ cl' = Unclaim(lcur[p], p)
     /\ lcur' = Set(lcur, p, lcur[p] + 1)

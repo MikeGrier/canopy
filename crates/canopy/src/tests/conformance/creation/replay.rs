@@ -91,7 +91,7 @@ impl<'t> Replay<'t> {
         let step = &trace.steps[k];
         let after = &trace.states[k + 1];
         match step.name.as_str() {
-            "Die" => self.die(process(&step.args)),
+            "Terminate" => self.terminate(process(&step.args)),
             "Crash" => self.crash(after)?,
             "Intrude" => self
                 .mem
@@ -139,7 +139,7 @@ impl<'t> Replay<'t> {
         }
     }
 
-    fn die(&mut self, p: usize) {
+    fn terminate(&mut self, p: usize) {
         let process = self.processes[p - 1]
             .as_mut()
             .expect("a process dies once it has started");

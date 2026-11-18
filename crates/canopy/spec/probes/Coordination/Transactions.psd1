@@ -112,14 +112,14 @@
             Def       = 'Request'
             Old = @'
     /\ requests' = Tick(requests)
-    /\ UNCHANGED <<adm, coord, store, handle, reader, diedIn, deaths,
+    /\ UNCHANGED <<adm, coord, store, handle, reader, terminatedIn, terminations,
                    crashes, reads>>
 '@
             New = @'
     /\ requests' = Tick(requests)
     /\ log' = "empty"
     /\ UNCHANGED <<adm, coord, a, b, shared, stage, ptgt, handle, reader,
-                   diedIn, deaths, crashes, reads>>
+                   terminatedIn, terminations, crashes, reads>>
 '@
         }
 
@@ -131,11 +131,11 @@
             Overrides = @{ MaxRequests = '1' }
             Def       = 'Abort'
             Old = @'
-    /\ UNCHANGED <<adm, req, coord, a, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, a, b, mygen, reader, terminatedIn, counts>>
 '@
             New = @'
     /\ a' = IF stage # 0 THEN stage ELSE a
-    /\ UNCHANGED <<adm, req, coord, b, mygen, reader, diedIn, counts>>
+    /\ UNCHANGED <<adm, req, coord, b, mygen, reader, terminatedIn, counts>>
 '@
         }
 

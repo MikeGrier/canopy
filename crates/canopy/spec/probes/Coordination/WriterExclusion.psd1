@@ -19,11 +19,11 @@
         }
 
         @{
-            Name      = 'die-keeps-lock'
+            Name      = 'terminate-keeps-lock'
             Base      = 'Coordination'
             Kind      = 'INVARIANTS'
             Property  = 'LockMatchesHolders'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
     /\ lockHolder' = IF lockHolder = p THEN None ELSE lockHolder
 '@
@@ -33,11 +33,11 @@
         }
 
         @{
-            Name      = 'die-clears-record'
+            Name      = 'terminate-clears-record'
             Base      = 'Coordination'
             Kind      = 'INVARIANTS'
             Property  = 'AbandonmentIsNeverForgotten'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
     /\ UNCHANGED <<owner, fence, trusted, store, requests, crashes>>
 '@
@@ -48,22 +48,22 @@
         }
 
         @{
-            Name      = 'die-clears-record-unseen'
+            Name      = 'terminate-clears-record-unseen'
             Base      = 'Coordination'
             Kind      = 'INVARIANTS'
             Property  = 'UnresolvedWorkIsNeverInvisible'
             Edits     = @(
                 @{
-                    Def = 'Die'
+                    Def = 'Terminate'
                     Old = @'
-diedIn' = IF owner = p THEN pc[p] ELSE diedIn
+terminatedIn' = IF owner = p THEN pc[p] ELSE terminatedIn
 '@
                     New = @'
-diedIn' = diedIn
+terminatedIn' = terminatedIn
 '@
                 }
                 @{
-                    Def = 'Die'
+                    Def = 'Terminate'
                     Old = @'
 UNCHANGED <<owner>>
 '@
@@ -76,11 +76,11 @@ owner' = IF owner = p THEN None ELSE owner
         }
 
         @{
-            Name      = 'die-completes-write'
+            Name      = 'terminate-completes-write'
             Base      = 'Coordination'
             Kind      = 'PROPERTIES'
-            Property  = 'DeathLeavesTheFilesystemAsItWas'
-            Def       = 'Die'
+            Property  = 'TerminationLeavesTheFilesystemAsItWas'
+            Def       = 'Terminate'
             Old = @'
 UNCHANGED <<store>>
 '@
@@ -111,11 +111,11 @@ b' = IF pc[p] = "writing" THEN a ELSE b
             Property  = 'AbandonmentIsNeverForgotten'
             Def       = 'Release'
             Old = @'
-    /\ UNCHANGED <<req, fence, trusted, store, diedIn, counts>>
+    /\ UNCHANGED <<req, fence, trusted, store, terminatedIn, counts>>
 '@
             New = @'
     /\ fence' = FALSE
-    /\ UNCHANGED <<req, trusted, store, diedIn, counts>>
+    /\ UNCHANGED <<req, trusted, store, terminatedIn, counts>>
 '@
         }
 
@@ -182,7 +182,7 @@ THEN "told" ELSE "told")
             Property  = 'CrashLeavesNoLiveProcess'
             Def       = 'Crash'
             Old = @'
-    /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "dead" ELSE pc[p]]
+    /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "terminated" ELSE pc[p]]
 '@
             New = @'
     /\ pc' = pc
@@ -199,18 +199,18 @@ THEN "told" ELSE "told")
     /\ req' = Set(req, p, "withdrawn")
 '@
             New = @'
-    /\ req' = Set(req, p, "dead")
+    /\ req' = Set(req, p, "terminated")
 '@
         }
 
         @{
-            Name      = 'die-leaves-request-pending'
+            Name      = 'terminate-leaves-request-pending'
             Base      = 'Coordination'
             Kind      = 'INVARIANTS'
             Property  = 'RequestStateMatchesProcess'
-            Def       = 'Die'
+            Def       = 'Terminate'
             Old = @'
-    /\ req' = IF pc[p] = "waiting" THEN Set(req, p, "dead") ELSE req
+    /\ req' = IF pc[p] = "waiting" THEN Set(req, p, "terminated") ELSE req
 '@
             New = @'
     /\ req' = req
@@ -228,7 +228,7 @@ UNCHANGED <<schema, rest>>
 '@
             New = @'
 a' = Nx(a)
-    /\ UNCHANGED <<schema, lease, reg, req, coord, b, shared, log, stage, ptgt, handle, reader, diedIn, counts>>
+    /\ UNCHANGED <<schema, lease, reg, req, coord, b, shared, log, stage, ptgt, handle, reader, terminatedIn, counts>>
 '@
         }
 

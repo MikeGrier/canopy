@@ -109,7 +109,7 @@ impl Turnstile {
             }
         }
         if gate.ended {
-            Verdict::Die
+            Verdict::Terminate
         } else {
             Verdict::Proceed
         }
@@ -153,7 +153,7 @@ impl StepHook for Turnstile {
             contract::Class::Other => Class::Other,
             class => Class::Contract(class),
         };
-        if matches!(self.check(class, true), Verdict::Die) {
+        if matches!(self.check(class, true), Verdict::Terminate) {
             resume_unwind(Box::new(ProcessEnded));
         }
     }

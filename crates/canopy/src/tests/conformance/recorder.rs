@@ -26,7 +26,7 @@ pub(super) enum Verdict {
     /// The call fails, and later calls go ahead.
     Fail,
     /// The call and every later one fail: the process is dead from here.
-    Die,
+    Terminate,
 }
 
 /// Sees each call the store makes: before, to decide its fate, and after, once it succeeded.
@@ -154,7 +154,7 @@ impl Recorder {
             match watcher.before(op, path, to) {
                 Verdict::Proceed => {}
                 Verdict::Fail => fail = true,
-                Verdict::Die => {
+                Verdict::Terminate => {
                     self.kill();
                     fail = true;
                 }

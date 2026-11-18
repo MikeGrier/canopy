@@ -10,25 +10,25 @@ HoldsTold == \E p \in Procs : pc[p] = "told"
 
 Witness_BothUnservedOutcomes ==
     ~( (\E p \in Procs : req[p] = "withdrawn")
-       /\ (\E p \in Procs : req[p] = "dead") )
+       /\ (\E p \in Procs : req[p] = "terminated") )
 
-Witness_ToldAfterDeathBeforeFirstEffect ==
-    ~(diedIn \in {"held", "opening", "open"} /\ HoldsTold)
+Witness_ToldAfterTerminationBeforeFirstEffect ==
+    ~(terminatedIn \in {"held", "opening", "open"} /\ HoldsTold)
 
-Witness_ToldAfterDeathWhileOpeningIsPublished ==
-    ~(diedIn = "opening" /\ HoldsTold)
+Witness_ToldAfterTerminationWhileOpeningIsPublished ==
+    ~(terminatedIn = "opening" /\ HoldsTold)
 
-Witness_ToldAfterDeathMidWrite ==
-    ~(diedIn = "writing" /\ Partial /\ HoldsTold)
+Witness_ToldAfterTerminationMidWrite ==
+    ~(terminatedIn = "writing" /\ Partial /\ HoldsTold)
 
-Witness_ToldAfterDeathAfterLastEffect ==
-    ~(diedIn \in {"wrote", "closing", "closed"} /\ HoldsTold)
+Witness_ToldAfterTerminationAfterLastEffect ==
+    ~(terminatedIn \in {"wrote", "closing", "closed"} /\ HoldsTold)
 
-Witness_ToldAfterDeathWhileClosingIsPublished ==
-    ~(diedIn = "closing" /\ HoldsTold)
+Witness_ToldAfterTerminationWhileClosingIsPublished ==
+    ~(terminatedIn = "closing" /\ HoldsTold)
 
 Witness_ToldAfterRestartAlone ==
-    ~(diedIn = "none" /\ ~fence /\ ~trusted /\ HoldsTold)
+    ~(terminatedIn = "none" /\ ~fence /\ ~trusted /\ HoldsTold)
 
 Witness_OpeningPublicationFails ==
     [][~(\E p \in Procs : pc[p] = "opening" /\ pc'[p] = "closed")]_vars
@@ -189,11 +189,11 @@ Witness_AnUpgradeIsRefusedFromInsideAWrite ==
     [][~(\E p \in Procs :
             RefusedAtTheDoor(p) /\ pc[p] \in InOperationStates)]_vars
 
-Witness_AnUpgraderDiesWhileDraining ==
-    [][~(\E p \in Procs : att[p] = "draining" /\ pc'[p] = "dead")]_vars
+Witness_AnUpgraderTerminatesWhileDraining ==
+    [][~(\E p \in Procs : att[p] = "draining" /\ pc'[p] = "terminated")]_vars
 
-Witness_ADeathEndsTheLeases ==
-    [][~(\E p \in Procs : pc'[p] = "dead" /\ lease[p] > 0)]_vars
+Witness_ATerminationEndsTheLeases ==
+    [][~(\E p \in Procs : pc'[p] = "terminated" /\ lease[p] > 0)]_vars
 
 \* The registry.
 Witness_AHandleRegisters ==
@@ -203,10 +203,10 @@ Witness_AHandleAttachesUnregistered ==
     [][~(\E p \in Procs : rst[p] = "scan" /\ rst'[p] = "unreg")]_vars
 
 \* The entry of a handle that died is left as it was and is reused.
-Witness_AnEntryOfADeadHandleIsReused ==
+Witness_AnEntryOfATerminatedHandleIsReused ==
     [][~(\E p \in Procs :
             rst[p] = "claimed" /\ rst'[p] = "locked"
-            /\ etok[rcur[p]] # None /\ pc[etok[rcur[p]]] = "dead")]_vars
+            /\ etok[rcur[p]] # None /\ pc[etok[rcur[p]]] = "terminated")]_vars
 
 Witness_ARegistrantMovesOnFromAHeldClaim ==
     [][~(\E p \in Procs :
@@ -232,16 +232,16 @@ Witness_AnUnregistrationSkipsAHeldClaim ==
 Witness_AListingSeesALiveEntry ==
     [][~(\E p \in Procs : lph[p] = "read" /\ lrep'[p][3] = "live")]_vars
 
-Witness_AListingSeesADeadEntry ==
-    [][~(\E p \in Procs : lph[p] = "read" /\ lrep'[p][3] = "dead")]_vars
+Witness_AListingSeesATerminatedEntry ==
+    [][~(\E p \in Procs : lph[p] = "read" /\ lrep'[p][3] = "terminated")]_vars
 
 Witness_AListingSeesAFreeEntry ==
     [][~(\E p \in Procs : lph[p] = "read" /\ lrep'[p][3] = "free")]_vars
 
-Witness_ADeadHandlesEntryIsReportedDead ==
+Witness_ATerminatedHandlesEntryIsReportedTerminated ==
     [][~(\E p \in Procs :
-            lph[p] = "read" /\ lrep'[p][3] = "dead"
-            /\ ltok[p] # None /\ pc[ltok[p]] = "dead")]_vars
+            lph[p] = "read" /\ lrep'[p][3] = "terminated"
+            /\ ltok[p] # None /\ pc[ltok[p]] = "terminated")]_vars
 
 Witness_AListingMeetsAClaimedEntry ==
     [][~(\E p \in Procs : lph[p] = "next" /\ ~lunk[p] /\ lunk'[p])]_vars
@@ -259,11 +259,11 @@ Witness_AListingSaysItIsComplete ==
     [][~(\E p \in Procs :
             lph[p] = "next" /\ lph'[p] = "none" /\ lres'[p] = "complete")]_vars
 
-Witness_ADeathBetweenTheClaimAndLivenessLocks ==
-    [][~(\E p \in Procs : rst[p] = "claimed" /\ pc'[p] = "dead")]_vars
+Witness_ATerminationBetweenTheClaimAndLivenessLocks ==
+    [][~(\E p \in Procs : rst[p] = "claimed" /\ pc'[p] = "terminated")]_vars
 
-Witness_ADeathWhileRegistered ==
-    [][~(\E p \in Procs : rst[p] = "in" /\ pc'[p] = "dead")]_vars
+Witness_ATerminationWhileRegistered ==
+    [][~(\E p \in Procs : rst[p] = "in" /\ pc'[p] = "terminated")]_vars
 
 -----------------------------------------------------------------------------
 (* Transactions.                                                           *)
@@ -298,23 +298,23 @@ Witness_TheLogIsReset ==
     [][~(\E p \in Procs : pc[p] \in {"held", "closed"} /\ log # "empty"
                           /\ log' = "empty")]_vars
 
-Witness_ToldAfterDeathAfterBegin ==
-    ~(diedIn = "begun" /\ HoldsTold)
+Witness_ToldAfterTerminationAfterBegin ==
+    ~(terminatedIn = "begun" /\ HoldsTold)
 
-Witness_ToldAfterDeathAfterIngest ==
-    ~(diedIn = "ingested" /\ HoldsTold)
+Witness_ToldAfterTerminationAfterIngest ==
+    ~(terminatedIn = "ingested" /\ HoldsTold)
 
-Witness_ToldAfterDeathAfterPrepare ==
-    ~(diedIn = "prepared" /\ log = "prepared" /\ HoldsTold)
+Witness_ToldAfterTerminationAfterPrepare ==
+    ~(terminatedIn = "prepared" /\ log = "prepared" /\ HoldsTold)
 
-Witness_ToldAfterDeathAfterTheSwaps ==
-    ~(diedIn = "applied" /\ HoldsTold)
+Witness_ToldAfterTerminationAfterTheSwaps ==
+    ~(terminatedIn = "applied" /\ HoldsTold)
 
-Witness_ToldAfterDeathAfterEnd ==
-    ~(diedIn = "ended" /\ HoldsTold)
+Witness_ToldAfterTerminationAfterEnd ==
+    ~(terminatedIn = "ended" /\ HoldsTold)
 
 Witness_ACrashLeavesAPreparedTransaction ==
-    ~(diedIn = "crash" /\ log = "prepared")
+    ~(terminatedIn = "crash" /\ log = "prepared")
 
 -----------------------------------------------------------------------------
 (* Recovery and discovery.                                                 *)
@@ -355,42 +355,42 @@ Witness_ARecoveryFollowsACrashThatRolledTheCountBack ==
     [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] \in RecStates
                           /\ ~trusted /\ Even(count) /\ log = "prepared")]_vars
 
-Witness_ARecoveryFollowsAHoldersDeath ==
+Witness_ARecoveryFollowsAHoldersTermination ==
     [][~(\E p \in Procs : pc[p] = "recCount" /\ pc'[p] = "recClear"
-                          /\ diedIn \in TxnStates)]_vars
+                          /\ terminatedIn \in TxnStates)]_vars
 
 Witness_ARecoveryFollowsAnUnresolvedFailure ==
     [][~(\E p \in Procs : pc[p] = "recClear" /\ pc'[p] = "closed"
-                          /\ deaths = 0 /\ crashes = 0)]_vars
+                          /\ terminations = 0 /\ crashes = 0)]_vars
 
 Witness_ARecoveryIsStopped ==
     [][~(\E p \in Procs : pc[p] \in RecStates /\ pc'[p] = "told")]_vars
 
-Witness_ARecovererDiesAfterTheFirstSwap ==
-    ~(diedIn = "recSwap2" /\ HoldsTold)
+Witness_ARecovererTerminatesAfterTheFirstSwap ==
+    ~(terminatedIn = "recSwap2" /\ HoldsTold)
 
-Witness_ARecovererDiesAfterTheSwaps ==
-    ~(diedIn = "recEnd" /\ HoldsTold)
+Witness_ARecovererTerminatesAfterTheSwaps ==
+    ~(terminatedIn = "recEnd" /\ HoldsTold)
 
-Witness_ARecovererDiesAfterTheEndRecord ==
-    ~(diedIn = "recSweep" /\ HoldsTold)
+Witness_ARecovererTerminatesAfterTheEndRecord ==
+    ~(terminatedIn = "recSweep" /\ HoldsTold)
 
-Witness_ARecovererDiesAfterTheSweep ==
-    ~(diedIn = "recCount" /\ HoldsTold)
+Witness_ARecovererTerminatesAfterTheSweep ==
+    ~(terminatedIn = "recCount" /\ HoldsTold)
 
-Witness_ARecovererDiesAfterTheCount ==
-    ~(diedIn = "recClear" /\ HoldsTold)
+Witness_ARecovererTerminatesAfterTheCount ==
+    ~(terminatedIn = "recClear" /\ HoldsTold)
 
-Witness_ARecoveryIsResumedAfterADeath ==
+Witness_ARecoveryIsResumedAfterATermination ==
     [][~(\E p \in Procs : pc[p] = "recCount" /\ pc'[p] = "recClear"
-                          /\ diedIn \in RecStates)]_vars
+                          /\ terminatedIn \in RecStates)]_vars
 
 \* A recoverer that died after its first swap left the namespace half applied; the
 \* next one finishes the swaps, writes the end record and sweeps before it
 \* publishes the count.
-Witness_ARecoveryIsResumedAfterADeathBetweenItsSwaps ==
+Witness_ARecoveryIsResumedAfterATerminationBetweenItsSwaps ==
     [][~(\E p \in Procs : pc[p] = "recCount" /\ pc'[p] = "recClear"
-                          /\ diedIn = "recSwap2" /\ log = "ended" /\ Settled)]_vars
+                          /\ terminatedIn = "recSwap2" /\ log = "ended" /\ Settled)]_vars
 
 Witness_DiscoveryFindsAHoldersAbandonedWork ==
     [][~(\E p \in Procs : Discover(p) /\ disc'[p] = "required"
@@ -448,27 +448,27 @@ Witness_AnUpgraderGivesUpBeforeTheIntent ==
 Witness_AnUpgradeFailsInItsBody ==
     [][~(\E p \in Procs : pc[p] = "upBody" /\ pc'[p] = "told")]_vars
 
-Witness_AnUpgraderDiesBeforeTheIntent ==
+Witness_AnUpgraderTerminatesBeforeTheIntent ==
     [][~(\E p \in Procs : Upgrader(p) /\ att[p] = "uBody"
                           /\ pc[p] \in {"held", "opening", "open"}
-                          /\ pc'[p] = "dead")]_vars
+                          /\ pc'[p] = "terminated")]_vars
 
-Witness_AnUpgraderDiesBeforeItsFirstStep ==
-    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep = 0 /\ pc'[p] = "dead")]_vars
+Witness_AnUpgraderTerminatesBeforeItsFirstStep ==
+    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep = 0 /\ pc'[p] = "terminated")]_vars
 
-Witness_AnUpgraderDiesBetweenSteps ==
+Witness_AnUpgraderTerminatesBetweenSteps ==
     [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep >= 1 /\ ustep < UpSteps
-                          /\ pc'[p] = "dead")]_vars
+                          /\ pc'[p] = "terminated")]_vars
 
-Witness_AnUpgraderDiesAfterItsLastStep ==
+Witness_AnUpgraderTerminatesAfterItsLastStep ==
     [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ ustep = UpSteps /\ ~Advanced
-                          /\ pc'[p] = "dead")]_vars
+                          /\ pc'[p] = "terminated")]_vars
 
-Witness_AnUpgraderDiesAfterTheSchemaAdvances ==
-    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ Advanced /\ pc'[p] = "dead")]_vars
+Witness_AnUpgraderTerminatesAfterTheSchemaAdvances ==
+    [][~(\E p \in Procs : UpgraderIn(p, "upBody") /\ Advanced /\ pc'[p] = "terminated")]_vars
 
-Witness_ToldAfterAnUpgradersDeath ==
-    ~(diedIn = "upBody" /\ HoldsTold)
+Witness_ToldAfterAnUpgradersTermination ==
+    ~(terminatedIn = "upBody" /\ HoldsTold)
 
 Witness_AnInterruptedUpgradeIsResumedBeforeAnyStep ==
     [][~(\E p \in Procs : pc[p] = "told" /\ pc'[p] = "recUp" /\ ustep = 0)]_vars
@@ -492,8 +492,8 @@ Witness_AnInterruptedUpgradeIsResumedToCompletion ==
 Witness_AResumerIsStoppedInTheUpgrade ==
     [][~(\E p \in Procs : pc[p] = "recUp" /\ pc'[p] = "told")]_vars
 
-Witness_AResumerDiesInTheUpgrade ==
-    ~(diedIn = "recUp" /\ HoldsTold)
+Witness_AResumerTerminatesInTheUpgrade ==
+    ~(terminatedIn = "recUp" /\ HoldsTold)
 
 Witness_AReaderIsAdmittedDuringTheBody ==
     [][~(\E p, q \in Procs : ~CanWrite(p) /\ Admitted(p) /\ pc[q] = "upBody")]_vars

@@ -3,10 +3,10 @@
   "spec": "Creation",
   "configuration": "Creation-TwoCreators",
   "origin": {"kind":"timeline","timeline":"T33"},
-  "constants": {"Control":"\"none\"","Intrusion":"FALSE","MaxCrashes":"0","MaxDeaths":"0","NArt":"2","Procs":"{1, 2}","Scenario":"\"TwoCreators\""},
+  "constants": {"Control":"\"none\"","Intrusion":"FALSE","MaxCrashes":"0","MaxTerminations":"0","NArt":"2","Procs":"{1, 2}","Scenario":"\"TwoCreators\""},
   "derived": {"scenario":{"impls":[1,1],"ins":[1,1],"roles":["creator","creator"]}},
   "departs": null,
-  "initial": {"adur":[false,false],"ainp":[0,0],"ak":[0,0],"aliv":[false,false],"crashes":0,"cx":[0,0],"deaths":0,"everPub":false,"foreign":false,"out":["none","none"],"path":["none","none"],"pc":["new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}]},
+  "initial": {"adur":[false,false],"ainp":[0,0],"ak":[0,0],"aliv":[false,false],"crashes":0,"cx":[0,0],"everPub":false,"foreign":false,"out":["none","none"],"path":["none","none"],"pc":["new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}],"terminations":0},
   "steps": [
     {"action":"Look(1)","args":[1],"changes":{"path":["fresh","none"],"pc":["wantX","new"]},"name":"Look","step":"LOOK1"},
     {"action":"Lock(1)","args":[1],"changes":{"cx":[1,0],"pc":["holdsX","new"]},"name":"Lock","step":"LOCK1"},

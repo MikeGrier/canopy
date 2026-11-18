@@ -390,3 +390,25 @@ ended boot, the recovered count, a missing generation, mutexes free of filesyste
 - **`wait_native` was narrowed rather than given a second, event-only function,** because no
   caller in the repository waits on a non-event handle through it, and keeping the wide form would
   have kept the misuse reachable from safe code.
+
+## Three failures, two events, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Three failures, two events: a panic,
+a process ending, a host restart"; the discussion is
+[DESIGN-SESSION-2026-11-18-crash-kinds.md](design-sessions/DESIGN-SESSION-2026-11-18-crash-kinds.md).
+
+- **A storage-only crash was never chosen.** "A crash loses storage and keeps locks" was a stance
+  taken to make progress when `MemFs` gained locks; a day later the boot identity made the same
+  crash a host restart. Together they described a host that restarts while its processes keep
+  running, and three findings across the eighth and ninth reviews came from that state alone.
+- **Boot checks in each coordination path** were the alternative to fixing `MemFs`. Each new path
+  would have been another place to forget one, and the checks would have defended code that is
+  correct on every real host against a state only the simulation could reach.
+- **Keeping the crashing handle alive** would have spared the callers that reuse it, but would have
+  left one view able to act across the restart.
+- **Aborting in a guard dropped while unwinding** is literally a process ending, but a library would
+  end its host application, and no in-process test could show the behaviour.
+- **`std::panic::set_hook` and `compile_error!` under `panic = "unwind"`** were rejected: the hook is
+  process-wide and not a library's to take, and the test harness needs unwinding.
+- **Treating an unwinding drop as a clean release** would be safe only if every caller bracketed all
+  of its work under a hold in modifications, which acadia cannot enforce.

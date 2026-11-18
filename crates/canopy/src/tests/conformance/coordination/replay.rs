@@ -33,7 +33,7 @@ enum Kind {
     /// Nothing the contract sees: the client's own data, or a step within a call that makes no
     /// call of its own.
     Silent,
-    Die,
+    Terminate,
 }
 
 fn kind(implementation: Implementation, action: &str) -> Kind {
@@ -62,7 +62,7 @@ fn kind(implementation: Implementation, action: &str) -> Kind {
         "RecCount" => Kind::Command(Command::Recover),
         "RecClear" => Kind::Continue(Class::ClearFence),
         "RecStop" => Kind::StopRecovery,
-        "Die" => Kind::Die,
+        "Terminate" => Kind::Terminate,
         _ => Kind::Silent,
     }
 }
@@ -232,7 +232,7 @@ impl<'t> Replay<'t> {
             }
             return Ok(match kind(self.implementation, &action) {
                 Kind::Continue(class) | Kind::Fail(class) => Some(Stop::At(class)),
-                Kind::Die => Some(Stop::AnyStep),
+                Kind::Terminate => Some(Stop::AnyStep),
                 Kind::Command(_) => None,
                 Kind::Silent | Kind::StopRecovery => continue,
             });
@@ -291,7 +291,7 @@ impl<'t> Replay<'t> {
                 }
                 return Ok(());
             }
-            Kind::Die => {
+            Kind::Terminate => {
                 if let Some(process) = self.processes[p - 1].as_mut() {
                     process.kill();
                 }

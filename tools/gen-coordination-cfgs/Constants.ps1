@@ -21,7 +21,7 @@ $milestoneTier = @(
     'Coordination-RecoveryRead', 'Coordination-RegistryThreeProcs', 'Coordination-Txn',
     'Coordination-TxnReader', 'Coordination-UpgradeBody', 'Coordination-UpgradeBodyCrash',
     'Coordination-UpgradeBodyRegistry', 'Coordination-UpgradeBodySourceWriter',
-    'Coordination-UpgradeBodyTwoUpgraders', 'Coordination-Witness-AResumerDiesInTheUpgrade'
+    'Coordination-UpgradeBodyTwoUpgraders', 'Coordination-Witness-AResumerTerminatesInTheUpgrade'
 )
 
 # Configurations that take a quarter of an hour to hours: the sweep leaves them out unless asked
@@ -39,7 +39,7 @@ $exclusionInvariants = @('TypeOK', 'AtMostOneHolder', 'LockMatchesHolders', 'Own
     'NoHandleThatSpeaksOnlyTheSourceHoldsExclusionDuringAnUpgrade',
     'OldestCoversTheDataFloor', 'AnAttachedHandleCanReadTheData', 'TheOtherLayersKeepTheirOrdinaryRules')
 $exclusionProperties = @('AbandonedRecordNeverReplacedUnfenced', 'NormalAcquireFindsAHealthyStore', 'ToldOnlyWithCause',
-    'NoFalseAbandonmentReport', 'StoreDataChangesOnlyByAHealthyHolder', 'DeathLeavesTheFilesystemAsItWas',
+    'NoFalseAbandonmentReport', 'StoreDataChangesOnlyByAHealthyHolder', 'TerminationLeavesTheFilesystemAsItWas',
     'CrashLeavesNoLiveProcess', 'EveryRequestEndsInExactlyOneOutcome', 'CountIsRaisedOnlyByItsHolder',
     'EffectsAreBracketedByTheCount', 'FailedOpeningPublicationHasNoEffect',
     'FailedOperationsLeaveTheCountOddAndFence', 'GenerationAdvancesOnEveryAcquisitionAndOnlyThen',
@@ -117,14 +117,14 @@ $layered = @{
     TwoLayerUpgradesFloor = @{ Name = 'TwoLayerUpgradesFloor'; Procs = 3; Upgraders = 2 }
 }
 
-function Cfg($s, $requests, $deaths, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false, $notifications = $false, $publicationsFail = $true, $crashFences = $false) {
+function Cfg($s, $requests, $terminations, $crashes, $reads, $control, $escapes, $deadlock, $invariants, $properties, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $discoveries = 0, $upSteps = 0, $unloggedRecovery = $false, $mixedWrites = $false, $spec = 'Spec', $callbacks = $false, $notifications = $false, $publicationsFail = $true, $crashFences = $false) {
     $n = $s.Procs
     $procs = '{' + ((1..$n) -join ', ') + '}'
     $lines = @(
         'CONSTANTS',
         "    Procs = $procs",
         "    MaxRequests = $requests",
-        "    MaxDeaths = $deaths",
+        "    MaxTerminations = $terminations",
         "    MaxCrashes = $crashes",
         "    MaxReads = $reads",
         "    MaxLeases = $leases",

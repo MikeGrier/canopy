@@ -237,13 +237,13 @@ SRunStart(holder) ==
     /\ wix' = 1 /\ wkeep' = {}
     /\ fence' = IF Control = "fence-cleared-at-recovery-start" THEN FALSE ELSE fence
     /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen,
-                   store, handle, reader, diedIn, counts, docs>>
+                   store, handle, reader, terminatedIn, counts, docs>>
 
 RunUnitEnd(holder) ==
     /\ W(holder) /\ RunUnitFinished(holder)
     /\ pc' = Set(pc, holder, "told")
     /\ NoWork
-    /\ UNCHANGED <<adm, req, coord, store, handle, reader, diedIn, counts, docs>>
+    /\ UNCHANGED <<adm, req, coord, store, handle, reader, terminatedIn, counts, docs>>
 
 DirectorySync(holder) ==
     /\ W(holder) /\ wph = "dirSync"
@@ -352,8 +352,8 @@ SRecReset(holder) ==
 
 \* EXTERNAL: a process dies. The documents stay as the live filesystem has them,
 \* and its work in progress is gone with it.
-SDie(p) ==
-    /\ Die(p)
+STerminate(p) ==
+    /\ Terminate(p)
     /\ IF lockHolder = p THEN NoWork ELSE UNCHANGED work
     /\ UNCHANGED docs
 
@@ -595,7 +595,7 @@ RbBegin(holder) ==
     /\ wph' = IF txnDoc = 0 THEN "rbDone" ELSE "rbCollRead"
     /\ wdoc' = txnDoc /\ wix' = 1
     /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt,
-                   handle, reader, diedIn, counts, docs, wkeep>>
+                   handle, reader, terminatedIn, counts, docs, wkeep>>
 
 RbCollected ==
     /\ wph' = IF pc[lockHolder] = "recEnd" THEN "rvDone" ELSE "rbDone"
@@ -643,7 +643,7 @@ RbCollFails(holder) ==
     /\ pc' = Set(pc, holder, "told") /\ fence' = TRUE
     /\ NoWork
     /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen,
-                   store, handle, reader, diedIn, counts, docs>>
+                   store, handle, reader, terminatedIn, counts, docs>>
 
 \* "resolve": every replica is set to the document's majority and synced.
 RsRen(p) ==
@@ -695,7 +695,7 @@ TxnTargets ==
               ELSE txnDoc
 
     NextRunPhase(holder) ==
-        IF crashes' # crashes \/ pc'[holder] = "dead" THEN "none"
+        IF crashes' # crashes \/ pc'[holder] = "terminated" THEN "none"
         ELSE IF pc[holder] = "recClear" /\ pc'[holder] = "closed" THEN "none"
         ELSE IF RunUnitFinished(holder) /\ pc'[holder] = "told"
               THEN CASE wph = "unitStart" -> IF directoryLive > 0 THEN "directories" ELSE "publication"
@@ -718,7 +718,7 @@ TxnTargets ==
         /\ unitReady' = [holder \in Procs |->
             IF pc[holder] = "locked" /\ pc'[holder] \in {"held", "told"}
                 THEN requestRecovery[holder]
-            ELSE IF crashes' # crashes \/ pc'[holder] = "dead"
+            ELSE IF crashes' # crashes \/ pc'[holder] = "terminated"
                  \/ (pc'[holder] = "told" /\ pc[holder] # "locked")
                  \/ (pc[holder] \in {"held", "told"} /\ pc'[holder] \in RecStates)
                 THEN FALSE ELSE unitReady[holder]]
@@ -745,7 +745,7 @@ DirectoryState ==
     /\ directoryDurable' = IF wph = "dirClearSync" /\ wph' = "dirDone" THEN directoryLive
                             ELSE directoryDurable
     /\ runDirectories' = [holder \in Procs |->
-          IF crashes' # crashes \/ pc'[holder] = "dead" THEN 0
+          IF crashes' # crashes \/ pc'[holder] = "terminated" THEN 0
           ELSE IF pc[holder] \in {"held", "told"} /\ pc'[holder] \in RecStates
                     /\ (runPhase[holder] = "none" \/ count # runCount[holder] \/ unitIntervened[holder]) THEN directoryLive
           ELSE IF W(holder) /\ wph = "dirSync" /\ wph' = "dirDone" THEN runDirectories[holder] - 1
@@ -770,7 +770,7 @@ SpNextCore ==
             \/ Quiet(RecSwap2(p)) \/ SRecEnd(p) \/ SRecReset(p)
             \/ SRecSweep(p) \/ Quiet(RecCount(p)) \/ Quiet(RecClear(p))
           \/ SRecStop(p)
-          \/ SDie(p)
+          \/ STerminate(p)
           \/ \E d \in Docs : Pick(p, d)
           \/ IngRen(p) \/ IngSync(p) \/ RecWrite(p) \/ RecSync(p)
           \/ PtrRen(p) \/ PtrSync(p) \/ RecClr(p) \/ RecClrSync(p)
@@ -928,13 +928,13 @@ Witness_AStaleRecoveryRestarts ==
         /\ pc[holder] \in {"held", "told"} /\ pc'[holder] \in RecStates
         /\ runPhase'[holder] = "publication")]_spvars
 
-Witness_AHolderDiesWithARecordPending ==
-    ~(\E p \in Procs : pc[p] = "dead" /\ \E d \in Docs : record[d].dur # NoVal)
+Witness_AHolderTerminatesWithARecordPending ==
+    ~(\E p \in Procs : pc[p] = "terminated" /\ \E d \in Docs : record[d].dur # NoVal)
 
 Witness_RecoveryRollsForwardBothKindsOfWrite ==
     ~(rkinds = {"unlogged", "logged"})
 
 Witness_ARestartLosesTheFenceWithARecordPending ==
-    ~(diedIn = "crash" /\ ~fence /\ \E d \in Docs : record[d].dur # NoVal)
+    ~(terminatedIn = "crash" /\ ~fence /\ \E d \in Docs : record[d].dur # NoVal)
 
 =============================================================================

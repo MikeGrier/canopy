@@ -3,7 +3,7 @@
 # property that states it.
 
 # ---- controls: each breaks one rule and must violate the property that states it ----
-# Name, Control, kind, property, scenario, requests, deaths, crashes, reads, escapes, deadlock, header.
+# Name, Control, kind, property, scenario, requests, terminations, crashes, reads, escapes, deadlock, header.
 $controls = @(
     @('ReplaceWithoutFence', 'replace-without-fence', 'PROPERTIES', 'AbandonedRecordNeverReplacedUnfenced', (Plain 2), 3, 1, 0, 0, $true, $false,
       @('Negative control: an acquirer that finds an abandoned record replaces it',

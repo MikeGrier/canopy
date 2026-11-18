@@ -103,7 +103,7 @@ ADetachCompletes == \A p \in Procs : (att[p] = "unregistering") ~> (att[p] # "un
 \* An upgrade holding every tier it needs ends: it begins and completes, or finds the
 \* schema moved and gives up; one whose process dies ends with it.
 AnUpgradeHoldingItsTiersCompletes ==
-    \A p \in Procs : (att[p] = "uTiers") ~> (att[p] \notin {"uTiers", "uBody"} \/ pc[p] = "dead")
+    \A p \in Procs : (att[p] = "uTiers") ~> (att[p] \notin {"uTiers", "uBody"} \/ pc[p] = "terminated")
 
 \* Audience: client. A recovery that is driven completes. Shows through: the return of the
 \* recovery run.

@@ -13,7 +13,7 @@
         @{ Id = 'RGC1'; Actions = @('RegClaim(1, 1)') }
         @{ Id = 'RGL1'; Actions = @('RegLive(1)') }
         @{ Id = 'RGW1'; Actions = @('RegWrite(1)') }
-        @{ Id = 'KILL'; Actions = @('Die(1)') }
+        @{ Id = 'KILL'; Actions = @('Terminate(1)') }
         @{ Id = 'BGN2'; Actions = @('BeginAttach(2)') }
         @{ Id = 'GTS2'; Actions = @('TakeGateS(2)') }
         @{ Id = 'RDS2'; Actions = @('TakeReaderS(2)') }

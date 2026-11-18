@@ -21,7 +21,7 @@ CONSTANTS
     Escapes,         \* whether a waiter may give up and a drain be cancelled
     Refusals,        \* whether the check may refuse a handle, and an upgrade holding its
                      \* tiers find the schema moved and give up
-    Deaths           \* whether a process may die, or the host crash, releasing every hold
+    Terminations     \* whether a process may die, or the host crash, releasing every hold
 
 \* A configuration cannot state a sequence, so it names one. An upgrader unsafe for
 \* readers takes the reader tier exclusively; a safe one leaves readers attached.
@@ -44,7 +44,7 @@ Scenarios ==
     @@ "SafeUnsafeReader" :> <<"safeUpgrader", "unsafeUpgrader", "reader">>
 
 ASSUME Scenario \in DOMAIN Scenarios /\ MaxUpgrades \in Nat /\ ExclusiveFirst \in BOOLEAN
-ASSUME {CountUpgrades, Escapes, Refusals, Deaths} \subseteq BOOLEAN
+ASSUME {CountUpgrades, Escapes, Refusals, Terminations} \subseteq BOOLEAN
 
 RoleOf == Scenarios[Scenario]
 Procs == 1..Len(RoleOf)
@@ -253,8 +253,8 @@ UpgradeMoved(p) ==
     /\ UNCHANGED <<lockHolder, upgrades>>
 
 \* EXTERNAL: a process dies, and the OS releases everything it holds.
-Die(p) ==
-    /\ Deaths /\ pc[p] \notin {"new", "exited"}
+Terminate(p) ==
+    /\ Terminations /\ pc[p] \notin {"new", "exited"}
     /\ att' = Set(att, p, "off")
     /\ pc' = Set(pc, p, "exited")
     /\ lockHolder' = IF lockHolder = p THEN None ELSE lockHolder
@@ -262,7 +262,7 @@ Die(p) ==
 
 \* EXTERNAL: the host crashes, and every process that has started dies.
 Crash ==
-    /\ Deaths
+    /\ Terminations
     /\ att' = [p \in Procs |-> "off"]
     /\ pc' = [p \in Procs |-> IF pc[p] = "new" THEN "new" ELSE "exited"]
     /\ lockHolder' = None
@@ -278,7 +278,7 @@ Next ==
         \/ StartUpgrade(p) \/ DrainDone(p) \/ TakeGateX(p) \/ TakeFirstTier(p)
         \/ TakeSecondTier(p) \/ BeginBody(p) \/ EndUpgrade(p)
         \/ GiveUp(p) \/ Withdraw(p) \/ CancelDrain(p) \/ RefuseAttach(p)
-        \/ UpgradeMoved(p) \/ Die(p)
+        \/ UpgradeMoved(p) \/ Terminate(p)
     \/ Crash
 
 Spec == Init /\ [][Next]_vars
@@ -376,7 +376,7 @@ AnyAcq == \E p \in Procs : Takes(p, Resources)
 StoreMakesProgress == []<>NobodyWaits \/ []<><<AnyAcq>>_vars
 
 \* A waiter that gives up or dies leaves its wait, which nothing obliges it to do.
-AnyLeave == \/ \E p \in Procs : GiveUp(p) \/ Withdraw(p) \/ Die(p)
+AnyLeave == \/ \E p \in Procs : GiveUp(p) \/ Withdraw(p) \/ Terminate(p)
             \/ Crash
 
 \* Audience: internal.

@@ -42,8 +42,8 @@ Write-Cfg 'Coordination-NoDeadlock-DrainTwoLeases.cfg' `
     (Header @('No deadlock with a safe upgrader draining two operations of its handle and a reader,', 'none of which gives up or dies: every invariant and property holds, and no state but', 'every process ended has no successor.')) `
     (Cfg (Upgrade @('safeUpgrader', 'reader') @(2, 1)) 1 0 0 1 'none' $false $true ($attachInvariants + @('TypeOK')) $attachProperties 2)
 
-# The registry: entries, deaths, crashes and listings, for each mix of handles.
-# Name, what it is, scenario, entries, deaths, crashes, listings.
+# The registry: entries, terminations, crashes and listings, for each mix of handles.
+# Name, what it is, scenario, entries, terminations, crashes, listings.
 $registryScenarios = @(
     @('Registry', 'two handles that share one entry, one of which may die', (Plain 2), 1, 1, 0, 2),
     @('RegistryRoomy', 'two handles with an entry each, one of which may die', (Plain 2), 2, 1, 0, 1),
@@ -51,7 +51,7 @@ $registryScenarios = @(
     @('RegistryUpgrade', 'an upgrader and a reader with an entry each, one of which may die', (Upgrade @('safeUpgrader', 'reader') @(2, 1)), 2, 1, 0, 1),
     @('RegistryUpgradeFull', 'an upgrader and a reader that share one entry, one of which may die', (Upgrade @('safeUpgrader', 'reader') @(2, 1)), 1, 1, 0, 1),
     @('RegistryThreeProcs', 'three handles with two entries', (Plain 3), 2, 0, 0, 0),
-    @('RegistryThreeProcsDeath', 'three handles with one entry, one of which may die', (Plain 3), 1, 1, 0, 0)
+    @('RegistryThreeProcsTermination', 'three handles with one entry, one of which may die', (Plain 3), 1, 1, 0, 0)
 )
 foreach ($r in $registryScenarios) {
     Write-Cfg "Coordination-$($r[0]).cfg" `
@@ -63,7 +63,7 @@ Write-Cfg 'Coordination-NoDeadlock-Registry.cfg' `
     (Cfg (Upgrade @('safeUpgrader', 'reader') @(2, 1)) 0 0 0 0 'none' $false $true ($attachInvariants + @('TypeOK')) $attachProperties 1 1 1)
 
 # Transactions: the write is begin, ingest, prepare, namespace apply and end over a commit log.
-# Name, what it is, scenario, requests, deaths, crashes, reads.
+# Name, what it is, scenario, requests, terminations, crashes, reads.
 $rwTxn = Upgrade @('reader', 'writer') @(1, 2)
 $txnScenarios = @(
     @('Txn', 'two writers, one of which may die and the host may crash', (Plain 2), 2, 1, 1, 1),
@@ -80,7 +80,7 @@ Write-Cfg 'Coordination-NoDeadlock-Txn.cfg' `
     (Cfg (Plain 2) 2 0 0 0 'none' $false $true ($exclusionInvariants + $attachInvariants) ($exclusionProperties + $attachProperties) 0 0 0 $true)
 
 # Recovery and discovery: a told holder runs recovery from the commit log, and any attached handle
-# can discover. Name, what it is, scenario, requests, deaths, crashes, reads, discoveries.
+# can discover. Name, what it is, scenario, requests, terminations, crashes, reads, discoveries.
 $rwRec = Upgrade @('reader', 'writer') @(1, 2)
 $recScenarios = @(
     @('Recovery', 'two writers, one of which may die and the host may crash, and a discovery', (Plain 2), 3, 1, 1, 0, 1),
@@ -120,7 +120,7 @@ Write-Cfg 'Coordination-NoDeadlock-Recovery.cfg' `
 
 # The upgrade body: an upgrader takes writer exclusion, records its intent, makes its migration
 # steps, advances the schema and clears the intent, and an interrupted upgrade is resumed by a
-# writer that speaks the target schema. Name, what it is, scenario, requests, deaths, crashes,
+# writer that speaks the target schema. Name, what it is, scenario, requests, terminations, crashes,
 # reads, leases, slots, listings.
 $bSat = Upgrade @('safeUpgrader', 'writer') @(2, 3)
 $bSaw = Upgrade @('safeUpgrader', 'writer') @(2, 2)
@@ -157,7 +157,7 @@ Write-Cfg 'Coordination-NoDeadlock-UpgradeBodyTwoUpgraders.cfg' `
 
 # Cumulative reader compatibility: an upgrade is judged against the oldest reader schema the store
 # admits, over upgrades in a row in one layer and over upgrades of several layers. Name, what it
-# is, scenario, requests, deaths, crashes, reads, upgrade steps.
+# is, scenario, requests, terminations, crashes, reads, upgrade steps.
 $compatScenarios = @(
     @('CumulativeChain', 'two upgrades in a row that are safe for readers and a reader of the first source schema, one handle of which may die', $layered.ChainSafe, 1, 1, 0, 0, 0),
     @('CumulativeChainFloor', 'two upgrades in a row, the second safe against the current schema and not against the oldest, and a reader of the first source schema, one handle of which may die', $layered.ChainFloor, 1, 1, 0, 0, 0),

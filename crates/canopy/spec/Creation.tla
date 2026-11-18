@@ -95,7 +95,7 @@ EXTENDS Naturals, FiniteSets, Sequences, TLC
 CONSTANTS
     Procs,       \* the processes that create or open the root, 1..Len(RoleOf)
     NArt,        \* how many artifacts creation makes; the last is the marker
-    MaxDeaths,   \* bound on process deaths
+    MaxTerminations,   \* bound on process terminations
     MaxCrashes,  \* bound on host crashes
     Intrusion,   \* whether something creation does not make may appear under
                  \* the root while a creation is under way
@@ -138,7 +138,7 @@ Marker == NArt
 
 ASSUME Scenario \in DOMAIN Scenarios
 ASSUME Procs # {} /\ Procs = 1..Len(RoleOf)
-ASSUME NArt \in Nat /\ NArt >= 1 /\ MaxDeaths \in Nat /\ MaxCrashes \in Nat
+ASSUME NArt \in Nat /\ NArt >= 1 /\ MaxTerminations \in Nat /\ MaxCrashes \in Nat
 ASSUME Intrusion \in BOOLEAN
 ASSUME \A p \in Procs : RoleOf[p] \in {"creator", "opener"}
 ASSUME \A p \in Procs : ImplOf[p] \in Impls /\ InOf[p] \in Inputs
@@ -165,16 +165,16 @@ VARIABLES
     sawPartial, \* ghost: some process read a reservation that was not complete
     relied,     \* ghost: some open succeeded, or a creator found its store
     everPub,    \* ghost: a reservation has been published
-    deaths,
+    terminations,
     crashes
 
 vars == <<pc, out, cx, res, rdur, aliv, ainp, adur, foreign, seen, path, ak,
-          sawPartial, relied, everPub, deaths, crashes>>
+          sawPartial, relied, everPub, terminations, crashes>>
 
 root   == <<res, rdur, aliv, ainp, adur, foreign>>
 mine   == <<seen, path, ak>>
 ghost  == <<sawPartial, relied, everPub>>
-counts == <<deaths, crashes>>
+counts == <<terminations, crashes>>
 
 \* Process states. "new" has not started; a creator is "wantX" once it has
 \* decided and waits for its creation exclusion, "holdsX" while it holds the
@@ -185,7 +185,7 @@ counts == <<deaths, crashes>>
 CreatingStates == {"syncRes", "writeArt", "syncArt"}
 HoldingStates == {"holdsX", "partialPub"} \cup CreatingStates
 LiveStates == {"wantX"} \cup HoldingStates
-States == {"new", "done", "dead"} \cup LiveStates
+States == {"new", "done", "terminated"} \cup LiveStates
 Outcomes == {"none", "created", "resumed", "exists", "existing", "occupied",
              "otherImpl", "differentInputs", "lostRace", "changed", "partial",
              "opened", "notAStore", "mismatch"}
@@ -224,7 +224,7 @@ TypeOK ==
     /\ sawPartial \in BOOLEAN
     /\ relied \in BOOLEAN
     /\ everPub \in BOOLEAN
-    /\ deaths \in 0..MaxDeaths
+    /\ terminations \in 0..MaxTerminations
     /\ crashes \in 0..MaxCrashes
 
 Init ==
@@ -243,7 +243,7 @@ Init ==
     /\ sawPartial = FALSE
     /\ relied = FALSE
     /\ everPub = FALSE
-    /\ deaths = 0
+    /\ terminations = 0
     /\ crashes = 0
 
 -----------------------------------------------------------------------------
@@ -482,12 +482,12 @@ OpenLook(p) ==
 
 \* EXTERNAL: one process dies at any step. The OS releases its exclusion;
 \* nothing it left in the root changes.
-Die(p) ==
-    /\ deaths < MaxDeaths
+Terminate(p) ==
+    /\ terminations < MaxTerminations
     /\ pc[p] \in LiveStates
-    /\ pc' = Set(pc, p, "dead")
+    /\ pc' = Set(pc, p, "terminated")
     /\ cx' = ReleaseX(p)
-    /\ deaths' = deaths + 1
+    /\ terminations' = terminations + 1
     /\ seen' = Set(seen, p, NoRes)
     /\ path' = Set(path, p, "none")
     /\ ak' = Set(ak, p, 0)
@@ -498,7 +498,7 @@ Die(p) ==
 \* survives or is lost, each on its own, and what survives is durable.
 Crash ==
     /\ crashes < MaxCrashes
-    /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "dead" ELSE pc[p]]
+    /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "terminated" ELSE pc[p]]
     /\ cx' = [i \in Impls |-> None]
     /\ res' \in IF rdur \/ res.st = "none" THEN {res} ELSE {res, NoRes}
     /\ rdur' = (res'.st # "none")
@@ -510,7 +510,7 @@ Crash ==
     /\ path' = [p \in Procs |-> "none"]
     /\ ak' = [p \in Procs |-> 0]
     /\ crashes' = crashes + 1
-    /\ UNCHANGED <<out, foreign, ghost, deaths>>
+    /\ UNCHANGED <<out, foreign, ghost, terminations>>
 
 \* EXTERNAL: something creation does not make appears under the root, and
 \* stays.
@@ -522,7 +522,7 @@ Intrude ==
 \* Every process has ended. It is the only step then, so a state in which a
 \* process is stuck waiting is the only kind of deadlock.
 Terminal ==
-    /\ \A p \in Procs : pc[p] \in {"done", "dead"}
+    /\ \A p \in Procs : pc[p] \in {"done", "terminated"}
     /\ UNCHANGED vars
 
 Next ==
@@ -530,7 +530,7 @@ Next ==
           \/ Look(p) \/ Lock(p) \/ Publish(p) \/ SecondWrite(p) \/ LoseRace(p)
           \/ TakeOver(p) \/ CreatedUnderExclusion(p)
           \/ Reconfirm(p) \/ OccupiedUnderExclusion(p) \/ SyncRes(p)
-          \/ WriteArt(p) \/ SyncArt(p) \/ OpenLook(p) \/ Die(p)
+          \/ WriteArt(p) \/ SyncArt(p) \/ OpenLook(p) \/ Terminate(p)
     \/ Crash
     \/ Intrude
     \/ Terminal
@@ -659,8 +659,8 @@ ARefusalChangesNothing ==
 \* Audience: client. A process dying changes nothing in the root, so its creation can be resumed.
 \* Shows through: the outcome of a create that resumes.
 \* A process's death changes nothing in the root.
-DeathLeavesTheRootAsItWas ==
-    [][deaths' # deaths => UNCHANGED root]_vars
+TerminationLeavesTheRootAsItWas ==
+    [][terminations' # terminations => UNCHANGED root]_vars
 
 \* Audience: client. A creation never begins in a root that holds something creation does not
 \* make. Shows through: the outcome of create.
@@ -691,8 +691,8 @@ Witness_ACreationCompletes ==
 Witness_AnInterruptedCreationIsResumed ==
     ~(\E p \in Procs : out[p] = "resumed")
 
-Witness_AResumeFollowsAProcessDeath ==
-    ~((\E p \in Procs : out[p] = "resumed") /\ deaths > 0 /\ crashes = 0)
+Witness_AResumeFollowsAProcessTermination ==
+    ~((\E p \in Procs : out[p] = "resumed") /\ terminations > 0 /\ crashes = 0)
 
 Witness_AResumeFollowsAHostCrash ==
     ~((\E p \in Procs : out[p] = "resumed") /\ crashes > 0)

@@ -3,14 +3,14 @@
   "spec": "Coordination",
   "configuration": "Coordination-Registry",
   "origin": {"depth":60,"kind":"simulation","seed":1,"walks":50},
-  "constants": {"Callbacks":"FALSE","Control":"\"none\"","CrashFences":"FALSE","Escapes":"TRUE","MaxCrashes":"0","MaxDeaths":"1","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"2","MaxReads":"0","MaxRequests":"0","MaxUpgrades":"0","MixedWrites":"FALSE","NSlots":"1","Notifications":"FALSE","Procs":"{1, 2}","PublicationsFail":"TRUE","Scenario":"\"Plain2\"","Txn":"FALSE","UnloggedRecovery":"FALSE","UpSteps":"0"},
+  "constants": {"Callbacks":"FALSE","Control":"\"none\"","CrashFences":"FALSE","Escapes":"TRUE","MaxCrashes":"0","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"2","MaxReads":"0","MaxRequests":"0","MaxTerminations":"1","MaxUpgrades":"0","MixedWrites":"FALSE","NSlots":"1","Notifications":"FALSE","Procs":"{1, 2}","PublicationsFail":"TRUE","Scenario":"\"Plain2\"","Txn":"FALSE","UnloggedRecovery":"FALSE","UpSteps":"0"},
   "departs": null,
-  "initial": {"a":0,"areq":["none","none"],"att":["off","off"],"b":0,"cache":[-1,-1],"cl":[0],"count":0,"crashes":0,"current":[1],"deaths":0,"dfloor":[1],"diedIn":"none","disc":["none","none"],"discoveries":0,"edr":[false],"etok":[0],"fence":false,"gen":0,"lcur":[1,1],"lease":[0,0],"lfree":[false,false],"lists":0,"ll":[0],"lockHolder":0,"log":"empty","lph":["none","none"],"lrep":[[0,0,"none"],[0,0,"none"]],"lres":["none","none"],"ltok":[0,0],"lunk":[false,false],"mygen":[-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new"],"ptgt":0,"rbefore":[-1,-1],"rcur":[0,0],"reads":0,"req":["none","none"],"requests":0,"rpart":[-1,-1],"rphase":["none","none"],"rscan":[[],[]],"rseenA":[-1,-1],"rseenB":[-1,-1],"rst":["out","out"],"rtier":[false,false],"scache":[-1,-1],"shared":0,"stage":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample"]},
+  "initial": {"a":0,"areq":["none","none"],"att":["off","off"],"b":0,"cache":[-1,-1],"cl":[0],"count":0,"crashes":0,"current":[1],"dfloor":[1],"disc":["none","none"],"discoveries":0,"edr":[false],"etok":[0],"fence":false,"gen":0,"lcur":[1,1],"lease":[0,0],"lfree":[false,false],"lists":0,"ll":[0],"lockHolder":0,"log":"empty","lph":["none","none"],"lrep":[[0,0,"none"],[0,0,"none"]],"lres":["none","none"],"ltok":[0,0],"lunk":[false,false],"mygen":[-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new"],"ptgt":0,"rbefore":[-1,-1],"rcur":[0,0],"reads":0,"req":["none","none"],"requests":0,"rpart":[-1,-1],"rphase":["none","none"],"rscan":[[],[]],"rseenA":[-1,-1],"rseenB":[-1,-1],"rst":["out","out"],"rtier":[false,false],"scache":[-1,-1],"shared":0,"stage":0,"terminatedIn":"none","terminations":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample"]},
   "steps": [
     {"action":"BeginAttach(2)","args":[2],"at":"CoordinationAttachment:53","changes":{"areq":["none","pending"],"att":["off","wGate"],"pc":["new","attaching"]},"name":"BeginAttach","step":"#1"},
     {"action":"BeginAttach(1)","args":[1],"at":"CoordinationAttachment:53","changes":{"areq":["pending","pending"],"att":["wGate","wGate"],"pc":["attaching","attaching"]},"name":"BeginAttach","step":"#2"},
     {"action":"ListStart(1)","args":[1],"at":"CoordinationAttachment:448","changes":{"lists":1,"lph":["next","none"]},"name":"ListStart","step":"#3"},
-    {"action":"Die(2)","args":[2],"at":"CoordinationBehavior:13","changes":{"areq":["pending","dead"],"att":["wGate","off"],"deaths":1,"pc":["attaching","dead"]},"name":"Die","step":"#4"},
+    {"action":"Terminate(2)","args":[2],"at":"CoordinationBehavior:13","changes":{"areq":["pending","terminated"],"att":["wGate","off"],"pc":["attaching","terminated"],"terminations":1},"name":"Terminate","step":"#4"},
     {"action":"Next","args":[],"at":"CoordinationBehavior:167","changes":{"att":["hasGate","off"]},"name":"Next","step":"#5"},
     {"action":"Next","args":[],"at":"CoordinationBehavior:167","changes":{"att":["gateRd","off"]},"name":"Next","step":"#6"},
     {"action":"DropGate(1)","args":[1],"at":"CoordinationAttachment:71","changes":{"att":["rd","off"]},"name":"DropGate","step":"#7"},
@@ -25,15 +25,15 @@
     {"action":"RegClaim(1,1)","args":[1,1],"at":"CoordinationAttachment:318","changes":{"cl":[1],"rcur":[1,0],"rscan":[[],[]],"rst":["claimed","out"]},"name":"RegClaim","step":"#16"},
     {"action":"RegLive(1)","args":[1],"at":"CoordinationAttachment:333","changes":{"ll":[1],"rst":["locked","out"]},"name":"RegLive","step":"#17"},
     {"action":"RegWrite(1)","args":[1],"at":"CoordinationAttachment:347","changes":{"etok":[1],"rst":["written","out"]},"name":"RegWrite","step":"#18"},
-    {"action":"RegRelease(1)","args":[1],"at":"CoordinationAttachment:354","changes":{"areq":["served","dead"],"att":["attached","off"],"cl":[0],"pc":["idle","dead"],"rst":["in","out"]},"name":"RegRelease","step":"#19"},
+    {"action":"RegRelease(1)","args":[1],"at":"CoordinationAttachment:354","changes":{"areq":["served","terminated"],"att":["attached","off"],"cl":[0],"pc":["idle","terminated"],"rst":["in","out"]},"name":"RegRelease","step":"#19"},
     {"action":"ListClaim(1)","args":[1],"at":"CoordinationAttachment:459","changes":{"cl":[1],"lph":["held","none"]},"name":"ListClaim","step":"#20"},
     {"action":"ListRead(1)","args":[1],"at":"CoordinationAttachment:474","changes":{"lph":["read","none"],"ltok":[1,0]},"name":"ListRead","step":"#21"},
     {"action":"ListProbe(1)","args":[1],"at":"CoordinationAttachment:481","changes":{"cl":[0],"lcur":[2,1],"lph":["next","none"],"lrep":[[1,1,"live"],[0,0,"none"]]},"name":"ListProbe","step":"#22"},
     {"action":"ListDone(1)","args":[1],"at":"CoordinationAttachment:496","changes":{"lph":["none","none"]},"name":"ListDone","step":"#23"},
-    {"action":"Exit(1)","args":[1],"at":"CoordinationAttachment:13","changes":{"att":["unregistering","off"],"pc":["detaching","dead"]},"name":"Exit","step":"#24"},
+    {"action":"Exit(1)","args":[1],"at":"CoordinationAttachment:13","changes":{"att":["unregistering","off"],"pc":["detaching","terminated"]},"name":"Exit","step":"#24"},
     {"action":"UnregClaim(1)","args":[1],"at":"CoordinationAttachment:399","changes":{"cl":[1],"rst":["uc","out"]},"name":"UnregClaim","step":"#25"},
     {"action":"UnregClear(1)","args":[1],"at":"CoordinationAttachment:412","changes":{"etok":[0],"rst":["ucl","out"]},"name":"UnregClear","step":"#26"},
     {"action":"UnregRelease(1)","args":[1],"at":"CoordinationAttachment:419","changes":{"cl":[0],"ll":[0],"rcur":[0,0],"rst":["out","out"]},"name":"UnregRelease","step":"#27"},
-    {"action":"Detach(1)","args":[1],"at":"CoordinationAttachment:429","changes":{"att":["off","off"],"pc":["exited","dead"]},"name":"Detach","step":"#28"}
+    {"action":"Detach(1)","args":[1],"at":"CoordinationAttachment:429","changes":{"att":["off","off"],"pc":["exited","terminated"]},"name":"Detach","step":"#28"}
   ]
 }

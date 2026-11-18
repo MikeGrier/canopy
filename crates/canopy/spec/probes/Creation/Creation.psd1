@@ -6,7 +6,7 @@
         @{
             Name      = 'ResumerSkipsReservationSync'
             Base      = 'Creation'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '1'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '1'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
             Def       = 'SyncRes'
             Old = @'
 rdur' = IF Control = "reservation-not-synced" THEN rdur ELSE TRUE
@@ -19,7 +19,7 @@ rdur' = IF Control = "reservation-not-synced" \/ path[p] = "resume" THEN rdur EL
         @{
             Name      = 'ResumerSkipsArtifactSync'
             Base      = 'Creation'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '1'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '1'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
             Def       = 'SyncArt'
             Old = @'
 adur' = IF Control = "body-not-synced-before-marker" /\ ak[p] < Marker
@@ -33,7 +33,7 @@ adur' = IF path[p] = "resume" \/ (Control = "body-not-synced-before-marker" /\ a
             Name      = 'OpenerSkipsExclusion'
             Base      = 'Creation'
             Expect    = 'passes'
-            Overrides = @{ Procs = '{1, 2, 3}'; NArt = '2'; MaxDeaths = '1'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"CreatorAndOpeners"' }
+            Overrides = @{ Procs = '{1, 2, 3}'; NArt = '2'; MaxTerminations = '1'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"CreatorAndOpeners"' }
             Def       = 'OpenLook'
             Old = @'
 /\ pc[p] = "new" /\ RoleOf[p] = "opener" /\ cx[ImplOf[p]] = None
@@ -46,7 +46,7 @@ adur' = IF path[p] = "resume" \/ (Control = "body-not-synced-before-marker" /\ a
         @{
             Name      = 'CrashKeepsEveryone'
             Base      = 'Creation'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '0'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '0'; MaxCrashes = '1'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
             Def       = 'Crash'
             Old = @'
 /\ res' \in IF rdur \/ res.st = "none" THEN {res} ELSE {res, NoRes}
@@ -59,7 +59,7 @@ adur' = IF path[p] = "resume" \/ (Control = "body-not-synced-before-marker" /\ a
         @{
             Name      = 'ResumerSkipsTheOccupiedRecheck'
             Base      = 'Creation'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '1'; MaxCrashes = '0'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '1'; MaxCrashes = '0'; Intrusion = 'TRUE'; Scenario = '"TwoCreators"' }
             Def       = 'Reconfirm'
             Old = @'
 (~MarkerLive /\ res = seen[p] /\ Unoccupied))
@@ -72,7 +72,7 @@ adur' = IF path[p] = "resume" \/ (Control = "body-not-synced-before-marker" /\ a
         @{
             Name      = 'CreatorSkipsTheOccupiedRecheck'
             Base      = 'Creation'
-            Overrides = @{ Procs = '{1}'; NArt = '2'; MaxDeaths = '0'; MaxCrashes = '0'; Intrusion = 'TRUE'; Scenario = '"OneCreator"' }
+            Overrides = @{ Procs = '{1}'; NArt = '2'; MaxTerminations = '0'; MaxCrashes = '0'; Intrusion = 'TRUE'; Scenario = '"OneCreator"' }
             Def       = 'Publish'
             Old = @'
 /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ CanPublish /\ Unoccupied
@@ -87,7 +87,7 @@ adur' = IF path[p] = "resume" \/ (Control = "body-not-synced-before-marker" /\ a
             Base      = 'Creation'
             Kind      = 'PROPERTIES'
             Property  = 'AStoreIsFoundOnlyWhereItIs'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '0'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"DifferentInputs"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '0'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"DifferentInputs"' }
             Def       = 'FindsItsStore'
             Old = @'
 Identical(p) /\ Control # "stop-at-the-store"
@@ -102,7 +102,7 @@ res.st = "whole" /\ res.impl = ImplOf[p] /\ Control # "stop-at-the-store"
             Base      = 'Creation'
             Kind      = 'PROPERTIES'
             Property  = 'AStoreIsFoundOnlyWhereItIs'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '0'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"TwoImplementations"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '0'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"TwoImplementations"' }
             Def       = 'FindsItsStore'
             Old = @'
 Identical(p) /\ Control # "stop-at-the-store"
@@ -117,7 +117,7 @@ res.st = "whole" /\ res.inp = InOf[p] /\ Control # "stop-at-the-store"
             Base      = 'Creation'
             Kind      = 'INVARIANTS'
             Property  = 'AnOpenedStoreKeepsItsMarker'
-            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '1'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"TwoCreators"' }
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxTerminations = '1'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"TwoCreators"' }
             Def       = 'FindStore'
             Old = @'
 /\ adur' = Set(adur, Marker, TRUE)

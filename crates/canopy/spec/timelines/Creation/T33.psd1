@@ -1,7 +1,7 @@
 @{
     Timeline = 'T33'
     Base = 'Creation-TwoCreators'
-    Overrides = @{ NArt = '2'; MaxDeaths = '0'; MaxCrashes = '0'; Intrusion = 'FALSE' }
+    Overrides = @{ NArt = '2'; MaxTerminations = '0'; MaxCrashes = '0'; Intrusion = 'FALSE' }
     Note = 'A is process 1 and B process 2, creators of one implementation with the same inputs. The marker is the last artifact.'
     Steps = @(
         @{ Id = 'LOOK1'; Actions = @('Look(1)') }

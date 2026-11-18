@@ -125,7 +125,7 @@ impl Watcher for Turnstile {
             gate.stopped = None;
         }
         if gate.killed {
-            Verdict::Die
+            Verdict::Terminate
         } else {
             Verdict::Proceed
         }

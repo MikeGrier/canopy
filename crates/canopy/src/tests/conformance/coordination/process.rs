@@ -214,7 +214,7 @@ impl Turnstile {
             }
         }
         if gate.killed {
-            Verdict::Die
+            Verdict::Terminate
         } else {
             Verdict::Proceed
         }
@@ -231,7 +231,7 @@ impl Watcher for Turnstile {
 
 impl StepHook for Turnstile {
     fn before(&self, step: SharedStep) {
-        if matches!(self.check(announced(step)), Verdict::Die) {
+        if matches!(self.check(announced(step)), Verdict::Terminate) {
             resume_unwind(Box::new(Killed));
         }
     }

@@ -36,7 +36,7 @@ function Write-Cfg([string]$name, [string[]]$header, [string]$scenario, [string]
         "    CountUpgrades = $(if ($countUpgrades) { 'TRUE' } else { 'FALSE' })",
         "    Escapes = $other",
         "    Refusals = $other",
-        "    Deaths = $other",
+        "    Terminations = $other",
         "SPECIFICATION $specName"
     )
     if ($checkInvariants.Count -gt 0) { $lines += 'INVARIANTS'; $lines += @($checkInvariants | ForEach-Object { "    $_" }) }

@@ -130,7 +130,7 @@ DiscoveryMutatesNothing ==
     [][\A p \in Procs :
           Discover(p) =>
               UNCHANGED <<adm, pc, req, coord, store, handle, rphase,
-                          rbefore, rseenA, rseenB, rpart, scache, diedIn,
-                          requests, deaths, crashes, reads, upgrades, woken>>]_vars
+                          rbefore, rseenA, rseenB, rpart, scache, terminatedIn,
+                          requests, terminations, crashes, reads, upgrades, woken>>]_vars
 
 =============================================================================

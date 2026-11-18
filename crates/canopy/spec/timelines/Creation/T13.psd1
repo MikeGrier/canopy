@@ -12,7 +12,7 @@
         @{ Id = 'WRA1'; Actions = @('WriteArt(1)') }
         @{ Id = 'SYA1'; Actions = @('SyncArt(1)') }
         @{ Id = 'WRM'; Actions = @('WriteArt(1)') }
-        @{ Id = 'KILL'; Actions = @('Die(1)') }
+        @{ Id = 'KILL'; Actions = @('Terminate(1)') }
         @{ Id = 'OPEN'; Actions = @('OpenLook(2)') }
         @{ Id = 'CRSH'; Actions = @('Crash') }
     )

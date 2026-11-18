@@ -12,7 +12,7 @@
         @{ Id = 'PUB'; Actions = @('EndOpen(1)') }
         @{ Id = 'INTN'; Actions = @('RecordIntent(1)') }
         @{ Id = 'FAIL'; Actions = @('UpFails(1)') }
-        @{ Id = 'KILL'; Actions = @('Die(1)') }
+        @{ Id = 'KILL'; Actions = @('Terminate(1)') }
         @{ Id = 'ATT'; Actions = @('BeginAttach(2)') }
         @{ Id = 'GATE'; Actions = @('TakeGateS(2)') }
         @{ Id = 'RTIR'; Actions = @('TakeReaderS(2)') }

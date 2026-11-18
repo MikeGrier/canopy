@@ -108,7 +108,7 @@ BodyStates == {"locked", "held", "opening", "open", "upBody", "wrote", "observed
 AttachmentMatchesTheProcess ==
     \A p \in Procs :
         /\ pc[p] = "new" => att[p] = "off"
-        /\ pc[p] \in {"exited", "dead"} => att[p] = "off" /\ lease[p] = 0
+        /\ pc[p] \in {"exited", "terminated"} => att[p] = "off" /\ lease[p] = 0
         /\ pc[p] = "detached" => att[p] = "off"
         /\ pc[p] \in LiveStates \ {"attaching", "converting", "convertingX",
                                   "detached", "detaching"}
@@ -144,7 +144,7 @@ AttachRequestsEndInExactlyOneOutcome ==
                 (areq'[p] = "refused" /\ pc'[p] = pc[p])
           /\ (areq[p] = "pending" /\ areq'[p] # "pending") =>
                 \/ areq'[p] = "served" /\ pc'[p] \in {"idle", "exited", "held"}
-                \/ areq'[p] = "dead" /\ pc'[p] = "dead"
+                \/ areq'[p] = "terminated" /\ pc'[p] = "terminated"
                 \/ areq'[p] = "withdrawn"
                       /\ pc'[p] \in {"idle", "exited", "detached"}
                 \/ areq'[p] = "refused"
@@ -194,8 +194,8 @@ AFreeClaimShowsTheTokenOfTheLivenessHolder ==
 \* already released its own.
 RegistryLocksAreHeldOnlyByLiveProcesses ==
     \A s \in Slots :
-        /\ cl[s] # None => pc[cl[s]] \notin {"dead", "exited"}
-        /\ ll[s] # None => pc[ll[s]] \notin {"dead", "exited"}
+        /\ cl[s] # None => pc[cl[s]] \notin {"terminated", "exited"}
+        /\ ll[s] # None => pc[ll[s]] \notin {"terminated", "exited"}
 
 \* Audience: internal.
 \* Every change to an entry is made by the handle that holds its claim lock, and
@@ -236,7 +236,7 @@ LiveReportIsJustified ==
 \* and when some handle is attached without an entry.
 AListingSaysWhenItMayBeIncomplete ==
     [][\A p \in Procs :
-          (lph[p] = "next" /\ lph'[p] = "none" /\ pc'[p] # "dead"
+          (lph[p] = "next" /\ lph'[p] = "none" /\ pc'[p] # "terminated"
            /\ crashes' = crashes) =>
               /\ lunk[p] => lres'[p] = "incomplete"
               /\ (\E q \in Procs : att[q] \in {"attached", "draining"}

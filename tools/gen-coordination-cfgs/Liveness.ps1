@@ -4,9 +4,9 @@
 # it dropped as a control that lets a hold last forever.
 
 # A bounded configuration checking temporal properties only, under a hold specification.
-function Holds($name, $header, $s, $specName, $properties, $requests, $deaths, $reads = 0, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $upSteps = 0, $unloggedRecovery = $false) {
+function Holds($name, $header, $s, $specName, $properties, $requests, $terminations, $reads = 0, $leases = 0, $slots = 0, $listings = 0, $txn = $false, $upSteps = 0, $unloggedRecovery = $false) {
     Write-Cfg "$name.cfg" (Header $header) `
-        (Cfg $s $requests $deaths 0 $reads 'none' $true $false @() $properties $leases $slots $listings $txn 0 $upSteps $unloggedRecovery $false $specName)
+        (Cfg $s $requests $terminations 0 $reads 'none' $true $false @() $properties $leases $slots $listings $txn 0 $upSteps $unloggedRecovery $false $specName)
 }
 
 $plain = Plain 2

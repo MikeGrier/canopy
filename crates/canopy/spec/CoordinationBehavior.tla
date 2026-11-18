@@ -9,17 +9,17 @@ EXTENDS CoordinationOperations
 \* EXTERNAL: one process dies at any step. The OS releases its lock; nothing
 \* it left in the filesystem changes, and the ownership record and the count
 \* stay as published.
-Die(p) ==
-    /\ deaths < MaxDeaths
+Terminate(p) ==
+    /\ terminations < MaxTerminations
     /\ pc[p] \in LiveStates
-    /\ pc' = Set(pc, p, "dead")
+    /\ pc' = Set(pc, p, "terminated")
     /\ lockHolder' = IF lockHolder = p THEN None ELSE lockHolder
-    /\ req' = IF pc[p] = "waiting" THEN Set(req, p, "dead") ELSE req
-    /\ diedIn' = IF owner = p THEN pc[p] ELSE diedIn
-    /\ deaths' = deaths + 1
+    /\ req' = IF pc[p] = "waiting" THEN Set(req, p, "terminated") ELSE req
+    /\ terminatedIn' = IF owner = p THEN pc[p] ELSE terminatedIn
+    /\ terminations' = terminations + 1
     /\ att' = Set(att, p, "off")
     /\ rtier' = Set(rtier, p, FALSE)
-    /\ areq' = IF areq[p] = "pending" THEN Set(areq, p, "dead") ELSE areq
+    /\ areq' = IF areq[p] = "pending" THEN Set(areq, p, "terminated") ELSE areq
     /\ lease' = Set(lease, p, 0)
     /\ Forget(p)
     /\ cl' = [s \in Slots |-> IF cl[s] = p THEN None ELSE cl[s]]
@@ -46,14 +46,14 @@ Die(p) ==
 \* CrashFences it always is.
 Crash ==
     /\ crashes < MaxCrashes
-    /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "dead" ELSE pc[p]]
-    /\ req' = [p \in Procs |-> IF pc[p] = "waiting" THEN "dead" ELSE req[p]]
+    /\ pc' = [p \in Procs |-> IF pc[p] \in LiveStates THEN "terminated" ELSE pc[p]]
+    /\ req' = [p \in Procs |-> IF pc[p] = "waiting" THEN "terminated" ELSE req[p]]
     /\ lockHolder' = None
     /\ owner' \in {owner, None}
     /\ fence' \in IF CrashFences THEN {TRUE} ELSE BOOLEAN
     /\ trusted' = FALSE
     /\ count' \in {count, IF Odd(count) THEN count - 1 ELSE count}
-    /\ diedIn' = IF owner # None THEN "crash" ELSE diedIn
+    /\ terminatedIn' = IF owner # None THEN "crash" ELSE terminatedIn
     /\ crashes' = crashes + 1
     /\ mygen' = [p \in Procs |-> NoVal]
     /\ cache' = [p \in Procs |-> NoVal]
@@ -66,7 +66,7 @@ Crash ==
     /\ disc' = [p \in Procs |-> "none"]
     /\ att' = [p \in Procs |-> "off"]
     /\ rtier' = [p \in Procs |-> FALSE]
-    /\ areq' = [p \in Procs |-> IF areq[p] = "pending" THEN "dead" ELSE areq[p]]
+    /\ areq' = [p \in Procs |-> IF areq[p] = "pending" THEN "terminated" ELSE areq[p]]
     /\ lease' = [p \in Procs |-> 0]
     /\ cl' = [s \in Slots |-> None]
     /\ ll' = [s \in Slots |-> None]
@@ -83,7 +83,7 @@ Crash ==
     /\ lunk' = [p \in Procs |-> FALSE]
     /\ lfree' = [p \in Procs |-> FALSE]
     /\ lres' = [p \in Procs |-> "none"]
-    /\ UNCHANGED <<recorded, gen, store, requests, deaths, reads, lists,
+    /\ UNCHANGED <<recorded, gen, store, requests, terminations, reads, lists,
                    discoveries, upgrades, woken>>
 
 -----------------------------------------------------------------------------
@@ -129,7 +129,7 @@ Sampling(p) == ~Notifications \/ woken[p] = "sample"
 
 \* Everything but the notices.
 Unnoticed == <<pc, att, areq, lease, schema, reg, req, coord, store, handle,
-               reader, diedIn, requests, deaths, crashes, reads, discoveries, upgrades>>
+               reader, terminatedIn, requests, terminations, crashes, reads, discoveries, upgrades>>
 
 \* A waiter that samples and finds what it waits for absent registers and sleeps.
 Register(p) ==
@@ -154,7 +154,7 @@ LoseNotification(p) ==
 \* Every process has ended. It is the only step then, so a state in which a
 \* process is stuck waiting is the only kind of deadlock.
 Terminal ==
-    /\ \A p \in Procs : pc[p] \in {"exited", "dead"}
+    /\ \A p \in Procs : pc[p] \in {"exited", "terminated"}
     /\ UNCHANGED vars
 
 Next ==
@@ -187,7 +187,7 @@ Next ==
           \/ Release(p) \/ Unlock(p) \/ ClearRecord(p)
           \/ ReadBefore(p) \/ ReadBefore2(p) \/ ObserveA(p) \/ ObserveB(p)
           \/ ReadAfter(p) \/ ReadAfter1(p) \/ ReadAfter2(p) \/ Invalidate(p)
-          \/ Die(p)
+          \/ Terminate(p)
     \/ Crash
     \/ Terminal
 

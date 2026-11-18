@@ -5,7 +5,7 @@
 #
 # Usage:
 #   pwsh tools/run-probes.ps1 -Spec crates/canopy/spec/Coordination.tla
-#   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Filter 'die-*,*upgrade*' -Parallel 6
+#   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Filter 'terminate-*,*upgrade*' -Parallel 6
 #   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Check
 #   pwsh tools/run-probes.ps1 -Spec <spec.tla> -List
 #   pwsh tools/run-probes.ps1 -Spec <spec.tla> -Changed -Parallel 6
