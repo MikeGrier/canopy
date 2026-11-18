@@ -167,3 +167,54 @@ fn a_registration_whose_filesystem_drops_another_notice_does_not_stop_the_poller
     assert!(registered);
     assert!(outstanding.lock().unwrap().is_none(), "the callback ran");
 }
+
+/// A panic while the poller samples one participant is that sample failing: the poller rings the
+/// registration and goes on serving others.
+#[test]
+fn a_panic_while_the_poller_samples_does_not_stop_it() {
+    let gate = crate::FaultGate::closed();
+    let policy = crate::FaultPolicy::new().inject_gated(
+        crate::FaultOp::BootIdentity,
+        crate::PathMatcher::Predicate(Arc::new(|_| true)),
+        crate::Fault::observe_with(|_, _| panic!("the boot cannot be read")),
+        crate::When::Always,
+        gate.clone(),
+    );
+    let fs = Arc::new(crate::MemFs::new());
+    fs.create_dir_all(Path::new("/panicking")).unwrap();
+    let failing = SharedState::open(
+        Arc::new(crate::FaultyFs::new(fs.another_process(), policy)),
+        Path::new("/panicking"),
+    )
+    .unwrap();
+    let (rang, failing_rings) = std::sync::mpsc::channel();
+    let failing_notice = failing
+        .notify(
+            failing.sample().unwrap(),
+            Instant::now() + Duration::from_secs(60),
+            Box::new(move || {
+                let _ = rang.send(());
+            }),
+        )
+        .unwrap();
+    gate.open();
+    test_timers::mpsc::recv_timeout(&failing_rings, Duration::from_secs(10))
+        .expect("a sample that panicked rings");
+    gate.close();
+    drop(failing_notice);
+    let other = state();
+    let (rang, rings) = std::sync::mpsc::channel();
+    let notice = other
+        .notify(
+            other.sample().unwrap(),
+            Instant::now() + Duration::from_secs(60),
+            Box::new(move || {
+                let _ = rang.send(());
+            }),
+        )
+        .unwrap();
+    let mut hold = other.acquire(Waiting::Wait).unwrap();
+    hold.begin_modification(Purpose::Ordinary).unwrap();
+    test_timers::mpsc::recv_timeout(&rings, Duration::from_secs(10)).expect("the poller stopped");
+    drop(notice);
+}

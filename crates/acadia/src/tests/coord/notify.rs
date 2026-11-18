@@ -519,3 +519,37 @@ fn a_registration_whose_retirement_withdraws_another_notice_does_not_stall_the_p
         "the poller keeps serving registrations"
     );
 }
+
+/// A panic while the poller samples one participant is that sample failing: the poller rings the
+/// registration and goes on serving others.
+#[test]
+fn a_panic_while_the_poller_samples_does_not_stop_it() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let polled = FileFactory::new().polled();
+    let gate = crate::FaultGate::closed();
+    let policy = FaultPolicy::new().inject_gated(
+        FaultOp::Read,
+        crate::PathMatcher::predicate(|_| true),
+        Fault::observe_with(|_, _| panic!("the count cannot be read")),
+        When::Always,
+        gate.clone(),
+    );
+    let failing = participant_on(
+        &polled,
+        Arc::new(FaultyFs::new(mem.another_process(), policy)),
+        &root,
+    );
+    publish(&failing, 2);
+    let (_failing_notice, failing_rings) = registered(&failing, ModCount::new(2), far());
+    gate.open();
+    assert!(
+        rings_within(&failing_rings, LONG),
+        "a sample that panicked rings"
+    );
+    gate.close();
+    let other = participant_on(&polled, Arc::new(mem.another_process()), &root);
+    let (_notice, rings) = registered(&other, ModCount::new(2), far());
+    other.publish_count(4, Standing::Vouched).expect("publish");
+    assert!(rings_within(&rings, LONG), "the poller stopped");
+}

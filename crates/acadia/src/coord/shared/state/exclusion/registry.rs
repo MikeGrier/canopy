@@ -83,11 +83,12 @@ impl SharedState {
                     error.into()
                 }
             })?;
+        self.alive()?;
         let mut held = self
             .holds
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.alive()?;
+        self.not_abandoned()?;
         let id = NEXT_INSTANCE
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
@@ -131,11 +132,12 @@ impl SharedState {
     /// Records that membership may be incomplete, under the table `abandon` clears, so an
     /// abandoned participant records nothing once `abandon` has returned.
     fn incomplete(&self) -> CoordResult<()> {
+        self.alive()?;
         let _held = self
             .holds
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.alive()?;
+        self.not_abandoned()?;
         self.words
             .word(Word::RegistryOverflow)
             .store(super::super::format::TRUE, Ordering::Release);

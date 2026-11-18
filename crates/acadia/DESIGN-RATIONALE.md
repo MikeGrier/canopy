@@ -373,3 +373,20 @@ probes, the fence as reported, opening under abandonment, the notification polle
   work, and changing it would have moved that refusal.
 - **An opening mutex taken after the setup wait** keeps the design's rule that abandonment never
   waits behind a blocked initializer, which a mutex held across the wait would have broken.
+
+## The eighth review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Eighth review fixes: a hold from an
+ended boot, the recovered count, a missing generation, mutexes free of filesystem calls".
+
+- **The boot check on a file hold mirrors the shared participant's**, which already treats a
+  participant over a simulated filesystem from an earlier boot as gone. Checking only the
+  participant's abandonment flag would have left the simulated restart unable to end a holder.
+- **Reading the boot outside the mutexes, not removing the mutexes,** keeps the rule that
+  `abandon` waits for a change in progress; only observations, which need no serialization with
+  abandonment, moved out.
+- **The opening takes its mutex twice rather than across the setup wait**, which would have made
+  `abandon` wait behind another participant's setup.
+- **`wait_native` was narrowed rather than given a second, event-only function,** because no
+  caller in the repository waits on a non-event handle through it, and keeping the wide form would
+  have kept the misuse reachable from safe code.

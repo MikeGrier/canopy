@@ -494,6 +494,11 @@ DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Writer exclusion and its ownership 
 
 ## The platform's own wait on a borrowed signal, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-18, by "Eighth review fixes: a hold from an ended boot, the
+> recovered count, a missing generation, mutexes free of filesystem calls" below.** On Windows
+> `wait_native` takes an event through the sealed `NativeEvent`, never a borrowed handle of any kind:
+> a wait on a mutex would take it. The Linux form is unchanged.
+
 `wait_native` waits on a borrowed event (`BorrowedHandle`, Windows, through `win-sync-sys`'s
 `wait_for_single_object`) or descriptor (`BorrowedFd`, Linux, through `poll`) with the platform's
 own wait, for at most a bound, and reports whether it was raised; it lowers nothing. It is what
@@ -826,6 +831,11 @@ the harness's own timeout ended the run.
     [completed 2026-11-13; `d7daade`]
 
 ## The hold of writer exclusion keeps its bookkeeping in files replaced whole, 2026-11-13
+
+> **SUPERSEDED in part, 2026-11-18, by "Eighth review fixes: a hold from an ended boot, the
+> recovered count, a missing generation, mutexes free of filesystem calls" below.** A missing
+> generation is refused within a boot as an unreadable one is, and a hold over `MemFs` from a boot a
+> simulated restart ended does no bookkeeping, as an abandoned one does not. The rest stands.
 
 > **SUPERSEDED in part, 2026-11-18, by "Fifth review fixes: recovery's commit point, restart
 > repair, foreign roots and the marker under abandonment" below.** Acquiring remakes the boot
@@ -1838,6 +1848,11 @@ Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The sixth review, 2
 
 ## Seventh review fixes: shared discovery probes, the fence as reported, opening under abandonment, the notification poller, 2026-11-18
 
+> **SUPERSEDED in part, 2026-11-18, by "Eighth review fixes: a hold from an ended boot, the
+> recovered count, a missing generation, mutexes free of filesystem calls" below.** An opening also
+> holds the participant mutex while it makes the state directory and the setup lock, before its
+> wait, so nothing an opening does reaches the disk once `abandon` has returned. The rest stands.
+
 A seventh review of the crate, made on 2026-11-18, raised seven findings and one suspicion. Each
 one that held was shown by a failing test before it was fixed, except where noted; the work is
 milestones M36 to M39 in [CHECKLIST.md](CHECKLIST.md).
@@ -1884,3 +1899,57 @@ Opening the shared state:
   control on a handle it has just completed.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The seventh review, 2026-11-18".
+
+## Eighth review fixes: a hold from an ended boot, the recovered count, a missing generation, mutexes free of filesystem calls, 2026-11-18
+
+An eighth review of the crate, made on 2026-11-18, raised nine findings, two of them against fixes
+of the seventh. Each was shown by a failing test before it was fixed, except where noted; the work
+is milestones M40 to M43 in [CHECKLIST.md](CHECKLIST.md).
+
+File coordination:
+
+- **A file hold is bound to the boot it was taken in.** Over a filesystem that is not the operating
+  system's, a restart is simulated and does not end the process that held the lock, and a lock file
+  whose name the restart lost can be made again and taken by a successor while the old hold keeps
+  the old file. Every step of the hold therefore checks that the boot is still the one it was taken
+  in, and refuses as abandoned when it is not: its release drops its lock and does nothing else.
+  The check is skipped over the operating system's filesystem, where a restart ends the process.
+- **Recovery rounds the count a sampler sees, not the one stored.** An untrusted record samples
+  odd whatever it holds, so a never-published count samples `1`; rounding the stored `0` would
+  publish `0`, below a sample already taken. The vouched count is the sampled value rounded up to
+  even, as `RecoveredCount` in [CoordinationOperations.tla](../canopy/spec/CoordinationOperations.tla)
+  rounds `Visible`.
+- **A missing generation beside this boot's record is refused**, as an unreadable one is: within
+  a boot nothing loses it, so its absence cannot show which generation is next. It is read as zero
+  only when the boot record is being remade or the boot cannot be identified.
+
+Shared coordination:
+
+- **No filesystem call is made under a shared participant's mutexes to read the boot.** The boot
+  is read before the hold table or the liveness slot is taken, and under them only the abandonment
+  flag is read; a filesystem whose boot read calls back into the participant no longer stops it.
+  The publications made under the hold table stay under it: that is what makes `abandon` wait for a
+  change in progress, and a filesystem that calls back into the participant from one of those is not
+  supported.
+- **An opening's bootstrap is gated against abandonment too.** It makes the state directory and the
+  setup lock file under the participant's opening mutex, then waits for the setup lock, which opens
+  the file without making it, and takes the mutex again once the wait ends.
+- **A panic while a poller samples a participant is that sample failing.** Both pollers contain it
+  and ring the registration, as for any failed sample, and go on serving the others.
+
+Windows and tests:
+
+- **An oplock acknowledgement that fails in either way closes the handle before the ring runs.**
+  Closing the handle is the other answer to a break; an acknowledgement refused at once and one
+  that completes with an error are both answered so, and the ring runs only after the handle is
+  closed, so a ring that waits for the renaming writer cannot hold it. A successful acknowledgement
+  completes with status zero, which was observed before the error completion was given meaning. No
+  test provokes either failure.
+- **`wait_native` on Windows takes a `NativeEvent`.** It is sealed to `Event`, `WaitOnlyEvent` and
+  `EventSignal`; a wait on a mutex or a semaphore would take it, which a wait that only observes
+  must not. A `compile_fail` example holds the bound.
+- **The reservation-abandonment test asserts unconditionally**: that the publication was reached,
+  and that `abandon` did not return while it was under way. A revert-probe that published the
+  reservation without the guard failed it.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The eighth review, 2026-11-18".

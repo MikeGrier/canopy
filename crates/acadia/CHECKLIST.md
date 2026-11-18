@@ -230,3 +230,29 @@ a failing test before it is fixed; a finding that does not hold is recorded in
 ## M39 -- Seventh review: records
 
 - [x] **M39-1** -- The seventh review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m39-1)
+
+## M40 -- Eighth review: file coordination
+
+Review report: findings of the eighth acadia review (GPT-6.2 Astra, 2026-11-18), each confirmed by
+a failing test before it is fixed; a finding that does not hold is recorded in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) instead of being changed.
+
+- [x] **M40-1** -- A file hold from before a restart never changes its successor's records. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m40-1)
+- [x] **M40-2** -- File recovery publishes the visible count rounded up to even. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m40-2)
+- [x] **M40-3** -- A missing generation record beside a current boot record is refused, not read as zero. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m40-3)
+
+## M41 -- Eighth review: shared coordination
+
+- [x] **M41-1** -- No filesystem call is made under a shared participant's mutex. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m41-1)
+- [x] **M41-2** -- A shared first use changes no durable state once `abandon` returns, including its bootstrap. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m41-2)
+- [x] **M41-3** -- A panic while a poller samples a participant never stops the poller. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m41-3)
+
+## M42 -- Eighth review: Windows and tests
+
+- [x] **M42-1** -- A Windows oplock acknowledgement that completes with an error releases the lock. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m42-1)
+- [x] **M42-2** -- The safe Windows native wait cannot take ownership of a mutex. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m42-2)
+- [x] **M42-3** -- The reservation-abandonment test fails when publication is not exercised. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m42-3)
+
+## M43 -- Eighth review: records
+
+- [x] **M43-1** -- The eighth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m43-1)

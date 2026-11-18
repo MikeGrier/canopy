@@ -274,23 +274,31 @@ fn a_participant_abandoned_while_it_publishes_its_reservation_publishes_none_aft
     let fs = filesystem();
     let root = Path::new("/factory");
     let participant: Arc<std::sync::OnceLock<Arc<dyn Coordination>>> = Arc::default();
-    let abandoned_first = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (reached, abandoning) = (Arc::clone(&participant), Arc::clone(&abandoned_first));
+    // Whether the publication was reached, and whether `abandon` returned while it was under way.
+    let observed: Arc<std::sync::Mutex<Option<bool>>> = Arc::default();
+    let abandoning: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    let (reached, seen, spawned) = (
+        Arc::clone(&participant),
+        Arc::clone(&observed),
+        Arc::clone(&abandoning),
+    );
     let policy = crate::FaultPolicy::new().inject(
         crate::FaultOp::PublishNew,
         root.join(format_reservation()),
         crate::Fault::observe_with(move |_, _| {
             let target = Arc::clone(reached.get().expect("installed"));
+            let (started, starting) = std::sync::mpsc::channel();
             let (done, finished) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
+            *spawned.lock().unwrap() = Some(std::thread::spawn(move || {
+                let _ = started.send(());
                 target.abandon();
                 let _ = done.send(());
-            });
-            if test_timers::mpsc::recv_timeout(&finished, std::time::Duration::from_millis(200))
-                .is_ok()
-            {
-                abandoning.store(true, std::sync::atomic::Ordering::Release);
-            }
+            }));
+            starting.recv().expect("the abandonment starts");
+            let returned =
+                test_timers::mpsc::recv_timeout(&finished, std::time::Duration::from_millis(200))
+                    .is_ok();
+            *seen.lock().unwrap() = Some(returned);
         }),
         crate::When::Once,
     );
@@ -310,12 +318,22 @@ fn a_participant_abandoned_while_it_publishes_its_reservation_publishes_none_aft
             root: root.to_path_buf(),
         },
     );
-    if abandoned_first.load(std::sync::atomic::Ordering::Acquire) {
-        assert!(
-            !fs.exists(&root.join(format_reservation())).unwrap(),
-            "a reservation was published after abandon returned"
-        );
-    }
+    let returned_during = observed
+        .lock()
+        .unwrap()
+        .expect("the reservation's publication was reached");
+    abandoning
+        .lock()
+        .unwrap()
+        .take()
+        .expect("spawned")
+        .join()
+        .unwrap();
+    assert!(
+        !returned_during,
+        "abandon returned while the reservation was being published"
+    );
+    assert!(matches!(opened.sample(), Err(CoordError::Abandoned)));
 }
 
 fn format_reservation() -> &'static str {

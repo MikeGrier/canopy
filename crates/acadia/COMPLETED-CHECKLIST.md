@@ -462,3 +462,37 @@ No test provokes the failure; the fix rings the notice and closes the handle, wh
 break.
 
 ### <a id="m39-1"></a>M39-1 -- The seventh review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 06:30:09 -05:00)*
+
+## Moved 2026-11-18 -- Fixes from the eighth acadia review
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Eighth review fixes: a hold from an ended boot, the
+recovered count, a missing generation, mutexes free of filesystem calls". Each fix was shown by a
+failing test before it was made, except the oplock acknowledgement's.
+
+### <a id="m40-1"></a>M40-1 -- A file hold from before a restart never changes its successor's records. *(completed 2026-11-18 06:56:00 -05:00)*
+
+### <a id="m40-2"></a>M40-2 -- File recovery publishes the visible count rounded up to even. *(completed 2026-11-18 06:56:00 -05:00)*
+
+The shared implementation already did: its epochs start at an odd count.
+
+### <a id="m40-3"></a>M40-3 -- A missing generation record beside a current boot record is refused, not read as zero. *(completed 2026-11-18 06:56:00 -05:00)*
+
+### <a id="m41-1"></a>M41-1 -- No filesystem call is made under a shared participant's mutex. *(completed 2026-11-18 06:56:00 -05:00)*
+
+Scoped to reading the boot; publications made under the hold table stay under it, so that `abandon`
+waits for them.
+
+### <a id="m41-2"></a>M41-2 -- A shared first use changes no durable state once `abandon` returns, including its bootstrap. *(completed 2026-11-18 06:56:00 -05:00)*
+
+### <a id="m41-3"></a>M41-3 -- A panic while a poller samples a participant never stops the poller. *(completed 2026-11-18 06:56:00 -05:00)*
+
+### <a id="m42-1"></a>M42-1 -- A Windows oplock acknowledgement that completes with an error releases the lock. *(completed 2026-11-18 06:56:00 -05:00)*
+
+No test provokes the failure; a probe showed a successful acknowledgement completes with status
+zero.
+
+### <a id="m42-2"></a>M42-2 -- The safe Windows native wait cannot take ownership of a mutex. *(completed 2026-11-18 06:56:00 -05:00)*
+
+### <a id="m42-3"></a>M42-3 -- The reservation-abandonment test fails when publication is not exercised. *(completed 2026-11-18 06:56:00 -05:00)*
+
+### <a id="m43-1"></a>M43-1 -- The eighth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 06:56:00 -05:00)*

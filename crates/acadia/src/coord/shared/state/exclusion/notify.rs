@@ -160,7 +160,13 @@ impl Poller {
                     {
                         *current
                     } else {
-                        let current = participant.sample().ok();
+                        // A sample that panics is one that failed, and the poller survives it.
+                        let current =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                participant.sample()
+                            }))
+                            .ok()
+                            .and_then(Result::ok);
                         samples.push((participant, current));
                         current
                     };

@@ -752,3 +752,63 @@ fn a_file_sample_does_not_wait_for_its_own_participant_s_change_in_progress() {
         });
     }
 }
+
+/// A hold kept across a restart of `MemFs` belongs to a process the restart ended: it changes
+/// nothing its successor wrote, and dropping it only drops its lock.
+#[test]
+fn a_hold_from_before_a_restart_changes_nothing_its_successor_wrote() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let stale = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let mut old = acquire(&stale);
+        mem.simulate_crash();
+        let successor = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let new = acquire(&successor);
+        let count = successor.sample().expect("sample");
+        assert!(matches!(
+            old.begin_modification(Purpose::Recovery),
+            Err(CoordError::Abandoned)
+        ));
+        assert!(matches!(
+            old.complete_recovery(),
+            Err(CoordError::Abandoned)
+        ));
+        drop(old);
+        assert!(
+            owner_recorded(&successor),
+            "a stale hold removed its successor's record"
+        );
+        assert_eq!(successor.sample().expect("sample"), count);
+        assert_eq!(
+            successor.trust().expect("trust"),
+            Trust::Untrusted(Untrusted::Created)
+        );
+        drop(new);
+    }
+}
+
+/// Within a boot the generation is replaced whole and never lost, so a missing one beside this
+/// boot's record cannot show which generation is next.
+#[test]
+fn a_missing_generation_beside_this_boots_record_is_refused_and_left_alone() {
+    on_every_implementation(
+        "coord-hold-missing-generation",
+        &|implementation, backend| {
+            let participant = participant(implementation, backend);
+            recovered(&participant);
+            drop(acquire(&participant));
+            let generation = participant.layout().generation();
+            participant.vfs().remove_file(&generation).expect("remove");
+            assert!(
+                matches!(
+                    participant.acquire(Waiting::Never),
+                    Err(CoordError::Malformed { what: "generation" })
+                ),
+                "{}",
+                backend.name()
+            );
+            assert!(!participant.vfs().exists(&generation).expect("exists"));
+        },
+    );
+}

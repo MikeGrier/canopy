@@ -195,6 +195,17 @@ impl Shared {
         }
     }
 
+    /// Answers a break whose acknowledgement failed by closing the handle, the other answer, and
+    /// rings once it is closed, so a ring that waits for the renaming writer cannot hold it.
+    fn release_and_ring(&self) {
+        let ring = if self.stopped.load(Ordering::Acquire) {
+            None
+        } else {
+            lock(&self.ring).take()
+        };
+        stop_then(self, ring);
+    }
+
     fn on_timer(&self) {
         match self.phase.load(Ordering::Acquire) {
             WAITING => self.fire(),
@@ -206,8 +217,13 @@ impl Shared {
         // SAFETY: every operation submitted through this registration's `ThreadpoolIo` carries
         // `Arc<Buffers>`, and each completion is claimed once, here.
         let operation = unsafe { completion.claim::<Arc<Buffers>>() };
-        if operation.payload().kind == Kind::Acknowledgement || self.stopped.load(Ordering::Acquire)
-        {
+        if operation.payload().kind == Kind::Acknowledgement {
+            if completion.io_result() != NO_ERROR && !self.stopped.load(Ordering::Acquire) {
+                self.release_and_ring();
+            }
+            return;
+        }
+        if self.stopped.load(Ordering::Acquire) {
             return;
         }
         match completion.io_result() {
@@ -220,10 +236,7 @@ impl Shared {
                     None => true,
                 };
                 if !acknowledged {
-                    // Closing the handle is the other answer to a break; ring first, since a
-                    // stopped registration rings nothing.
-                    self.fire();
-                    stop(self);
+                    self.release_and_ring();
                     return;
                 }
                 self.settle(1);
@@ -379,23 +392,45 @@ fn hold_lock(
 
 /// Stops a registration: its callbacks no longer ring, and its lock and timer are released.
 fn stop(shared: &Shared) {
+    stop_then(shared, None);
+}
+
+/// As [`stop`], then runs `ring` once the lock and timer are released.
+fn stop_then(shared: &Shared, ring: Option<Ring>) {
+    let run = |ring: Option<Ring>| {
+        if let Some(ring) = ring {
+            let _ = catch_unwind(AssertUnwindSafe(ring));
+        }
+    };
     shared.stopped.store(true, Ordering::Release);
     let timer = lock(&shared.timer).take();
     let io = lock(&shared.io).take();
     if !IN_CALLBACK.get() {
         drop(timer);
         drop(io);
+        run(ring);
         return;
     }
     // Releasing them waits for their callbacks, and this is one; they are released on a thread of
     // their own, and left held if there is none to release them on.
-    let slot = Arc::new(Mutex::new(Some((timer, io))));
+    let slot = Arc::new(Mutex::new(Some((timer, io, ring))));
     let releaser = Arc::clone(&slot);
     let started = std::thread::Builder::new()
         .name("acadia-oplock-release".into())
-        .spawn(move || drop(lock(&releaser).take()));
+        .spawn(move || {
+            let taken = lock(&releaser).take();
+            if let Some((timer, io, ring)) = taken {
+                drop(timer);
+                drop(io);
+                run(ring);
+            }
+        });
     if started.is_err() {
-        std::mem::forget(lock(&slot).take());
+        let taken = lock(&slot).take();
+        if let Some((timer, io, ring)) = taken {
+            std::mem::forget((timer, io));
+            run(ring);
+        }
     }
 }
 

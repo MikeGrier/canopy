@@ -40,7 +40,7 @@ pub use self::loom::LoomSignal;
 #[cfg(target_os = "linux")]
 pub use linux::{EventFdSignal, SealedWaitObject, SealedWaitOnlyFd, wait_native, wait_native_any};
 #[cfg(windows)]
-pub use windows::{EventSignal, wait_native, wait_sealed};
+pub use windows::{EventSignal, NativeEvent, wait_native, wait_sealed};
 
 /// The platform's signal, chosen by `cfg`.
 #[cfg(windows)]

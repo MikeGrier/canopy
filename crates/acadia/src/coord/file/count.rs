@@ -46,7 +46,7 @@ impl Published {
     };
 
     /// What a sample reports: the value, made odd unless the state is vouched for.
-    fn sample(&self) -> ModCount {
+    pub(crate) fn sample(&self) -> ModCount {
         match self.standing {
             Standing::Vouched => ModCount::new(self.value),
             Standing::Untrusted => ModCount::new(self.value | 1),

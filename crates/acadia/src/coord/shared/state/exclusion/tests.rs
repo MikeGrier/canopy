@@ -278,3 +278,75 @@ fn a_modeled_restart_invalidates_old_holds_before_any_new_effect() {
         current.acquired().advanced_to().get()
     );
 }
+
+/// Every operation reads the boot outside the participant's mutexes, so a filesystem whose boot
+/// read calls back into the same participant -- taking those mutexes -- never stops it.
+#[test]
+fn a_filesystem_that_reenters_a_participant_while_its_boot_is_read_does_not_stop_it() {
+    type Operation = fn(&SharedState, &crate::FaultGate);
+    let operations: [(&str, Operation); 5] = [
+        ("trust", |participant, gate| {
+            gate.open();
+            let _ = participant.trust();
+        }),
+        ("acquire", |participant, gate| {
+            gate.open();
+            let _ = participant.acquire(Waiting::Never);
+        }),
+        ("begin", |participant, gate| {
+            let mut hold = participant.acquire(Waiting::Never).unwrap();
+            gate.open();
+            let _ = hold.begin_modification(Purpose::Ordinary);
+        }),
+        ("recover", |participant, gate| {
+            let mut hold = participant.acquire(Waiting::Never).unwrap();
+            gate.open();
+            let _ = hold.complete_recovery();
+        }),
+        ("discover", |participant, gate| {
+            gate.open();
+            let _ = participant.discover_recovery();
+        }),
+    ];
+    for (name, operation) in operations {
+        let slot: Arc<OnceLock<SharedState>> = Arc::default();
+        let target = Arc::clone(&slot);
+        let reentering = Arc::new(AtomicBool::new(false));
+        let gate = crate::FaultGate::closed();
+        let policy = crate::FaultPolicy::new().inject_gated(
+            crate::FaultOp::BootIdentity,
+            crate::PathMatcher::Predicate(Arc::new(|_| true)),
+            crate::Fault::observe_with(move |_, _| {
+                if let Some(target) = target.get()
+                    && !reentering.swap(true, Ordering::AcqRel)
+                {
+                    let _ = target.trust();
+                    drop(target.hold_guard(0));
+                    reentering.store(false, Ordering::Release);
+                }
+            }),
+            crate::When::Always,
+            gate.clone(),
+        );
+        let fs = crate::MemFs::new();
+        fs.create_dir_all(Path::new("/reentered")).unwrap();
+        let participant = SharedState::open(
+            Arc::new(crate::FaultyFs::new(fs.another_process(), policy)),
+            Path::new("/reentered"),
+        )
+        .unwrap();
+        participant
+            .acquire(Waiting::Never)
+            .unwrap()
+            .complete_recovery()
+            .unwrap();
+        let _ = slot.set(participant);
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            operation(slot.get().expect("set"), &gate);
+            let _ = done.send(());
+        });
+        test_timers::mpsc::recv_timeout(&finished, std::time::Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("{name}: the participant stopped"));
+    }
+}

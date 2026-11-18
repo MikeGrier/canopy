@@ -103,7 +103,7 @@ impl Signal for EventSignal {
     }
 
     fn wait(&self, timeout: Duration) -> io::Result<bool> {
-        wait_native(self.event.as_handle(), timeout)
+        wait_native(&self.event, timeout)
     }
 
     fn watch<F>(&self, callback: F) -> io::Result<Watch>
@@ -200,11 +200,29 @@ impl Drop for PoolWatch {
 /// longer wait is made of several.
 const LONGEST_PLATFORM_WAIT: Duration = Duration::from_millis(u32::MAX as u64 - 1);
 
-/// Waits with `WaitForSingleObject` until `handle` is signalled or `timeout` has passed, and
-/// reports whether it was signalled: the platform's own wait, for a caller that holds only the
-/// handle a signal or a doorbell lends through `AsHandle`. Like [`Signal::wait`], it never
-/// reports `false` before `timeout` has passed.
-pub fn wait_native(handle: BorrowedHandle<'_>, timeout: Duration) -> io::Result<bool> {
+/// An event [`wait_native`] waits on. Sealed to events, which a wait observes and does not
+/// change: a wait on a mutex or a semaphore would take it.
+pub trait NativeEvent: sealed::Sealed + AsHandle {}
+
+impl sealed::Sealed for Event {}
+impl NativeEvent for Event {}
+impl sealed::Sealed for WaitOnlyEvent {}
+impl NativeEvent for WaitOnlyEvent {}
+impl NativeEvent for EventSignal {}
+
+/// Waits with `WaitForSingleObject` until `event` is signalled or `timeout` has passed, and
+/// reports whether it was signalled: the platform's own wait, for a caller that holds an event a
+/// signal lends. Like [`Signal::wait`], it never reports `false` before `timeout` has passed.
+///
+/// A handle that is not an event is refused, since a wait on a mutex would take it:
+///
+/// ```compile_fail,E0277
+/// use std::os::windows::io::AsHandle;
+/// let file = std::fs::File::open("Cargo.toml").unwrap();
+/// let _ = acadia::wait_native(&file.as_handle(), std::time::Duration::ZERO);
+/// ```
+pub fn wait_native(event: &impl NativeEvent, timeout: Duration) -> io::Result<bool> {
+    let handle = event.as_handle();
     wait_until_deadline(timeout, |remaining| {
         match wait_for_single_object(handle, Some(remaining.min(LONGEST_PLATFORM_WAIT)))? {
             WaitOutcome::Signalled => Ok(true),

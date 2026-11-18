@@ -264,6 +264,36 @@ fn a_shared_participant_abandoned_while_its_first_use_waits_changes_nothing_afte
 }
 
 #[test]
+fn a_shared_participant_abandoned_before_its_first_use_makes_no_state() {
+    let mem = MemFs::new();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    mem.create_dir_all(&root).unwrap();
+    let slot: Arc<std::sync::OnceLock<Arc<dyn Coordination>>> = Arc::default();
+    let target = Arc::clone(&slot);
+    // The implementation check reads the reservation before the state directory is made.
+    let policy = FaultPolicy::new().inject(
+        crate::FaultOp::Read,
+        root.join(".coord-reservation"),
+        crate::Fault::observe_with(move |_, _| target.get().expect("installed").abandon()),
+        crate::When::Once,
+    );
+    let participant: Arc<dyn Coordination> = Arc::from(
+        crate::coord::shared::SharedFactory::new()
+            .open(
+                Arc::new(FaultyFs::new(mem.another_process(), policy)),
+                &root,
+            )
+            .unwrap(),
+    );
+    let _ = slot.set(Arc::clone(&participant));
+    assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+    assert!(
+        !mem.exists(&root.join(".coord-shared")).unwrap(),
+        "an abandoned first use made the state directory"
+    );
+}
+
+#[test]
 fn a_discovery_in_progress_does_not_hide_a_dead_holder_from_another() {
     on_every_contract("coord-contract-two-observers", &|factory, backend| {
         let first = opened(factory, backend);
@@ -288,6 +318,26 @@ fn a_discovery_in_progress_does_not_hide_a_dead_holder_from_another() {
             "{}: a concurrent discovery hid the dead holder",
             factory.implementation()
         );
+    });
+}
+
+#[test]
+fn a_recovery_publishes_a_count_above_every_sample_taken_before_it() {
+    on_every_contract("coord-contract-recovered-count", &|factory, backend| {
+        let participant = opened(factory, backend);
+        let before = participant.sample().unwrap();
+        let mut hold = participant.acquire(crate::coord::Waiting::Never).unwrap();
+        hold.complete_recovery().unwrap();
+        let after = participant.sample().unwrap();
+        assert!(after.is_settled());
+        assert!(
+            after.get() > before.get(),
+            "{}: sampled {before:?}, then {after:?}",
+            factory.implementation()
+        );
+        hold.complete_recovery().unwrap();
+        assert_eq!(participant.sample().unwrap().get(), after.get());
+        hold.release().unwrap();
     });
 }
 

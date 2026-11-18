@@ -107,9 +107,10 @@ impl Words {
 }
 
 /// What lets a participant be abandoned while it opens its state: `abandon` sets `abandoned` and
-/// then takes `lock`, which an opening holds from the end of its wait for the setup lock until it
-/// returns. An abandonment therefore never waits for an opening blocked on another participant,
-/// and once it returns the opening changes nothing more.
+/// then takes `lock`, which an opening holds while it makes the state directory and the setup lock,
+/// and again from the end of its wait for the setup lock until it returns. An abandonment therefore
+/// never waits for an opening blocked on another participant, and once it returns the opening
+/// changes nothing more.
 pub(crate) struct OpenGate<'a> {
     pub(crate) lock: &'a Mutex<()>,
     pub(crate) abandoned: &'a AtomicBool,
@@ -274,23 +275,32 @@ impl SharedState {
         root: &Path,
         gate: Option<&OpenGate<'_>>,
     ) -> CoordResult<Option<Self>> {
-        vfs.read_dir(root)?;
         let directory = root.join(DIRECTORY);
-        match vfs.metadata(&directory) {
-            Ok(_) => {}
-            Err(error) if error.kind() == VfsErrorKind::NotFound => {
-                vfs.create_dir_all(&directory)?;
+        let setup = directory.join("setup.lock");
+        {
+            let _bootstrap = gate.map(OpenGate::enter).transpose()?;
+            vfs.read_dir(root)?;
+            match vfs.metadata(&directory) {
+                Ok(_) => {}
+                Err(error) if error.kind() == VfsErrorKind::NotFound => {
+                    vfs.create_dir_all(&directory)?;
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
+            // Whoever made the directory may have died before its name was durable, and identities
+            // are issued from what lies in it.
+            vfs.fsync(root)?;
+            // Made here, so the wait below opens the lock and changes nothing.
+            if !vfs.exists(&setup)? {
+                match vfs.try_lock(&setup, LockMode::Exclusive, LockSpan::File) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == VfsErrorKind::Locked => {}
+                    Err(error) => return Err(error.into()),
+                }
+                vfs.fsync(&directory)?;
+            }
         }
-        // Whoever made the directory may have died before its name was durable, and identities
-        // are issued from what lies in it.
-        vfs.fsync(root)?;
-        let _setup = vfs.lock(
-            &directory.join("setup.lock"),
-            LockMode::Exclusive,
-            LockSpan::File,
-        )?;
+        let _setup = vfs.lock(&setup, LockMode::Exclusive, LockSpan::File)?;
         let _opening = gate.map(OpenGate::enter).transpose()?;
         let last = match vfs.try_lock(
             &directory.join("live.lock"),
@@ -534,6 +544,15 @@ impl SharedState {
 
     /// Returns the epoch's current diagnostic state. Untrusted epochs are always fenced.
     pub fn snapshot(&self) -> CoordResult<StateSnapshot> {
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(CoordError::Abandoned);
+        }
+        self.snapshot_at(&boot(self.vfs.as_ref())?)
+    }
+
+    /// As [`snapshot`](Self::snapshot), with the boot already read, so a caller holding one of the
+    /// participant's mutexes makes no filesystem call under it.
+    fn snapshot_at(&self, current_boot: &Option<Vec<u8>>) -> CoordResult<StateSnapshot> {
         let live = self
             .live
             .lock()
@@ -544,10 +563,9 @@ impl SharedState {
         if self.abandoned.load(Ordering::Acquire) {
             return Err(CoordError::Abandoned);
         }
-        let current_boot = boot(self.vfs.as_ref())?;
         let trust = if current_boot.is_none() {
             Trust::Untrusted(Untrusted::CannotTell)
-        } else if current_boot != self.boot {
+        } else if *current_boot != self.boot {
             Trust::Untrusted(Untrusted::HostRestarted)
         } else if self.words.word(Word::Ready).load(Ordering::Acquire) != format::READY {
             Trust::Untrusted(Untrusted::CannotTell)

@@ -40,6 +40,8 @@ pub(crate) struct FileHold {
     recovered: bool,
     /// Whether this hold has set the fence, which refuses its own ordinary modifications too.
     fenced: bool,
+    /// The boot the hold was taken in; see [`FileCoordination::alive_in`].
+    boot: Option<Vec<u8>>,
     /// Taken by a release; dropped last, so the record is cleared while the lock is held.
     exclusion: Option<Exclusion>,
 }
@@ -54,8 +56,9 @@ impl fmt::Debug for FileHold {
 }
 
 impl FileCoordination {
-    /// The generation, which may be unreadable only when the state is from another boot: within a
-    /// boot it is replaced whole, and no participant from before a restart remembers one.
+    /// The generation, which may be unreadable or missing only when the state is from another boot
+    /// or the boot cannot be identified: within a boot it is replaced whole, and no participant
+    /// from before a restart remembers one.
     fn read_generation(&self, remade: bool) -> CoordResult<Generation> {
         match self.vfs().read(&self.layout().generation()) {
             Ok(bytes) => bytes
@@ -64,9 +67,26 @@ impl FileCoordination {
                 .map(|value| Generation::new(u64::from_le_bytes(value)))
                 .or(remade.then_some(Generation::new(0)))
                 .ok_or(CoordError::Malformed { what: "generation" }),
-            Err(error) if error.kind() == VfsErrorKind::NotFound => Ok(Generation::new(0)),
+            Err(error) if error.kind() == VfsErrorKind::NotFound => {
+                if remade || self.current_boot()?.is_none() {
+                    Ok(Generation::new(0))
+                } else {
+                    Err(CoordError::Malformed { what: "generation" })
+                }
+            }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Refuses with [`CoordError::Abandoned`] once the participant is abandoned, or once a restart
+    /// has ended `boot`, the boot a hold was taken in: over a filesystem that is not the operating
+    /// system's, the restart is simulated and does not end the process that held it.
+    fn alive_in(&self, boot: &Option<Vec<u8>>) -> CoordResult<()> {
+        self.alive()?;
+        if !self.vfs().is_os_filesystem() && self.current_boot()? != *boot {
+            return Err(CoordError::Abandoned);
+        }
+        Ok(())
     }
 
     fn write_generation(&self, generation: Generation) -> CoordResult<()> {
@@ -104,6 +124,7 @@ impl FileCoordination {
 
     fn acquire_hold(&self, waiting: Waiting) -> CoordResult<FileHold> {
         let exclusion = self.acquire_exclusion(waiting)?;
+        let boot = self.current_boot()?;
         let holder_died = self.vfs().exists(&self.layout().owner())?;
         if holder_died {
             self.set_fence()?;
@@ -130,6 +151,7 @@ impl FileCoordination {
             modifications: Modifications::default(),
             recovered: false,
             fenced: false,
+            boot,
             exclusion: Some(exclusion),
         })
     }
@@ -148,22 +170,19 @@ impl FileHold {
     }
 
     /// Clears ownership only after required recovery evidence is present, then drops the lock.
-    /// An abandoned participant performs no bookkeeping.
+    /// An abandoned participant, or a hold from an ended boot, performs no bookkeeping.
     fn release_cleanly(&mut self) -> CoordResult<()> {
         let Some(exclusion) = self.exclusion.take() else {
             return Ok(());
         };
         let participant = exclusion.participant();
-        let cleared = match participant.alive() {
-            Ok(()) => (|| {
-                if (self.fenced || self.modifications.is_open()) && !participant.fence_is_set()? {
-                    participant.set_fence()?;
-                }
-                participant.clear_owner()
-            })(),
-            Err(_) => Ok(()),
-        };
-        // An abandonment racing the bookkeeping leaves it undone, as a death would.
+        let cleared = participant.alive_in(&self.boot).and_then(|()| {
+            if (self.fenced || self.modifications.is_open()) && !participant.fence_is_set()? {
+                participant.set_fence()?;
+            }
+            participant.clear_owner()
+        });
+        // An abandonment or a restart racing the bookkeeping leaves it undone, as a death would.
         let cleared = match cleared {
             Err(CoordError::Abandoned) => Ok(()),
             cleared => cleared,
@@ -183,12 +202,15 @@ impl ExclusionHold for FileHold {
             return Err(CoordError::RecoveryRequired);
         }
         let participant = self.participant().same_participant();
+        participant.alive_in(&self.boot)?;
         participant.begin_modification(&mut self.modifications)
     }
 
     fn end_modification(&mut self, end: ModificationEnd) -> CoordResult<()> {
         let participant = self.participant().same_participant();
-        let ended = participant.end_modification(&mut self.modifications, end);
+        let ended = participant
+            .alive_in(&self.boot)
+            .and_then(|()| participant.end_modification(&mut self.modifications, end));
         if matches!(ended, Err(CoordError::NoModificationOpen)) {
             return ended;
         }
@@ -203,16 +225,15 @@ impl ExclusionHold for FileHold {
             return Err(CoordError::ModificationOpen);
         }
         let participant = self.participant();
-        let published = participant.read_count()?;
-        let even = if published.value.is_multiple_of(2) {
-            published.value
+        participant.alive_in(&self.boot)?;
+        // Rounded from what a sampler sees, so the result is above every sample taken before it.
+        let visible = participant.read_count()?.sample().get();
+        let even = if visible.is_multiple_of(2) {
+            visible
         } else {
-            published
-                .value
-                .checked_add(1)
-                .ok_or(CoordError::Exhausted {
-                    what: "modification count",
-                })?
+            visible.checked_add(1).ok_or(CoordError::Exhausted {
+                what: "modification count",
+            })?
         };
         // The vouched count is recovery's commit point: it makes the state trusted and settled in
         // one publication. A failure after it fences the hold, so its release leaves the fence.

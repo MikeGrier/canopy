@@ -78,7 +78,7 @@ pub use signal::{CondvarSignal, PlatformSignal, Signal, Watch};
 #[cfg(target_os = "linux")]
 pub use signal::{EventFdSignal, SealedWaitObject, SealedWaitOnlyFd, wait_native, wait_native_any};
 #[cfg(windows)]
-pub use signal::{EventSignal, wait_native, wait_sealed};
+pub use signal::{EventSignal, NativeEvent, wait_native, wait_sealed};
 /// The sealed Windows wait capability lent without exposing its handle to safe code.
 #[cfg(windows)]
 pub use win_sync_sys::SealedWaitOnlyEvent;

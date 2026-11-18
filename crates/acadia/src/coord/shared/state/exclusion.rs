@@ -40,10 +40,17 @@ impl SharedState {
     }
 
     fn alive(&self) -> CoordResult<()> {
-        if self.abandoned.load(Ordering::Acquire) {
+        self.not_abandoned()?;
+        if !self.vfs.is_os_filesystem() && boot(self.vfs.as_ref())? != self.boot {
             return Err(CoordError::Abandoned);
         }
-        if !self.vfs.is_os_filesystem() && boot(self.vfs.as_ref())? != self.boot {
+        Ok(())
+    }
+
+    /// The part of [`alive`](Self::alive) that makes no filesystem call, for use under the
+    /// participant's mutexes once the whole check has been made outside them.
+    fn not_abandoned(&self) -> CoordResult<()> {
+        if self.abandoned.load(Ordering::Acquire) {
             return Err(CoordError::Abandoned);
         }
         Ok(())
@@ -62,11 +69,12 @@ impl SharedState {
                 error.into()
             }
         })?;
+        self.alive()?;
         let mut held = self
             .holds
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.alive()?;
+        self.not_abandoned()?;
         let id = NEXT_INSTANCE
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
@@ -83,11 +91,12 @@ impl SharedState {
         &self,
         id: u64,
     ) -> CoordResult<std::sync::MutexGuard<'_, HashMap<u64, Box<dyn VfsLock>>>> {
+        self.alive()?;
         let held = self
             .holds
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.alive()?;
+        self.not_abandoned()?;
         if !held.contains_key(&id) {
             return Err(CoordError::Abandoned);
         }
@@ -138,10 +147,11 @@ impl WriterExclusion for SharedState {
             waiting,
         )?;
         let acquired = {
-            let _held = self.hold_guard(kept.id)?;
-            if boot(self.vfs.as_ref())? != self.boot {
+            let current_boot = boot(self.vfs.as_ref())?;
+            if current_boot != self.boot {
                 return Err(CoordError::Abandoned);
             }
+            let _held = self.hold_guard(kept.id)?;
             let previous_owner = self
                 .words
                 .word(Word::Owner)
@@ -153,7 +163,7 @@ impl WriterExclusion for SharedState {
                     .word(Word::Fence)
                     .store(format::TRUE, Ordering::Release);
             }
-            let mut snapshot = self.snapshot()?;
+            let mut snapshot = self.snapshot_at(&current_boot)?;
             if !snapshot.modification_count.is_multiple_of(2) {
                 announce!(self, SetFence);
                 self.words
@@ -246,8 +256,9 @@ impl ExclusionHold for SharedHold {
     fn begin_modification(&mut self, purpose: Purpose) -> CoordResult<()> {
         let kept = self.kept.as_ref().ok_or(CoordError::Abandoned)?;
         let participant = &kept.participant;
+        let current_boot = boot(participant.vfs.as_ref())?;
         let _held = participant.hold_guard(kept.id)?;
-        if purpose == Purpose::Ordinary && participant.snapshot()?.fenced {
+        if purpose == Purpose::Ordinary && participant.snapshot_at(&current_boot)?.fenced {
             return Err(CoordError::RecoveryRequired);
         }
         let next_depth = self.depth.checked_add(1).ok_or(CoordError::Exhausted {
@@ -330,11 +341,12 @@ impl ExclusionHold for SharedHold {
     fn complete_recovery(&mut self) -> CoordResult<()> {
         let kept = self.kept.as_ref().ok_or(CoordError::Abandoned)?;
         let participant = &kept.participant;
+        let current_boot = boot(participant.vfs.as_ref())?;
         let _held = participant.hold_guard(kept.id)?;
         if self.depth > 0 {
             return Err(CoordError::ModificationOpen);
         }
-        if boot(participant.vfs.as_ref())? != participant.boot || participant.boot.is_none() {
+        if current_boot != participant.boot || participant.boot.is_none() {
             return Err(CoordError::RecoveryRequired);
         }
         if participant.words.word(Word::Ready).load(Ordering::Acquire) != format::READY {
