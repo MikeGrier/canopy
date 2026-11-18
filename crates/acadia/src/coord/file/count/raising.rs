@@ -39,10 +39,22 @@ impl Modifications {
 }
 
 impl FileCoordination {
-    /// Publishes `value` with `standing` in this boot, replacing the published record whole.
+    /// Publishes `value` with `standing` in this boot, replacing the published record whole. A
+    /// vouched count names its boot, so it is refused where the boot cannot be identified.
     pub(crate) fn publish_count(&self, value: u64, standing: Standing) -> CoordResult<()> {
         self.alive()?;
-        let boot = self.current_boot()?.unwrap_or_default();
+        let boot = match (self.current_boot()?, standing) {
+            (Some(boot), _) => boot,
+            (None, Standing::Untrusted) => Vec::new(),
+            (None, Standing::Vouched) => {
+                return Err(crate::VfsError::new(
+                    crate::VfsErrorKind::Unsupported,
+                    "boot_identity",
+                    "this filesystem cannot identify a boot",
+                )
+                .into());
+            }
+        };
         let layout = self.layout();
         self.vfs().create_dir_all(&layout.state_dir())?;
         self.replace_whole(

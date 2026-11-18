@@ -155,6 +155,32 @@ fn a_filesystem_that_cannot_identify_a_boot_never_trusts_the_state() {
 }
 
 #[test]
+fn a_recovery_on_a_filesystem_that_cannot_identify_a_boot_fails_and_changes_nothing() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let blind = participant_on(
+            &implementation,
+            boot_identity_failing(&mem, VfsErrorKind::Unsupported),
+            &root,
+        );
+        let mut hold = crate::coord::WriterExclusion::acquire(&blind, crate::coord::Waiting::Never)
+            .expect("acquire");
+        let count = blind.layout().count();
+        let before = mem.read(&count).ok();
+        assert!(matches!(
+            hold.complete_recovery(),
+            Err(CoordError::Vfs(error)) if error.kind() == VfsErrorKind::Unsupported
+        ));
+        assert_eq!(mem.read(&count).ok(), before, "no count was published");
+        assert!(matches!(
+            hold.begin_modification(crate::coord::Purpose::Ordinary),
+            Err(CoordError::RecoveryRequired)
+        ));
+    }
+}
+
+#[test]
 fn a_boot_identity_that_fails_is_an_error() {
     for implementation in implementations() {
         let mem = Backend::mem();

@@ -170,3 +170,14 @@ fn metadata_follows_a_link_and_a_listing_names_it() {
         ]
     );
 }
+
+/// A read of more than any buffer can hold is an error, never an abort.
+#[cfg(unix)]
+#[test]
+fn a_read_no_buffer_can_hold_is_an_error() {
+    let dir = Scratch::new("huge-read");
+    let path = dir.0.join("sparse");
+    fs::File::create(&path).unwrap().set_len(1 << 43).unwrap();
+    let refused = OsFs::new().read_at(&path, 0, usize::MAX).unwrap_err();
+    assert_eq!(refused.op(), "read_at");
+}

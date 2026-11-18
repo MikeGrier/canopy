@@ -402,3 +402,36 @@ No test: no supported target has an `off_t` narrower than `LockSpan`'s bound.
 ### <a id="m31-1"></a>M31-1 -- The notification tests' counters use acquire and release orderings. *(completed 2026-11-18 00:51:19 -05:00)*
 
 ### <a id="m31-2"></a>M31-2 -- The fifth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 00:51:19 -05:00)*
+
+## Moved 2026-11-18 -- Fixes from the sixth acadia review
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Sixth review fixes: an unidentified boot, inspection
+under abandonment, the reported fence, joining an ending epoch", which also records what did not
+hold. Each fix was shown by a failing test before it was made.
+
+### <a id="m32-1"></a>M32-1 -- File recovery on a filesystem that cannot identify its boot fails and changes nothing. *(completed 2026-11-18 03:34:53 -05:00)*
+
+### <a id="m32-2"></a>M32-2 -- Abandonment never releases writer exclusion while a discovery inspection runs. *(completed 2026-11-18 03:34:53 -05:00)*
+
+The test failed for the file implementation; a first version of it never reached the inspection,
+because discovery on a root with no state directory has no probe to lend.
+
+### <a id="m32-3"></a>M32-3 -- A recovery whose fence removal fails is seen as requiring recovery by every participant at once: does not hold, recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 03:34:53 -05:00)*
+
+### <a id="m32-4"></a>M32-4 -- Shared discovery reports the fence as set only when it is set. *(completed 2026-11-18 03:34:53 -05:00)*
+
+### <a id="m33-1"></a>M33-1 -- A participant joining a live shared epoch keeps the epoch it observed, or decides again. *(completed 2026-11-18 03:34:53 -05:00)*
+
+Reproduced over `MemFs` only; the native case was judged not to hold.
+
+### <a id="m33-2"></a>M33-2 -- An abandoned shared participant records no incomplete membership once `abandon` returns. *(completed 2026-11-18 03:34:53 -05:00)*
+
+### <a id="m34-1"></a>M34-1 -- `MemFs` drops replacement marks for durably absent children of a carried directory. *(completed 2026-11-18 03:34:53 -05:00)*
+
+### <a id="m34-2"></a>M34-2 -- `OsFs::read_at` returns an error, never panics, for a range no buffer can hold. *(completed 2026-11-18 03:34:53 -05:00)*
+
+Reproduced on a 64-bit target under WSL with a sparse 8 TiB file, which aborted the process.
+
+### <a id="m34-3"></a>M34-3 -- `OsFs::remove_file` on a directory fails as `IsADirectory` on Windows. *(completed 2026-11-18 03:34:53 -05:00)*
+
+### <a id="m35-1"></a>M35-1 -- The sixth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 03:34:53 -05:00)*

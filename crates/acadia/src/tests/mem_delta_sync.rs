@@ -271,3 +271,25 @@ fn removed_names_leave_no_marks_once_their_absence_is_durable() {
         assert_eq!(fs.replaced_marks(), 0);
     }
 }
+
+/// The same holds inside a directory whose contents are carried, because it stands where a
+/// durable file does and its parent has not been synced.
+#[test]
+fn removed_names_in_a_carried_directory_leave_no_marks_once_synced_away() {
+    for fs in [MemFs::new(), MemFs::with_full_directory_sync()] {
+        fs.create_dir_all(p("/d")).unwrap();
+        fs.write(p("/d/x"), b"durable").unwrap();
+        fs.fsync(p("/d/x")).unwrap();
+        fs.fsync(p("/d")).unwrap();
+        fs.remove_file(p("/d/x")).unwrap();
+        fs.create_dir(p("/d/x")).unwrap();
+        for i in 0..50 {
+            let child = PathBuf::from(format!("/d/x/c{i}"));
+            fs.create_dir(&child).unwrap();
+            fs.fsync(p("/d/x")).unwrap();
+            fs.remove_dir(&child).unwrap();
+            fs.fsync(p("/d/x")).unwrap();
+        }
+        assert_eq!(fs.replaced_marks(), 0);
+    }
+}

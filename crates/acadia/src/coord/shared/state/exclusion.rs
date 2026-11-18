@@ -406,10 +406,13 @@ impl RecoveryDiscovery for SharedState {
                         .fetch_or(format::FALSE, Ordering::AcqRel);
                 }
                 let snapshot = self.snapshot()?;
-                inspect();
-                self.alive()?;
+                {
+                    // Under the table `abandon` clears, so the probe is not released while it runs.
+                    let _held = self.hold_guard(_probe.id)?;
+                    inspect();
+                }
                 Ok(RecoveryNeed::new(
-                    snapshot.fenced || !snapshot.modification_count.is_multiple_of(2),
+                    snapshot.fenced,
                     match snapshot.trust {
                         Trust::Vouched => None,
                         Trust::Untrusted(reason) => Some(reason),

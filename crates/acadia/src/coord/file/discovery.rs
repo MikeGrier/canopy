@@ -39,7 +39,11 @@ impl RecoveryDiscovery for FileCoordination {
         let holder_died = !holder_alive && self.vfs().exists(&layout.owner())?;
         let trust = self.trust()?;
         if probe.is_some() {
-            inspect();
+            // Under the table `abandon` takes, so the probe is not released while it runs.
+            self.publishing(|_| {
+                inspect();
+                Ok(())
+            })?;
         }
         drop(probe);
         Ok(RecoveryNeed::new(

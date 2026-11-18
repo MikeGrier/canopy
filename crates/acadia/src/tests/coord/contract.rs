@@ -220,6 +220,60 @@ fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
 }
 
 #[test]
+fn a_holder_that_dies_mid_modification_is_reported_dead_and_not_fenced() {
+    on_every_contract("coord-contract-dead-unfenced", &|factory, backend| {
+        let observer = opened(factory, backend);
+        let mut first = observer.acquire(crate::coord::Waiting::Never).unwrap();
+        first.complete_recovery().unwrap();
+        first.release().unwrap();
+        let dying = opened(factory, backend);
+        let mut hold = dying.acquire(crate::coord::Waiting::Never).unwrap();
+        hold.begin_modification(Purpose::Ordinary).unwrap();
+        dying.abandon();
+        drop(hold);
+        let need = observer.discover_recovery().unwrap();
+        assert!(need.holder_died(), "{}", factory.implementation());
+        assert!(
+            !need.fenced(),
+            "{}: only an acquirer sets the fence",
+            factory.implementation()
+        );
+        assert!(need.required());
+    });
+}
+
+#[test]
+fn an_abandonment_waits_for_a_discovery_inspection_in_progress() {
+    on_every_contract("coord-contract-inspect-abandon", &|factory, backend| {
+        let participant: Arc<dyn Coordination> = Arc::from(opened(factory, backend));
+        participant
+            .acquire(crate::coord::Waiting::Never)
+            .unwrap()
+            .release()
+            .unwrap();
+        let target = Arc::clone(&participant);
+        let mut returned_during_inspection = None;
+        let discovered = participant.discover_recovery_with(&mut || {
+            let target = Arc::clone(&target);
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                target.abandon();
+                let _ = done.send(());
+            });
+            returned_during_inspection =
+                Some(recv_timeout(&finished, Duration::from_millis(200)).is_ok());
+        });
+        assert_eq!(
+            returned_during_inspection,
+            Some(false),
+            "{}: abandon returned while the inspection ran",
+            factory.implementation()
+        );
+        assert!(matches!(discovered, Ok(_) | Err(CoordError::Abandoned)));
+    });
+}
+
+#[test]
 fn an_abandoned_conversion_no_longer_reports_holding_the_gate() {
     on_every_contract(
         "coord-contract-conversion-abandoned",

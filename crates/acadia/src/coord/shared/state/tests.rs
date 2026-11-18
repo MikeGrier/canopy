@@ -155,6 +155,59 @@ fn identities_a_retry_issues_survive_a_crash_after_the_first_attempt_died_before
 }
 
 #[test]
+fn a_participant_joining_as_the_last_one_leaves_opens_the_state_it_found() {
+    let fs = filesystem();
+    let root = Path::new("/state");
+    let last = SharedState::open(fs.clone(), root).unwrap();
+    vouch(&last);
+    let leaving = Arc::new(Mutex::new(Some(last)));
+    let departing = Arc::clone(&leaving);
+    let policy = crate::FaultPolicy::new().inject(
+        crate::FaultOp::Read,
+        root.join(DIRECTORY).join("instance"),
+        crate::Fault::observe_with(move |_, _| {
+            drop(departing.lock().unwrap().take());
+        }),
+        crate::When::Once,
+    );
+    let joining = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    let joined = SharedState::open(joining, root).expect("the joiner opens");
+    assert!(leaving.lock().unwrap().is_none(), "the last one left");
+    assert!(joined.snapshot().is_ok());
+}
+
+#[test]
+fn a_first_registration_abandoned_part_way_records_no_incomplete_membership() {
+    let fs = filesystem();
+    let root = Path::new("/state");
+    let witness = SharedState::open(fs.clone(), root).unwrap();
+    let target: Arc<std::sync::OnceLock<Arc<SharedState>>> = Arc::default();
+    let abandoning = Arc::clone(&target);
+    let policy = crate::FaultPolicy::new().inject_matching(
+        crate::FaultOp::TryLock,
+        crate::PathMatcher::file_name_prefix("registry-claims"),
+        crate::Fault::observe_with(move |_, _| {
+            abandoning.get().expect("installed").abandon();
+        }),
+        crate::When::Once,
+    );
+    let vfs = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    let participant = Arc::new(SharedState::open(vfs, root).unwrap());
+    let _ = target.set(Arc::clone(&participant));
+    let mut attachment = participant.attach(Access::Read, Waiting::Never).unwrap();
+    assert!(matches!(
+        attachment.register(b"payload"),
+        Err(CoordError::Abandoned)
+    ));
+    assert!(
+        !fs.exists(&root.join(DIRECTORY).join("registry-overflow"))
+            .unwrap(),
+        "an abandoned participant recorded incomplete membership"
+    );
+    assert!(!witness.list().unwrap().may_be_incomplete);
+}
+
+#[test]
 fn an_epoch_write_cut_short_leaves_a_root_the_next_participant_opens() {
     let fs = filesystem();
     let root = Path::new("/state");

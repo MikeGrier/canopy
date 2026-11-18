@@ -342,3 +342,20 @@ publish it.
   another character.
 - **`metadata` keeps following links**, because the alternative would make a store root reached
   through a link unusable, which no caller has asked for and canopy relies on.
+
+## The sixth review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Sixth review fixes: an unidentified
+boot, inspection under abandonment, the reported fence, joining an ending epoch".
+
+- **An inspection holds off abandonment** rather than being told afterwards that its participant
+  died. The review suggested a lease that abandonment drains; the guards the implementations
+  already have for changes in progress are that lease, and reusing them keeps one rule: once
+  `abandon` returns, the participant does and observes nothing more. Reporting `Abandoned` after
+  the inspection was rejected because the caller has already read records no probe protected.
+- **A joiner that finds the model's words gone opens again** rather than treating the root as
+  damaged or making fresh words as a joiner. Opening again sends it through the one path that
+  decides an epoch, and the attempt cannot repeat without bound, since it repeats only when the
+  last participant left, after which the next attempt finds none.
+- **A vouched count without a boot is refused at its publication** rather than at recovery's
+  start, so every path that would publish one meets the same refusal.

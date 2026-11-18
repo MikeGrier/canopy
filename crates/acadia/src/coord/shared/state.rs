@@ -228,6 +228,16 @@ impl SharedState {
     /// Reached only through a participant, which first refuses a root another implementation
     /// reserved.
     pub(crate) fn open(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Self> {
+        loop {
+            if let Some(state) = Self::open_once(Arc::clone(&vfs), root)? {
+                return Ok(state);
+            }
+        }
+    }
+
+    /// One attempt at [`open`](Self::open), or `None` when the epoch it would join ended between
+    /// finding a live participant and joining it, so the attempt must decide again.
+    fn open_once(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Option<Self>> {
         vfs.read_dir(root)?;
         let directory = root.join(DIRECTORY);
         match vfs.metadata(&directory) {
@@ -393,6 +403,9 @@ impl SharedState {
             models.retain(|_, words| words.strong_count() > 0);
             if let Some(words) = models.get(&key).and_then(Weak::upgrade) {
                 words
+            } else if !first {
+                // The model's words live only as long as a participant does, so the last one left.
+                return Ok(None);
             } else {
                 let words = Arc::new(Words::Model(
                     (0..WORD_COUNT).map(|_| AtomicU64::new(0)).collect(),
@@ -444,7 +457,7 @@ impl SharedState {
             LockMode::Shared,
             LockSpan::File,
         )?;
-        Ok(Self {
+        Ok(Some(Self {
             vfs,
             directory,
             words,
@@ -454,7 +467,7 @@ impl SharedState {
             holds: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             hook: None,
-        })
+        }))
     }
 
     /// This participant, announcing each later step that changes the shared words to `hook`.

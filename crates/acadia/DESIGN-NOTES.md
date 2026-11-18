@@ -1089,6 +1089,11 @@ This behavior supports store attachment[^m8-2]; it changes neither admission nor
 
 ## Recovery discovery lends a read-only inspection, 2026-11-14
 
+> **SUPERSEDED in part, 2026-11-18, by "Sixth review fixes: an unidentified boot, inspection
+> under abandonment, the reported fence, joining an ending epoch" below.** An abandonment of the
+> participant waits for an inspection in progress, so the inspection must not call into its own
+> participant. The rest of this decision stands.
+
 `RecoveryDiscovery::discover_recovery_with` invokes its inspection only when its probe holds
 free writer exclusion, before releasing that probe. The inspection may read caller-owned
 recovery records but must not mutate or acquire exclusion. Held exclusion skips inspection;
@@ -1765,3 +1770,63 @@ The backends:
   engineer; the order is argued above instead.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The fifth review, 2026-11-18".
+
+## Sixth review fixes: an unidentified boot, inspection under abandonment, the reported fence, joining an ending epoch, 2026-11-18
+
+A sixth review of the crate, made on 2026-11-18, raised eight findings and one suspicion. Each one
+that held was shown by a failing test before it was fixed; the work is milestones M32 to M35 in
+[CHECKLIST.md](CHECKLIST.md). What did not hold, or held in part, is recorded at the end.
+
+Recovery and discovery:
+
+- **A vouched count names its boot.** The file implementation refuses to publish a vouched count
+  where the filesystem cannot identify a boot, as it refuses to record the boot vouched, so a
+  recovery there fails, changes nothing and leaves ordinary work refused. A count published
+  without a boot could never be read back as vouched, so a recovery that published one would
+  report success over state no participant trusts. The shared implementation refuses the same
+  case before it changes anything.
+- **An abandonment waits for a discovery inspection in progress.** Both implementations run the
+  inspection under the guard `abandon` takes -- the file implementation's table of holds through
+  `publishing`, the shared one's hold table with the probe still in it -- so the probe is not
+  released, and no writer acquires, while the inspection runs. The inspection must therefore not
+  call into its own participant, which the contract states.
+- **Discovery reports the fence as it is.** The shared implementation reported a fence wherever
+  the count was odd; `RecoveryNeed::fenced` says whether the fence is set, and a holder that died
+  mid-modification is reported through `holder_died`, which already makes recovery required.
+  A contract case holds both implementations to it.
+
+Shared state:
+
+- **A participant joining an epoch that ends while it joins decides again.** Over `MemFs` the
+  epoch's words live only as long as a participant does, so a joiner that finds them gone after
+  its liveness probe saw a participant opens again from the start, now as the first. A native
+  joiner holds the setup lock from its probe to its join, so no initializer runs between them and
+  it joins the words the last participant left, as it would had it joined just before that one
+  left.
+- **An abandoned participant records no incomplete membership.** The best-effort record a failed
+  first registration leaves is published under the hold table `abandon` clears, and only while
+  the participant is alive.
+
+The backends:
+
+- **`MemFs` drops replacement marks inside a carried directory too.** A sync into a carried
+  snapshot prunes the marks for children it made absent there, as a sync of the durable tree does.
+- **`OsFs::read_at` reserves its buffer fallibly**, so a range larger than memory can hold is
+  `StorageFull` rather than an abort.
+- **`OsFs::remove_file` of a directory fails as `IsADirectory` on Windows**, which refuses it with
+  access denied; the conformance case asserts the kind.
+
+### Findings that did not hold, or held only in part
+
+- **A failed fence removal leaves discovery and the recovering hold disagreeing.** On a root with
+  no fence, a recovery whose fence removal then fails leaves state that is trusted and settled,
+  with no fence, while its writer still holds exclusion. That is the state
+  [Coordination.tla](../canopy/spec/Coordination.tla) is in between `RecCount` and `RecClear` when
+  no fence was set, and discovery reports what the model reports there: no recovery required,
+  since the writer is live. The hold refuses its own ordinary work, and its release sets the
+  fence, so the failure is never lost. Skipping the removal of an absent fence, which the review
+  proposed, is the change canopy's replay refused on 2026-11-18.
+- **Joining a native epoch whose last participant leaves.** As above: the setup lock serializes
+  the join with any initializer, so the joiner continues the epoch rather than finding a gap in it.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The sixth review, 2026-11-18".

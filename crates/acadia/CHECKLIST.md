@@ -179,3 +179,29 @@ failing test before it is fixed; a finding that does not hold is recorded in
 
 - [x] **M31-1** -- The notification tests' counters use acquire and release orderings. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m31-1)
 - [x] **M31-2** -- The fifth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m31-2)
+
+## M32 -- Sixth review: recovery and discovery
+
+Review report: findings of the sixth acadia review (GPT-6.2 Astra, 2026-11-18), each confirmed by a
+failing test before it is fixed; a finding that does not hold is recorded in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) instead of being changed.
+
+- [x] **M32-1** -- File recovery on a filesystem that cannot identify its boot fails and changes nothing. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m32-1)
+- [x] **M32-2** -- Abandonment never releases writer exclusion while a discovery inspection runs. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m32-2)
+- [x] **M32-3** -- A recovery whose fence removal fails is seen as requiring recovery by every participant at once: does not hold, recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m32-3)
+- [x] **M32-4** -- Shared discovery reports the fence as set only when it is set. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m32-4)
+
+## M33 -- Sixth review: shared epoch and registry
+
+- [x] **M33-1** -- A participant joining a live shared epoch keeps the epoch it observed, or decides again. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m33-1)
+- [x] **M33-2** -- An abandoned shared participant records no incomplete membership once `abandon` returns. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m33-2)
+
+## M34 -- Sixth review: the backends
+
+- [x] **M34-1** -- `MemFs` drops replacement marks for durably absent children of a carried directory. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m34-1)
+- [x] **M34-2** -- `OsFs::read_at` returns an error, never panics, for a range no buffer can hold. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m34-2)
+- [x] **M34-3** -- `OsFs::remove_file` on a directory fails as `IsADirectory` on Windows. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m34-3)
+
+## M35 -- Sixth review: records
+
+- [x] **M35-1** -- The sixth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m35-1)

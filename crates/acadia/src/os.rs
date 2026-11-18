@@ -625,9 +625,9 @@ fn is_contention(e: &io::Error) -> bool {
     }
 }
 
-/// The error of a read's open of `path`: Windows refuses to open a directory as a file with
-/// access denied, which the contract reports as [`VfsErrorKind::IsADirectory`].
-fn read_open_err(op: &'static str, path: &Path, e: &io::Error) -> VfsError {
+/// The error of a file operation on `path`: Windows refuses to open or remove a directory as a
+/// file with access denied, which the contract reports as [`VfsErrorKind::IsADirectory`].
+fn file_op_err(op: &'static str, path: &Path, e: &io::Error) -> VfsError {
     if e.kind() == io::ErrorKind::PermissionDenied
         && fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
     {
@@ -638,11 +638,11 @@ fn read_open_err(op: &'static str, path: &Path, e: &io::Error) -> VfsError {
 
 impl Vfs for OsFs {
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
-        fs::read(path).map_err(|e| read_open_err("read", path, &e))
+        fs::read(path).map_err(|e| file_op_err("read", path, &e))
     }
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
-        let file = fs::File::open(path).map_err(|e| read_open_err("read_at", path, &e))?;
+        let file = fs::File::open(path).map_err(|e| file_op_err("read_at", path, &e))?;
         let metadata = file.metadata().map_err(|e| err("read_at", path, &e))?;
         // Unix opens a directory for reading; checked before the range so an empty or
         // past-the-end read cannot succeed on one.
@@ -658,7 +658,18 @@ impl Vfs for OsFs {
         let wanted = file_len
             .saturating_sub(offset)
             .min(u64::try_from(len).unwrap_or(u64::MAX));
-        let mut bytes = vec![0u8; usize::try_from(wanted).unwrap_or(0)];
+        let no_room = || {
+            VfsError::new(
+                VfsErrorKind::StorageFull,
+                "read_at",
+                "the range is larger than memory can hold",
+            )
+            .with_path(path)
+        };
+        let wanted = usize::try_from(wanted).map_err(|_| no_room())?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(wanted).map_err(|_| no_room())?;
+        bytes.resize(wanted, 0);
         let mut filled = 0usize;
         while filled < bytes.len() {
             let read = read_positioned(&file, &mut bytes[filled..], offset + filled as u64)
@@ -719,7 +730,7 @@ impl Vfs for OsFs {
     }
 
     fn remove_file(&self, path: &Path) -> VfsResult<()> {
-        fs::remove_file(path).map_err(|e| err("remove_file", path, &e))
+        fs::remove_file(path).map_err(|e| file_op_err("remove_file", path, &e))
     }
 
     fn create_dir(&self, path: &Path) -> VfsResult<()> {

@@ -35,5 +35,7 @@ pub trait RecoveryDiscovery {
 
     /// Calls `inspect` only when exclusion is free, while preventing a writer from acquiring it.
     /// The inspection may read caller-owned recovery records but must not mutate or acquire exclusion.
+    /// An abandonment of this participant waits for the inspection to return, so the inspection must
+    /// not call into this participant.
     fn discover_recovery_with(&self, inspect: &mut dyn FnMut()) -> CoordResult<RecoveryNeed>;
 }

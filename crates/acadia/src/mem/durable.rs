@@ -321,7 +321,27 @@ fn sync_snapshot(
             || !marked.starts_with(parts)
             || matches!(live_children.get(&marked[parts.len()]), Some(Node::Dir(_)))
     });
+    retain_replaced_marks(books.replaced, books.carried, parts, live_children);
     Ok(())
+}
+
+/// Drops the replacement marks at and beneath each child of `parts` that a sync has just made
+/// absent in what it reconciled: no directory is left there for a mark to start from empty,
+/// unless a carried snapshot is.
+pub(super) fn retain_replaced_marks(
+    replaced: &mut HashSet<Vec<OsString>>,
+    carried: &HashMap<Vec<OsString>, Node>,
+    parts: &[OsString],
+    live_children: &BTreeMap<OsString, Node>,
+) {
+    replaced.retain(|marked| {
+        marked.len() <= parts.len()
+            || !marked.starts_with(parts)
+            || live_children.contains_key(&marked[parts.len()])
+            || carried
+                .keys()
+                .any(|key| key.starts_with(&marked[..=parts.len()]))
+    });
 }
 
 /// Empties the directory at `relative` inside `snapshot`, releasing what it held. Returns

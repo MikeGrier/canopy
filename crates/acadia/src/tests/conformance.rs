@@ -347,7 +347,7 @@ fn os_error_edge_cases_surface_typed_errors() {
     fs.write(&f, b"x").unwrap();
     assert!(fs.read_dir(&f).is_err());
     assert!(fs.remove_dir(&f).is_err());
-    assert!(fs.remove_file(&d).is_err());
+    assert_kind(fs.remove_file(&d), VfsErrorKind::IsADirectory);
     let d2 = root.join("d2");
     fs.create_dir(&d2).unwrap();
     fs.write(&d2.join("c"), b"y").unwrap();
