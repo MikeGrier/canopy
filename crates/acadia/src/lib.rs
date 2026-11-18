@@ -460,12 +460,16 @@ pub trait Vfs: Send + Sync {
     /// [`VfsErrorKind::NotADirectory`] if `path` is not a directory.
     fn read_dir(&self, path: &Path) -> VfsResult<Vec<DirEntry>>;
 
-    /// Returns the [`Metadata`] for the entry at `path`.
+    /// Returns the [`Metadata`] for what `path` names, following symbolic links as every path
+    /// operation does, so a link to a directory describes the directory. [`read_dir`](Vfs::read_dir)
+    /// differs because a listing names entries without resolving them, and reports a link as
+    /// [`FileType::Other`].
     ///
-    /// Fails with [`VfsErrorKind::NotFound`] if nothing exists at `path`.
+    /// Fails with [`VfsErrorKind::NotFound`] if `path` names nothing, including a link that leads
+    /// nowhere.
     fn metadata(&self, path: &Path) -> VfsResult<Metadata>;
 
-    /// Whether anything exists at `path`.
+    /// Whether `path` names anything, following symbolic links as [`metadata`](Vfs::metadata) does.
     ///
     /// A convenience over [`metadata`](Vfs::metadata): a
     /// [`VfsErrorKind::NotFound`] becomes `Ok(false)`; any other error still

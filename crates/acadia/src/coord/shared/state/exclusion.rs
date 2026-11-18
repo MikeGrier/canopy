@@ -351,15 +351,20 @@ impl ExclusionHold for SharedHold {
             })?
         };
         announce!(participant, PublishRecovered);
-        participant
+        // Vouched before the count: a sample that reads the even count synchronizes with its
+        // publication and so sees the state vouched, and a death between the two leaves an odd
+        // count beside vouched state, which the dead holder's ownership still fences.
+        let vouched = participant.words.word(Word::Vouched);
+        let was_vouched = vouched.swap(format::TRUE, Ordering::AcqRel);
+        if participant
             .words
             .word(Word::Count)
             .compare_exchange(current, even, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| failure("recovery count changed beneath its hold"))?;
-        participant
-            .words
-            .word(Word::Vouched)
-            .store(format::TRUE, Ordering::Release);
+            .is_err()
+        {
+            vouched.store(was_vouched, Ordering::Release);
+            return Err(failure("recovery count changed beneath its hold"));
+        }
         announce!(participant, ClearFence);
         participant
             .words

@@ -162,6 +162,12 @@ impl MemFs {
         self.tree().examined_entries
     }
 
+    /// How many paths are marked replaced, so a test can see the marks do not accumulate.
+    #[cfg(test)]
+    pub(crate) fn replaced_marks(&self) -> usize {
+        self.tree().replaced.len()
+    }
+
     /// An independent filesystem starting from this one's whole state, what is durable and
     /// what is not yet alike, so an expensive fixture can be built once and copied per test.
     ///

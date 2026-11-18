@@ -37,20 +37,26 @@ fn owner_recorded(participant: &FileCoordination) -> bool {
         .expect("exists")
 }
 
-/// A recovery cut short at any step of a root never vouched for, whose holder died, leaves the
-/// sample settled exactly
-/// when the state is trusted, and recovery required exactly while the state is untrusted or
-/// fenced: the vouched count is the step that makes the state trusted and settled together.
+/// A recovery cut short at any step of a root never vouched for -- fenced by a dead holder or not --
+/// leaves the sample settled exactly when the state is trusted, and recovery required exactly when
+/// the recovery failed: the vouched count makes the state trusted and settled together, and only
+/// the fence's removal follows it.
 #[test]
 fn a_recovery_cut_short_at_any_step_never_leaves_a_settled_sample_beside_untrusted_state() {
     for implementation in implementations() {
-        for op in [FaultOp::Write, FaultOp::Rename, FaultOp::RemoveFile] {
+        for (op, holder_died) in [FaultOp::Write, FaultOp::Rename, FaultOp::RemoveFile]
+            .into_iter()
+            .flat_map(|op| [(op, true), (op, false)])
+        {
             for n in 1.. {
                 let mem = Backend::mem();
                 let root = PathBuf::from(Backend::MEM_ROOT);
-                let dying = participant_on(&implementation, Arc::new(mem.another_process()), &root);
-                let _dead = acquire(&dying);
-                dying.abandon();
+                if holder_died {
+                    let dying =
+                        participant_on(&implementation, Arc::new(mem.another_process()), &root);
+                    let _dead = acquire(&dying);
+                    dying.abandon();
+                }
                 let gate = FaultGate::closed();
                 let policy = FaultPolicy::new().inject_gated(
                     op,
@@ -63,7 +69,7 @@ fn a_recovery_cut_short_at_any_step_never_leaves_a_settled_sample_beside_untrust
                     std::sync::Arc::new(FaultyFs::new(mem.another_process(), policy));
                 let recovering = participant_on(&implementation, vfs, &root);
                 let mut hold = acquire(&recovering);
-                assert!(hold.acquired().fenced(), "the death fenced the root");
+                assert_eq!(hold.acquired().fenced(), holder_died);
                 gate.open();
                 let completed = hold.complete_recovery();
                 gate.close();
@@ -78,13 +84,13 @@ fn a_recovery_cut_short_at_any_step_never_leaves_a_settled_sample_beside_untrust
                 assert_eq!(
                     sample.is_settled(),
                     trust == Trust::Vouched,
-                    "{op:?} {n}: {sample:?} beside {trust:?}"
+                    "{op:?} {n} {holder_died}: {sample:?} beside {trust:?}"
                 );
                 let next = acquire(&observer);
                 assert_eq!(
                     next.acquired().recovery_required(),
                     completed.is_err(),
-                    "{op:?} {n}: {completed:?}"
+                    "{op:?} {n} {holder_died}: {completed:?}"
                 );
                 if completed.is_ok() {
                     break;
@@ -450,6 +456,46 @@ fn a_restart_requires_recovery_and_remakes_the_boot_record() {
             Trust::Untrusted(Untrusted::Created),
             "remade in this boot, untrusted"
         );
+    }
+}
+
+/// After a restart the generation may be unreadable, which the first acquisition of the new boot
+/// repairs; an acquisition that fails part way through that repair leaves it for the next.
+#[test]
+fn a_restart_repair_cut_short_is_finished_by_the_next_acquisition() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let mine = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        recovered(&mine);
+        let layout = mine.layout();
+        for path in [
+            layout.boot(),
+            layout.generation(),
+            layout.state_dir(),
+            root.clone(),
+        ] {
+            mem.fsync(&path).expect("sync");
+        }
+        mem.simulate_crash();
+        mem.write(&layout.generation(), b"")
+            .expect("lose the contents");
+        let gate = FaultGate::opened();
+        let unlucky = failing(
+            &implementation,
+            &mem,
+            FaultOp::Write,
+            "generation.staging.",
+            &gate,
+        );
+        assert!(unlucky.acquire(Waiting::Never).is_err());
+        gate.close();
+        let next = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let found = next
+            .acquire(Waiting::Never)
+            .expect("the next acquisition finishes the repair");
+        assert_eq!(found.acquired().found(), Generation::new(0));
+        assert!(found.acquired().recovery_required());
     }
 }
 

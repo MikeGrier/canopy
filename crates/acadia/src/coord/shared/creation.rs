@@ -227,6 +227,21 @@ impl SharedParticipant {
         Ok(Created::Existing)
     }
 
+    /// Publishes `bytes` at `path` under the table `abandon` clears, with `hold` still in it, so
+    /// nothing is published once `abandon` has returned.
+    fn publish_held(&self, hold: &CreationHold, path: &Path, bytes: &[u8]) -> CoordResult<()> {
+        let owned = self
+            .inner
+            .creation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !owned.contains_key(&hold.id) {
+            return Err(CoordError::Abandoned);
+        }
+        self.alive()?;
+        Ok(self.inner.vfs.publish_new(path, bytes)?)
+    }
+
     fn settle(
         &self,
         hold: &CreationHold,
@@ -243,21 +258,8 @@ impl SharedParticipant {
                     nonce,
                     inputs: inputs.to_vec(),
                 };
-                // Published under the table `abandon` clears, with this hold still in it, so no
-                // reservation is published once `abandon` has returned.
-                let owned = self
-                    .inner
-                    .creation
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if !owned.contains_key(&hold.id) {
-                    return Err(CoordError::Abandoned);
-                }
-                self.alive()?;
-                let published = self.inner.vfs.publish_new(&path, &reservation.encode());
-                drop(owned);
-                match published {
-                    Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {
+                match self.publish_held(hold, &path, &reservation.encode()) {
+                    Err(CoordError::Vfs(error)) if error.kind() == VfsErrorKind::AlreadyExists => {
                         return Err(CoordError::Reserved);
                     }
                     result => result?,
@@ -300,9 +302,14 @@ impl Creation for SharedParticipant {
             return Err(CoordError::Reserved);
         }
         let result = self.settle(&creation, course, plan.inputs, plan.nonce)?;
-        make_artifacts(plan, maker, &*self.inner.vfs, &self.inner.root, &|| {
-            self.alive()
-        })?;
+        make_artifacts(
+            plan,
+            maker,
+            &*self.inner.vfs,
+            &self.inner.root,
+            &|| self.alive(),
+            &|path, bytes| self.publish_held(&creation, path, bytes),
+        )?;
         Ok(result)
     }
 

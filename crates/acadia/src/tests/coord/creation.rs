@@ -329,7 +329,11 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
         let vfs = backend.process();
         let root = backend.root();
         let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
-        let bad: [&[&str]; 12] = [
+        let bad: [&[&str]; 16] = [
+            &["\u{1f80}", "\u{1f88}"],
+            &["\u{1fb3}x", "\u{1fbc}X", "marker"],
+            &["\u{1f80}", "\u{1f88}.publishing.1-0"],
+            &["\u{1ff3}", "\u{1ffc}"],
             &[],
             &["dir/marker"],
             &[".."],

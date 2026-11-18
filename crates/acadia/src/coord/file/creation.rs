@@ -223,9 +223,14 @@ impl Creation for FileCoordination {
             return Err(CoordError::Reserved);
         }
         let created = self.settle_reservation(course, plan.inputs, plan.nonce)?;
-        make_artifacts(plan, maker, self.vfs(), self.layout().root(), &|| {
-            self.alive()
-        })?;
+        make_artifacts(
+            plan,
+            maker,
+            self.vfs(),
+            self.layout().root(),
+            &|| self.alive(),
+            &|path, bytes| self.publishing(|vfs| vfs.publish_new(path, bytes)),
+        )?;
         Ok(created)
     }
 

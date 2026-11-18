@@ -192,7 +192,7 @@ fn a_participant_samples_nothing_while_no_registration_is_outstanding() {
                 FaultOp::Read,
                 writer.layout().count(),
                 Fault::observe_with(move |_, _| {
-                    reads.fetch_add(1, Ordering::Relaxed);
+                    reads.fetch_add(1, Ordering::AcqRel);
                 }),
                 When::Always,
             )
@@ -200,13 +200,13 @@ fn a_participant_samples_nothing_while_no_registration_is_outstanding() {
         let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(mem.another_process(), policy));
         let waiter = participant_on(&implementation, vfs, &root);
         sleep(Duration::from_millis(50));
-        assert_eq!(reads.load(Ordering::Relaxed), 0, "nothing registered");
+        assert_eq!(reads.load(Ordering::Acquire), 0, "nothing registered");
         let started = Instant::now();
         let deadline = started + Duration::from_millis(300);
         let (_notice, rings) = registered(&waiter, ModCount::new(2), deadline);
         recv_timeout(&rings, LONG).expect("the deadline rings it");
         let elapsed = started.elapsed();
-        let sampled = reads.load(Ordering::Relaxed);
+        let sampled = reads.load(Ordering::Acquire);
         assert!(sampled >= 1, "it was sampled while outstanding");
         let bound = 8 + usize::try_from(elapsed.as_millis() / 32).expect("small");
         assert!(
@@ -215,16 +215,16 @@ fn a_participant_samples_nothing_while_no_registration_is_outstanding() {
         );
         sleep(Duration::from_millis(100));
         assert_eq!(
-            reads.load(Ordering::Relaxed),
+            reads.load(Ordering::Acquire),
             sampled,
             "none once no registration is outstanding"
         );
         let (_notice, rings) = registered(&waiter, ModCount::new(0), far());
         recv_timeout(&rings, LONG).expect("the count differs");
-        let sampled = reads.load(Ordering::Relaxed);
+        let sampled = reads.load(Ordering::Acquire);
         sleep(Duration::from_millis(100));
         assert_eq!(
-            reads.load(Ordering::Relaxed),
+            reads.load(Ordering::Acquire),
             sampled,
             "none once a registration has rung, though its notice is held"
         );
@@ -331,7 +331,7 @@ mod os {
                 FaultOp::Read,
                 writer.layout().count(),
                 Fault::observe_with(move |_, _| {
-                    reads.fetch_add(1, Ordering::Relaxed);
+                    reads.fetch_add(1, Ordering::AcqRel);
                 }),
                 When::Always,
             )
@@ -357,10 +357,10 @@ mod os {
                 }),
             )
             .expect("notify");
-        let registered = reads.load(Ordering::Relaxed);
+        let registered = reads.load(Ordering::Acquire);
         sleep(Duration::from_millis(300));
         assert_eq!(
-            reads.load(Ordering::Relaxed),
+            reads.load(Ordering::Acquire),
             registered,
             "a registration the system notifies samples nothing while it waits"
         );

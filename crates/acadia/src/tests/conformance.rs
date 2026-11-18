@@ -1056,14 +1056,16 @@ fn read_at_reports_a_missing_file_and_a_directory_as_typed_errors() {
         // directory look like an empty file.
         for (offset, len) in [(0, 1), (0, 0), (1 << 20, 1), (1 << 20, 0)] {
             let directory = fs.read_at(root, offset, len).unwrap_err();
-            assert!(
-                matches!(
-                    directory.kind(),
-                    VfsErrorKind::IsADirectory | VfsErrorKind::PermissionDenied
-                ),
+            assert_eq!(
+                directory.kind(),
+                VfsErrorKind::IsADirectory,
                 "offset {offset} len {len}: {directory}"
             );
         }
+        assert_eq!(
+            fs.read(root).unwrap_err().kind(),
+            VfsErrorKind::IsADirectory
+        );
     });
 }
 

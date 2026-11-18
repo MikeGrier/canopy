@@ -317,3 +317,28 @@ that did not verify recorded rather than changed.
   reference that keys them by name makes a test pass on `MemFs` that fails on the OS after a rename.
   The cost is a change in what a crash does to a lock on an erased file, which now follows the same
   rule: the lock belongs to the file, and the file is gone.
+
+## The fifth review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Fifth review fixes: recovery's commit
+point, restart repair, foreign roots and the marker under abandonment". Five of its findings showed
+fixes of the fourth review that were incomplete, each because the fix had been reasoned about from
+one starting state: recovery on a root a dead holder had already fenced, a shared participant
+checked when it first opened its state, and a marker made atomic without asking who may still
+publish it.
+
+- **Recovery lost its boot-record write** rather than gaining a fence of its own. Setting a fence
+  at the start of recovery, so that every later step was covered, was tried on 2026-11-17 and
+  refused by canopy's replay of the model, which never sets a fence in recovery. The count record
+  already carries the trust, so the boot record's vouching added nothing a reader relied on.
+- **The restart repair was reordered** rather than given an explicit "repair in progress" record:
+  the record from another boot already is that record, provided it outlives the repair.
+- **The marker's publication was handed to each implementation** rather than given a liveness
+  check before and after, because only the guard `abandon` itself takes can order a publication
+  with it.
+- **The simple uppercase mapping is supplied by a short table** rather than a dependency. The
+  standard library gives only the full mapping, and the characters whose full mapping is several
+  characters are a closed set in which only the Greek letters with ypogegrammeni simple-map to
+  another character.
+- **`metadata` keeps following links**, because the alternative would make a store root reached
+  through a link unusable, which no caller has asked for and canopy relies on.

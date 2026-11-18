@@ -137,3 +137,36 @@ fn a_publication_racing_a_directory_of_its_name_refuses() {
         "no staging sibling is left"
     );
 }
+
+/// `metadata` and `exists` follow a symbolic link, as every path operation does; a listing names
+/// the link itself.
+#[cfg(unix)]
+#[test]
+fn metadata_follows_a_link_and_a_listing_names_it() {
+    let dir = Scratch::new("links");
+    let target = dir.0.join("target");
+    fs::write(&target, b"bytes").unwrap();
+    std::os::unix::fs::symlink(&target, dir.0.join("link")).unwrap();
+    std::os::unix::fs::symlink(dir.0.join("nowhere"), dir.0.join("dangling")).unwrap();
+    let os = OsFs::new();
+
+    let followed = os.metadata(&dir.0.join("link")).unwrap();
+    assert_eq!(followed.file_type, FileType::File);
+    assert_eq!(followed.len, 5);
+    assert!(!os.exists(&dir.0.join("dangling")).unwrap());
+    let mut listed: Vec<_> = os
+        .read_dir(&dir.0)
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.file_name.into_string().unwrap(), entry.file_type))
+        .collect();
+    listed.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        listed,
+        [
+            ("dangling".to_owned(), FileType::Other),
+            ("link".to_owned(), FileType::Other),
+            ("target".to_owned(), FileType::File),
+        ]
+    );
+}

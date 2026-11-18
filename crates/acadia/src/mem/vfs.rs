@@ -10,9 +10,13 @@ impl Vfs for MemFs {
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read", path)? {
             Node::File(id) => {
-                let bytes = guard.live_data.get(id).cloned().unwrap_or_default();
+                let bytes = guard
+                    .live_data
+                    .get(id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
                 holds.check(*id, Access::Read, 0, bytes.len() as u64, "read", path)?;
-                Ok(bytes)
+                Ok(bytes.to_vec())
             }
             Node::Dir(_) => Err(err(
                 VfsErrorKind::IsADirectory,

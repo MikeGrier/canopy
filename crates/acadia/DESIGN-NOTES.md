@@ -712,6 +712,11 @@ open.
 
 ## A host restart is recognised from the boot identity the filesystem reports, 2026-11-13
 
+> **SUPERSEDED in part, 2026-11-18, by "Fifth review fixes: recovery's commit point, restart
+> repair, foreign roots and the marker under abandonment" below.** A completed recovery vouches
+> for the state through the count record alone; the file implementation never records the boot
+> vouched. Read the banner below as well.
+
 > **SUPERSEDED in part, 2026-11-17, by "Fourth review fixes: markers, plan names, recovery order,
 > foreign roots and MemFs locks" below.** The file implementation's state is also trusted when
 > the count record is vouched and from this boot, whatever the boot record says: the vouched count
@@ -821,6 +826,12 @@ the harness's own timeout ended the run.
     [completed 2026-11-13; `d7daade`]
 
 ## The hold of writer exclusion keeps its bookkeeping in files replaced whole, 2026-11-13
+
+> **SUPERSEDED in part, 2026-11-18, by "Fifth review fixes: recovery's commit point, restart
+> repair, foreign roots and the marker under abandonment" below.** Acquiring remakes the boot
+> record after it writes the advanced generation, not before reading it. `complete_recovery`
+> publishes the vouched even count and removes the fence; it does not record the boot vouched.
+> The rest of this decision stands.
 
 The file-based implementation's `ExclusionHold` keeps the ownership record, the fence, the
 generation and the boot record under the exclusion lock, as canopy's design states them (canopy's
@@ -1551,6 +1562,13 @@ publication on Windows".
 
 ## Fourth review fixes: markers, plan names, recovery order, foreign roots and MemFs locks, 2026-11-17
 
+> **SUPERSEDED in part, 2026-11-18, by "Fifth review fixes: recovery's commit point, restart
+> repair, foreign roots and the marker under abandonment" below.** The file implementation's
+> recovery does not record the boot vouched after the count; the shared implementation stores
+> `Vouched` before its count; a shared participant checks the reservation on every acquisition
+> and attachment, not only at first use; and the marker is published under the guard that
+> serializes abandonment. The rest of this decision stands.
+
 A fourth review of the crate, made on 2026-11-17, raised twenty-three findings. Each one that held
 was shown by a failing test, or by a model control that a probe catches, before it was fixed; the
 work is milestones M22 to M27 in [CHECKLIST.md](CHECKLIST.md). Those that did not hold, or held
@@ -1670,3 +1688,80 @@ The backends:
   link stays and a failure to remove the staging name fails the publication.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The fourth 2026-11-17 review".
+
+## Fifth review fixes: recovery's commit point, restart repair, foreign roots and the marker under abandonment, 2026-11-18
+
+A fifth review of the crate, made on 2026-11-18, raised ten findings and two suspicions, five of
+them against fixes of the fourth. Each one that held was shown by a failing test before it was
+fixed, except where noted; the work is milestones M28 to M31 in [CHECKLIST.md](CHECKLIST.md). What
+did not hold, or held in part, is recorded at the end.
+
+Writer exclusion and recovery:
+
+- **Recovery is two steps, as [Coordination.tla](../canopy/spec/Coordination.tla)'s `RecCount`
+  and `RecClear` are.** The file implementation publishes the vouched even count, which makes the
+  state trusted and settled together, then removes the fence. It does not record the boot vouched:
+  a step after the count that could fail on a root with no fence would leave trusted, unfenced
+  state behind an error that says recovery is still required. A failure to remove the fence marks
+  the hold fenced, so its release leaves the fence.
+- **The shared implementation stores `Vouched` before its count.** A sample that reads the even
+  count synchronizes with its compare-and-swap and so sees the state vouched; a death between the
+  two leaves vouched state with an odd count, which the contract allows and which the dead
+  holder's ownership still fences. A failed compare-and-swap restores the previous `Vouched`.
+- **An acquisition repairs state from another boot resumably.** It reads the generation, writes it
+  advanced, and only then remakes the boot record for this boot. Until the generation is readable
+  the record from another boot is what lets the next acquisition read an unreadable generation as
+  zero; remade before it, an acquisition cut short would leave every later one refusing the
+  generation as malformed for the rest of the boot.
+- **A shared participant reads the reservation on every acquisition and attachment**, as the file
+  participant does, so one that used a root before another implementation reserved it is refused
+  after.
+
+Creation:
+
+- **The marker is published under the guard that serializes abandonment.** `make_artifacts` takes
+  the publication from its implementation: the file implementation publishes through `publishing`,
+  which `abandon` waits for, and the shared one under the creation table `abandon` clears, with the
+  creation's hold still in it. No marker is published once `abandon` has returned, as no
+  reservation is.
+- **Plan names fold by the Unicode simple uppercase mapping.** `char::to_uppercase` is the full
+  mapping; where it is several characters the simple mapping is the character itself, except for
+  the Greek letters with ypogegrammeni, which map to their titlecase letters. `simple_uppercase`
+  supplies those, so every pair a case-insensitive filesystem compares equal is a duplicate.
+
+The backends:
+
+- **`metadata` and `exists` follow symbolic links; `read_dir` does not.** The `Vfs` contract
+  states it: every path operation resolves a link, so a store root that is a link to a directory is
+  a directory, while a listing names entries without resolving them and reports a link as
+  `FileType::Other`. A Unix test pins both.
+- **`OsFs::read` and `read_at` of a directory fail as `IsADirectory` on Windows**, where opening a
+  directory as a file is refused with access denied; the contract names the kind, and the
+  conformance case no longer accepts `PermissionDenied`.
+- **A Linux range lock converts its offsets checked.** `LockSpan` bounds a range to `i64::MAX`,
+  which a 64-bit `off_t` holds; a platform with a narrower one refuses the lock rather than locking
+  other bytes.
+- **`MemFs` drops a replacement mark once the path's absence is durable.** A directory sync that
+  makes a child durably absent removes the marks at and beneath it, unless a carried snapshot is
+  there, so creating and removing names does not accumulate marks.
+- **A `MemFs` read refused by a lock copies nothing.**
+
+### Findings that did not hold, or held only in part
+
+- **`metadata` should describe a link itself.** The review read the entry taxonomy as requiring
+  it. Canopy's `Store::init` asks `metadata` whether a root is a directory, and a root reached
+  through a link must be one, so the contract was made explicit instead of changed.
+- **Swapping the shared stores only reverses the discrepancy.** It reverses it to vouched state
+  with an odd count, which the sampling contract permits: an odd count is never mistaken for a
+  settled one.
+- **A shared participant can still be granted exclusion on a root another implementation reserves
+  while it holds exclusion.** Implementations share no lock by design (see "Creating a root
+  through the file-based implementation"), so no check made by one can serialize with another's
+  reservation. A root's implementation is settled by its reservation before operational use:
+  canopy confirms creation before it acquires. Checking on every call closes the case the review
+  found, a participant that used the root before the reservation existed.
+- **No deterministic test pauses between the shared recovery's two stores.** The step hook's
+  vocabulary has no step there, and adding one is a change to an interface agreed with the
+  engineer; the order is argued above instead.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The fifth review, 2026-11-18".

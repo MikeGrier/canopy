@@ -354,3 +354,51 @@ No test: the change is to cost, not behavior; the notification tests cover what 
 ### <a id="m27-2"></a>M27-2 -- Source comments cite design decisions, not work-item ids. *(completed 2026-11-17 23:47:13 -05:00)*
 
 ### <a id="m27-3"></a>M27-3 -- The findings that did not hold are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-17 23:47:13 -05:00)*
+
+## Moved 2026-11-18 -- Fixes from the fifth acadia review
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Fifth review fixes: recovery's commit point, restart
+repair, foreign roots and the marker under abandonment", which also records what did not hold. Each
+fix was shown by a failing test before it was made, except where noted.
+
+### <a id="m28-1"></a>M28-1 -- A shared participant whose state was opened before a foreign reservation appeared takes no writer exclusion on that root. *(completed 2026-11-18 00:51:19 -05:00)*
+
+### <a id="m28-2"></a>M28-2 -- Shared recovery never shows a settled sample beside untrusted state, to a concurrent reader or after a death between its stores. *(completed 2026-11-18 00:51:19 -05:00)*
+
+No test: nothing can pause between two atomic stores without a new step in the hook vocabulary.
+
+### <a id="m28-3"></a>M28-3 -- A first recovery cut short after its count leaves recovery required for the next writer. *(completed 2026-11-18 00:51:19 -05:00)*
+
+The cut-short test now runs on an unfenced fresh root too, where it failed at the boot-record write
+after the count. A first fix that skipped removing an absent fence was refused by canopy's
+`Coordination` replay, which needs `RecClear` on every recovery; the kept fix fences the hold when
+the removal fails.
+
+### <a id="m28-4"></a>M28-4 -- An acquisition cut short while it repairs state from another boot leaves state the next acquisition repairs. *(completed 2026-11-18 00:51:19 -05:00)*
+
+### <a id="m29-1"></a>M29-1 -- A creator abandoned while it publishes the marker publishes none once `abandon` returns. *(completed 2026-11-18 00:51:19 -05:00)*
+
+The test failed for the file implementation; it asserts the paused publication was reached, which
+a first version of it did not.
+
+### <a id="m29-2"></a>M29-2 -- Plan names fold by the Unicode simple uppercase mapping, so every simple-case alias is a duplicate. *(completed 2026-11-18 00:51:19 -05:00)*
+
+### <a id="m30-1"></a>M30-1 -- The `Vfs` contract states that `metadata` and `exists` follow symbolic links, as every path operation does, while `read_dir` names a link as `Other`. *(completed 2026-11-18 00:51:19 -05:00)*
+
+The finding asked for link metadata; the contract was clarified instead, and a Unix test pins it.
+
+### <a id="m30-2"></a>M30-2 -- `MemFs` keeps no replacement mark for a path once its absence is durable and nothing carried needs it. *(completed 2026-11-18 00:51:19 -05:00)*
+
+### <a id="m30-3"></a>M30-3 -- A `MemFs` read refused by a lock copies nothing. *(completed 2026-11-18 00:51:19 -05:00)*
+
+No test: a cost-only change.
+
+### <a id="m30-4"></a>M30-4 -- `OsFs::read` and `read_at` on a directory on Windows fail as `IsADirectory`. *(completed 2026-11-18 00:51:19 -05:00)*
+
+### <a id="m30-5"></a>M30-5 -- A Linux range lock past what `off_t` holds is refused rather than truncated. *(completed 2026-11-18 00:51:19 -05:00)*
+
+No test: no supported target has an `off_t` narrower than `LockSpan`'s bound.
+
+### <a id="m31-1"></a>M31-1 -- The notification tests' counters use acquire and release orderings. *(completed 2026-11-18 00:51:19 -05:00)*
+
+### <a id="m31-2"></a>M31-2 -- The fifth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 00:51:19 -05:00)*

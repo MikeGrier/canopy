@@ -95,6 +95,131 @@ fn no_participant_takes_exclusion_or_attaches_on_a_root_reserved_for_another_imp
 }
 
 #[test]
+fn a_participant_that_used_a_root_before_another_implementation_reserved_it_is_refused_after() {
+    on_every_contract("coord-contract-identity-later", &|owner, backend| {
+        let others: Vec<Box<dyn CoordinationFactory>> = vec![
+            Box::new(FileFactory::new()),
+            Box::new(FileFactory::alternate()),
+            Box::new(crate::coord::shared::SharedFactory::new()),
+        ];
+        let early: Vec<Box<dyn Coordination>> = others
+            .iter()
+            .filter(|other| other.implementation() != owner.implementation())
+            .map(|other| opened(other.as_ref(), backend))
+            .collect();
+        for participant in &early {
+            participant.sample().unwrap();
+        }
+        opened(owner, backend)
+            .reserve(b"inputs", CreationNonce::from_bytes([1; 16]))
+            .unwrap();
+        for participant in &early {
+            assert!(
+                matches!(
+                    participant.acquire(crate::coord::Waiting::Never),
+                    Err(CoordError::ImplementationMismatch { .. })
+                ),
+                "{} acquired on {}'s root",
+                participant.implementation(),
+                owner.implementation()
+            );
+            assert!(
+                matches!(
+                    participant.attach(Access::Read, crate::coord::Waiting::Never),
+                    Err(CoordError::ImplementationMismatch { .. })
+                ),
+                "{} attached on {}'s root",
+                participant.implementation(),
+                owner.implementation()
+            );
+        }
+    });
+}
+
+#[test]
+fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
+    struct Maker {
+        fs: Arc<dyn Vfs>,
+        root: PathBuf,
+    }
+    impl ArtifactMaker for Maker {
+        fn make(&mut self, name: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<()> {
+            let path = self.root.join(name);
+            self.fs.write(&path, inputs)?;
+            self.fs.fsync(&path)?;
+            Ok(())
+        }
+
+        fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
+            Ok(inputs.to_vec())
+        }
+    }
+    let factories: Vec<Box<dyn CoordinationFactory>> = vec![
+        Box::new(FileFactory::new()),
+        Box::new(crate::coord::shared::SharedFactory::new()),
+    ];
+    for factory in factories {
+        let mem = MemFs::new();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        mem.create_dir_all(&root).unwrap();
+        let marker = root.join("marker");
+        let participant: Arc<std::sync::OnceLock<Arc<dyn Coordination>>> = Arc::default();
+        let returned_during_pause = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (reached, returned, pausing) = (
+            Arc::clone(&participant),
+            Arc::clone(&returned_during_pause),
+            Arc::clone(&paused),
+        );
+        let policy = FaultPolicy::new().inject(
+            crate::FaultOp::PublishNew,
+            marker.clone(),
+            crate::Fault::observe_with(move |_, _| {
+                pausing.store(true, std::sync::atomic::Ordering::Release);
+                let target = Arc::clone(reached.get().expect("installed"));
+                let (done, finished) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    target.abandon();
+                    let _ = done.send(());
+                });
+                if recv_timeout(&finished, Duration::from_millis(200)).is_ok() {
+                    returned.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }),
+            crate::When::Once,
+        );
+        let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(mem.another_process(), policy));
+        let opened: Arc<dyn Coordination> = Arc::from(factory.open(vfs, &root).unwrap());
+        let _ = participant.set(Arc::clone(&opened));
+        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let plan = CreationPlan {
+            inputs: b"inputs",
+            nonce: CreationNonce::from_bytes([1; 16]),
+            artifacts: &names,
+        };
+        let _ = opened.create(
+            &plan,
+            &mut Maker {
+                fs: Arc::new(mem.another_process()),
+                root: root.clone(),
+            },
+        );
+        assert!(
+            paused.load(std::sync::atomic::Ordering::Acquire),
+            "{}: the marker's publication was reached",
+            factory.implementation()
+        );
+        if returned_during_pause.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(
+                !mem.exists(&marker).unwrap(),
+                "{}: a marker was published after abandon returned",
+                factory.implementation()
+            );
+        }
+    }
+}
+
+#[test]
 fn an_abandoned_conversion_no_longer_reports_holding_the_gate() {
     on_every_contract(
         "coord-contract-conversion-abandoned",

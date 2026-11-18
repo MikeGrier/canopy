@@ -197,14 +197,19 @@ impl Coordination for SharedParticipant {
     }
 }
 
+// The reservation is read on every call: another implementation may reserve the root later.
 impl WriterExclusion for SharedParticipant {
     fn acquire(&self, waiting: Waiting) -> CoordResult<Box<dyn ExclusionHold>> {
-        self.state()?.acquire(waiting)
+        let state = self.state()?;
+        self.check_implementation()?;
+        state.acquire(waiting)
     }
 }
 impl Admission for SharedParticipant {
     fn attach(&self, access: Access, waiting: Waiting) -> CoordResult<Box<dyn Attachment>> {
-        self.state()?.attach(access, waiting)
+        let state = self.state()?;
+        self.check_implementation()?;
+        state.attach(access, waiting)
     }
 }
 impl Registry for SharedParticipant {

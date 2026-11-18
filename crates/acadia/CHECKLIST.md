@@ -150,3 +150,32 @@ instead of being changed.
 - [x] **M27-1** -- A burst of due notifications costs linear work under the process-wide mutex. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m27-1)
 - [x] **M27-2** -- Source comments cite design decisions, not work-item ids. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m27-2)
 - [x] **M27-3** -- The findings that did not hold are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m27-3)
+
+## M28 -- Fifth review: coordination trust, recovery and exclusion
+
+Review report: findings of the fifth acadia review (GPT-6.2 Astra, 2026-11-18), each confirmed by a
+failing test before it is fixed; a finding that does not hold is recorded in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) instead of being changed.
+
+- [x] **M28-1** -- A shared participant whose state was opened before a foreign reservation appeared takes no writer exclusion on that root. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m28-1)
+- [x] **M28-2** -- Shared recovery never shows a settled sample beside untrusted state, to a concurrent reader or after a death between its stores. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m28-2)
+- [x] **M28-3** -- A first recovery cut short after its count leaves recovery required for the next writer. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m28-3)
+- [x] **M28-4** -- An acquisition cut short while it repairs state from another boot leaves state the next acquisition repairs. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m28-4)
+
+## M29 -- Fifth review: creation
+
+- [x] **M29-1** -- A creator abandoned while it publishes the marker publishes none once `abandon` returns. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m29-1)
+- [x] **M29-2** -- Plan names fold by the Unicode simple uppercase mapping, so every simple-case alias is a duplicate. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m29-2)
+
+## M30 -- Fifth review: the backends
+
+- [x] **M30-1** -- The `Vfs` contract states that `metadata` and `exists` follow symbolic links, as every path operation does, while `read_dir` names a link as `Other`. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m30-1)
+- [x] **M30-2** -- `MemFs` keeps no replacement mark for a path once its absence is durable and nothing carried needs it. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m30-2)
+- [x] **M30-3** -- A `MemFs` read refused by a lock copies nothing. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m30-3)
+- [x] **M30-4** -- `OsFs::read` and `read_at` on a directory on Windows fail as `IsADirectory`. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m30-4)
+- [x] **M30-5** -- A Linux range lock past what `off_t` holds is refused rather than truncated. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m30-5)
+
+## M31 -- Fifth review: conventions and records
+
+- [x] **M31-1** -- The notification tests' counters use acquire and release orderings. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m31-1)
+- [x] **M31-2** -- The fifth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m31-2)

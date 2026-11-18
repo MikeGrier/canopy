@@ -26,34 +26,49 @@ pub struct CreationPlan<'a> {
     pub artifacts: &'a [&'a OsStr],
 }
 
-/// `name` as a case-insensitive filesystem compares it: a Unicode name by each character's
-/// single-character uppercase, any other by the uppercase of its ASCII code units.
+/// `name` as a case-insensitive filesystem compares it: a Unicode name by each character's simple
+/// uppercase mapping, any other by the uppercase of its ASCII code units.
 fn folded(name: &OsStr) -> Vec<u8> {
     match name.to_str() {
         Some(text) => text
             .chars()
-            .map(|c| {
-                let mut upper = c.to_uppercase();
-                match (upper.next(), upper.next()) {
-                    (Some(single), None) => single,
-                    _ => c,
-                }
-            })
+            .map(simple_uppercase)
             .collect::<String>()
             .into_bytes(),
         None => name.as_encoded_bytes().to_ascii_uppercase(),
     }
 }
 
+/// The simple uppercase mapping of `c` (UnicodeData.txt's field 12). `char::to_uppercase` gives the
+/// full mapping, which differs only where it is several characters; of those, only the Greek
+/// letters with ypogegrammeni have a simple mapping other than themselves, to the titlecase letter.
+fn simple_uppercase(c: char) -> char {
+    let mut upper = c.to_uppercase();
+    if let (Some(single), None) = (upper.next(), upper.next()) {
+        return single;
+    }
+    match c {
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            char::from_u32(c as u32 + 8).expect("each maps into its titlecase block")
+        }
+        '\u{1FB3}' => '\u{1FBC}',
+        '\u{1FC3}' => '\u{1FCC}',
+        '\u{1FF3}' => '\u{1FFC}',
+        _ => c,
+    }
+}
+
 /// Makes `plan`'s artifacts but the marker through `maker`, in order, each made durable with its
-/// directory entry before the next, then publishes the marker's bytes complete or not at all and
-/// makes its entry durable. `alive` stops it as soon as its participant is abandoned.
+/// directory entry before the next, then publishes the marker's bytes complete or not at all with
+/// `publish` and makes its entry durable. `alive` stops it as soon as its participant is
+/// abandoned; `publish` must refuse once `abandon` has returned, as no check made before it can.
 pub(crate) fn make_artifacts(
     plan: &CreationPlan<'_>,
     maker: &mut dyn ArtifactMaker,
     vfs: &dyn crate::Vfs,
     root: &Path,
     alive: &dyn Fn() -> CoordResult<()>,
+    publish: &dyn Fn(&Path, &[u8]) -> CoordResult<()>,
 ) -> CoordResult<()> {
     let (marker, others) = plan
         .artifacts
@@ -67,8 +82,7 @@ pub(crate) fn make_artifacts(
     }
     alive()?;
     let bytes = maker.marker(marker, plan.inputs)?;
-    alive()?;
-    vfs.publish_new(&root.join(marker), &bytes)?;
+    publish(&root.join(marker), &bytes)?;
     alive()?;
     vfs.fsync(root)?;
     Ok(())

@@ -331,8 +331,17 @@ fn lock_range(file: &fs::File, mode: LockMode, start: u64, len: u64, wait: bool)
         LockMode::Exclusive => libc::F_WRLCK,
     } as libc::c_short;
     lock.l_whence = libc::SEEK_SET as libc::c_short;
-    lock.l_start = start as libc::off_t;
-    lock.l_len = len as libc::off_t;
+    // `LockSpan` bounds a range to `i64::MAX`, which a 64-bit `off_t` holds; a narrower one refuses.
+    let offset = |value: u64| {
+        libc::off_t::try_from(value).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the range lies past what this platform's file offsets hold",
+            )
+        })
+    };
+    lock.l_start = offset(start)?;
+    lock.l_len = offset(len)?;
     let command = if wait {
         libc::F_OFD_SETLKW
     } else {
@@ -616,13 +625,24 @@ fn is_contention(e: &io::Error) -> bool {
     }
 }
 
+/// The error of a read's open of `path`: Windows refuses to open a directory as a file with
+/// access denied, which the contract reports as [`VfsErrorKind::IsADirectory`].
+fn read_open_err(op: &'static str, path: &Path, e: &io::Error) -> VfsError {
+    if e.kind() == io::ErrorKind::PermissionDenied
+        && fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return VfsError::new(VfsErrorKind::IsADirectory, op, "is a directory").with_path(path);
+    }
+    err(op, path, e)
+}
+
 impl Vfs for OsFs {
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
-        fs::read(path).map_err(|e| err("read", path, &e))
+        fs::read(path).map_err(|e| read_open_err("read", path, &e))
     }
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
-        let file = fs::File::open(path).map_err(|e| err("read_at", path, &e))?;
+        let file = fs::File::open(path).map_err(|e| read_open_err("read_at", path, &e))?;
         let metadata = file.metadata().map_err(|e| err("read_at", path, &e))?;
         // Unix opens a directory for reading; checked before the range so an empty or
         // past-the-end read cannot succeed on one.

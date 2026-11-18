@@ -154,6 +154,17 @@ impl MemFs {
                         || !marked.starts_with(&parts)
                         || matches!(live_children.get(&marked[parts.len()]), Some(Node::Dir(_)))
                 });
+                // A child absent here is now absent durably too, so no durable directory at or
+                // beneath it is left for a replacement mark to start from empty, unless a carried
+                // snapshot is.
+                replaced.retain(|marked| {
+                    marked.len() <= parts.len()
+                        || !marked.starts_with(&parts)
+                        || live_children.contains_key(&marked[parts.len()])
+                        || carried
+                            .keys()
+                            .any(|key| key.starts_with(&marked[..=parts.len()]))
+                });
             }
         }
         Ok(())

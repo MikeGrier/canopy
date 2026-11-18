@@ -249,3 +249,25 @@ fn mem_a_directory_recreated_after_removal_does_not_keep_stale_records() {
     assert!(fs.read_dir(p("/d/x")).unwrap().is_empty());
     fs.audit_refs();
 }
+
+/// A replacement mark is dropped once the parent's sync makes the path's absence durable, so
+/// creating and removing many names leaves none behind.
+#[test]
+fn removed_names_leave_no_marks_once_their_absence_is_durable() {
+    for fs in [MemFs::new(), MemFs::with_full_directory_sync()] {
+        fs.create_dir_all(p("/d")).unwrap();
+        fs.fsync(p("/d")).unwrap();
+        for i in 0..50 {
+            let child = PathBuf::from(format!("/d/x{i}"));
+            fs.create_dir(&child).unwrap();
+            fs.fsync(p("/d")).unwrap();
+            if i % 2 == 0 {
+                fs.remove_dir(&child).unwrap();
+            } else {
+                fs.remove_dir_all(&child).unwrap();
+            }
+            fs.fsync(p("/d")).unwrap();
+        }
+        assert_eq!(fs.replaced_marks(), 0);
+    }
+}

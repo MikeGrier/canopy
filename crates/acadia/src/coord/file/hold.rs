@@ -110,9 +110,6 @@ impl FileCoordination {
         }
         let trust = self.trust()?;
         let remade = self.boot_record_needs_remaking()?;
-        if remade {
-            self.record_boot(Standing::Untrusted)?;
-        }
         let found = self.read_generation(remade)?;
         let advanced_to = Generation::new(
             found
@@ -121,6 +118,11 @@ impl FileCoordination {
                 .ok_or(CoordError::Exhausted { what: "generation" })?,
         );
         self.write_generation(advanced_to)?;
+        // Remade only once the generation is readable: until then the record from another boot is
+        // what lets the next acquisition read an unreadable generation as zero.
+        if remade {
+            self.record_boot(Standing::Untrusted)?;
+        }
         let fenced = self.fence_is_set()?;
         self.write_owner()?;
         Ok(FileHold {
@@ -213,13 +215,14 @@ impl ExclusionHold for FileHold {
                 })?
         };
         // The vouched count is recovery's commit point: it makes the state trusted and settled in
-        // one publication, and the boot record vouched after it adds nothing a reader relies on.
+        // one publication. A failure after it fences the hold, so its release leaves the fence.
         participant.publish_count(even, Standing::Vouched)?;
-        participant.record_boot(Standing::Vouched)?;
-        participant.publishing(|vfs| match vfs.remove_file(&participant.layout().fence()) {
-            Err(error) if error.kind() != VfsErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        })?;
+        participant
+            .publishing(|vfs| match vfs.remove_file(&participant.layout().fence()) {
+                Err(error) if error.kind() != VfsErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            })
+            .inspect_err(|_| self.fenced = true)?;
         self.recovered = true;
         self.fenced = false;
         Ok(())
