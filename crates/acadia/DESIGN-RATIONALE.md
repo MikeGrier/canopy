@@ -226,3 +226,18 @@ before fixing; the model already expressed both shapes, but no scenario or repla
 Each is now a scenario with a witness and a replay. The MemFs lock-check fix keeps the table for
 the operation's duration rather than re-checking after the change, because a check after the
 change could only report a violation, not prevent one.
+
+## Unnamed marks carried with a snapshot rather than copied at rename
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs marks travel with what they
+describe; empty lock ranges; the poller retires outside its lock". The second review's fix copied a
+moved directory's marks to the destination path when the rename happened. A third review found that
+this applies them too early: the destination's durable directory still holds its old contents until
+the parent is synced, and a copied mark naming one of those entries unnamed deletes it on a crash
+before that sync. A replay of exactly that crash failed against the copying code. Keeping the marks
+beside the carried snapshot and adopting them only when the snapshot replaces the durable directory
+makes the marks describe the same tree the durable directory does at every step.
+
+A sync that keeps marks only beneath live directories was preferred over clearing marks when a
+path is overwritten, because every operation that can put a file where a directory stood would
+have to remember to clear them, while the sync that names the new entry already walks the children.

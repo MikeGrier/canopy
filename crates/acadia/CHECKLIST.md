@@ -62,3 +62,11 @@ store".
 ## M17 -- Splitting `mem.rs`
 
 - [x] **M17-1** -- [mem.rs](src/mem.rs) is split: its `Vfs` implementation moves to [vfs.rs](src/mem/vfs.rs). -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m17-1)
+
+## M18 -- Fixes from the third 2026-11-17 acadia review
+
+- [x] **M18-1** -- A `MemFs` directory sync drops stale unnamed marks, so a file synced where an unnamed directory stood survives a crash. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-1)
+- [x] **M18-2** -- A moved `MemFs` directory's unnamed marks travel with its carried snapshot and apply when it is materialized. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-2)
+- [x] **M18-3** -- An empty byte range overlaps no `MemFs` lock. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-3)
+- [x] **M18-4** -- A `MemFs` rename of a path onto itself resolves the source first. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-4)
+- [x] **M18-5** -- The file poller drops retired registrations after releasing its state. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-5)

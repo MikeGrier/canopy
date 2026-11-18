@@ -126,6 +126,38 @@ fn remove_empty_dir() {
 }
 
 #[test]
+fn renaming_a_path_onto_itself_needs_the_path_to_exist() {
+    on_both("rename_onto_itself", |fs, root| {
+        let file = root.join("f");
+        fs.write(&file, b"kept").unwrap();
+        fs.rename(&file, &file).unwrap();
+        assert_eq!(fs.read(&file).unwrap(), b"kept");
+        let dir = root.join("d");
+        fs.create_dir(&dir).unwrap();
+        fs.rename(&dir, &dir).unwrap();
+        assert!(fs.metadata(&dir).unwrap().is_dir());
+        let missing = root.join("missing");
+        assert!(fs.rename(&missing, &missing).is_err());
+        let orphan = root.join("absent").join("f");
+        assert!(fs.rename(&orphan, &orphan).is_err());
+        let under_file = file.join("f");
+        assert!(fs.rename(&under_file, &under_file).is_err());
+    });
+    on_mem(&|fs, root| {
+        let missing = root.join("missing");
+        assert_kind(fs.rename(&missing, &missing), VfsErrorKind::NotFound);
+        let orphan = root.join("absent").join("f");
+        assert_kind(fs.rename(&orphan, &orphan), VfsErrorKind::NotFound);
+        fs.write(&root.join("f"), b"x").unwrap();
+        let under_file = root.join("f").join("g");
+        assert_kind(
+            fs.rename(&under_file, &under_file),
+            VfsErrorKind::NotADirectory,
+        );
+    });
+}
+
+#[test]
 fn remove_dir_all_is_recursive() {
     on_both("remove_dir_all_is_recursive", |fs, root| {
         let d = root.join("tree");

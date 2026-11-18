@@ -440,3 +440,22 @@ fn a_mem_lock_taken_while_a_write_is_checked_waits_for_that_write() {
         assert_eq!(first, b"new", "the lock was taken after the checked write");
     });
 }
+
+#[test]
+fn a_mem_operation_that_touches_no_bytes_is_not_refused_by_a_lock() {
+    let fs = MemFs::new();
+    let path = Path::new("/f");
+    fs.write(path, b"0123456789").unwrap();
+    let holder = fs.another_process();
+    let lock = holder.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap();
+    assert_eq!(fs.read_at(path, 5, 0).unwrap(), b"");
+    assert_eq!(fs.read_at(path, 10, 1).unwrap(), b"");
+    assert_eq!(fs.read_at(path, 20, 4).unwrap(), b"");
+    fs.append(path, b"").unwrap();
+    fs.truncate(path, 10).unwrap();
+    assert_kind(fs.read_at(path, 9, 1), VfsErrorKind::Locked);
+    assert_kind(fs.append(path, b"x"), VfsErrorKind::Locked);
+    assert_kind(fs.truncate(path, 9), VfsErrorKind::Locked);
+    drop(lock);
+    assert_eq!(fs.read(path).unwrap(), b"0123456789");
+}

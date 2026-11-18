@@ -479,3 +479,43 @@ mod os {
         assert!(rings_within(&finished, LONG), "the ring returned");
     }
 }
+
+#[test]
+fn a_registration_whose_retirement_withdraws_another_notice_does_not_stall_the_poller() {
+    use std::sync::Mutex;
+
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let other = participant_on(&FileFactory::new(), Arc::new(mem.another_process()), &root);
+    let slot: Arc<Mutex<Option<Box<dyn Notice>>>> = Arc::default();
+    // The backend's only owner is the registration below, so retiring it drops this observer,
+    // and with it the notice in `slot`, whose drop withdraws from the poller.
+    let held = Arc::clone(&slot);
+    let policy = FaultPolicy::new().inject(
+        FaultOp::Read,
+        "/never-read",
+        Fault::observe_with(move |_, _| {
+            let _ = &held;
+        }),
+        When::Always,
+    );
+    let owner = participant_on(
+        &FileFactory::new(),
+        Arc::new(FaultyFs::new(mem.another_process(), policy)),
+        &root,
+    );
+    let (inner, _) = registered(&other, other.sample().expect("sample"), far());
+    *slot.lock().unwrap() = Some(inner);
+    drop(slot);
+    let (_retiring, rings) = registered(&owner, owner.sample().expect("sample"), Instant::now());
+    drop(owner);
+    assert!(
+        rings_within(&rings, LONG),
+        "the retiring registration rings"
+    );
+    let (_after, rings) = registered(&other, other.sample().expect("sample"), Instant::now());
+    assert!(
+        rings_within(&rings, LONG),
+        "the poller keeps serving registrations"
+    );
+}

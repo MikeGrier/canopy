@@ -410,3 +410,84 @@ fn mem_model_moved_directory_does_not_name_its_unnamed_child() {
         ],
     );
 }
+
+#[test]
+fn mem_model_a_file_synced_where_an_unnamed_directory_stood_survives() {
+    replay(
+        "a file synced where an unnamed directory stood survives",
+        &[
+            Action::CreateDir("/d"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/x"),
+            Action::Fsync("/d/x"),
+            Action::RemoveDir("/d/x"),
+            Action::Write("/d/x", b"A"),
+            Action::Fsync("/d/x"),
+            Action::Fsync("/d"),
+            Action::Crash,
+        ],
+        &[Expected::File("/d/x", b"A")],
+    );
+}
+
+#[test]
+fn mem_model_a_rename_over_a_directory_drops_its_stale_marks_when_named() {
+    replay(
+        "a moved subtree survives a destination's stale unnamed mark",
+        &[
+            Action::CreateDir("/d"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/src"),
+            Action::CreateDir("/d/src/sub"),
+            Action::Write("/d/src/sub/f", b"A"),
+            Action::Fsync("/d/src/sub/f"),
+            Action::Fsync("/d/src/sub"),
+            Action::Fsync("/d/src"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/x"),
+            Action::CreateDir("/d/x/sub"),
+            Action::Fsync("/d/x/sub"),
+            Action::RemoveDir("/d/x/sub"),
+            Action::Rename("/d/src", "/d/x"),
+            Action::Fsync("/d"),
+            Action::Crash,
+        ],
+        &[
+            Expected::Missing("/d/src"),
+            Expected::Dir("/d/x"),
+            Expected::Dir("/d/x/sub"),
+            Expected::File("/d/x/sub/f", b"A"),
+        ],
+    );
+}
+
+#[test]
+fn mem_model_a_rename_over_a_directory_keeps_its_old_contents_until_named() {
+    replay(
+        "a destination's unsynced child removal is undone by a crash before the parent sync",
+        &[
+            Action::CreateDir("/d"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/x"),
+            Action::CreateDir("/d/x/sub"),
+            Action::Fsync("/d/x"),
+            Action::Fsync("/d"),
+            Action::RemoveDir("/d/x/sub"),
+            Action::CreateDir("/d/src"),
+            Action::Fsync("/d"),
+            Action::CreateDir("/d/src/sub"),
+            Action::Write("/d/src/sub/f", b"A"),
+            Action::Fsync("/d/src/sub/f"),
+            Action::Fsync("/d/src/sub"),
+            Action::Rename("/d/src", "/d/x"),
+            Action::Crash,
+        ],
+        &[
+            Expected::Dir("/d/x"),
+            Expected::Dir("/d/x/sub"),
+            Expected::Missing("/d/x/sub/f"),
+            Expected::Dir("/d/src"),
+            Expected::Missing("/d/src/sub"),
+        ],
+    );
+}

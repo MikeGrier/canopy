@@ -80,6 +80,10 @@ struct Inner {
     /// directory keep its durable contents whatever order its old and new parents are synced
     /// in, as the inode would on a real filesystem.
     carried: HashMap<Vec<OsString>, Node>,
+    /// The [`unnamed`](Inner::unnamed) marks each carried snapshot holds, relative to the
+    /// snapshot's path. They apply when the snapshot is materialized and not before: until then
+    /// the marks at that path belong to whatever the durable tree still holds there.
+    carried_unnamed: HashMap<Vec<OsString>, Vec<Vec<OsString>>>,
     /// Paths whose live directory is no longer the one the durable tree holds there -- it was
     /// removed or renamed away, and anything now at the path is a new directory. The next sync
     /// that names the path starts it from empty rather than from the old durable contents.
@@ -191,6 +195,7 @@ impl MemFs {
             }
         }
         inner.carried.clear();
+        inner.carried_unnamed.clear();
         inner.replaced.clear();
         inner.dirty.clear();
         inner.boots += 1;
@@ -489,6 +494,8 @@ fn refresh(
 ///
 /// Either one replaces durable directories wholesale, after which their recorded changes no
 /// longer describe how they differ from the live ones, so each is marked for a full sync.
+/// Returns whether a durable directory at `parts` was replaced, so nothing that was beneath it
+/// is there any more.
 fn renew(
     durable: &mut BTreeMap<OsString, Node>,
     carried: &mut HashMap<Vec<OsString>, Node>,
@@ -497,16 +504,50 @@ fn renew(
     refs: &mut Refs<'_>,
     parts: &[OsString],
     full: &Path,
-) -> VfsResult<()> {
-    if refresh(durable, replaced, refs, parts) {
+) -> VfsResult<bool> {
+    let held_directory = matches!(node_at(durable, parts, "fsync", full), Ok(Node::Dir(_)));
+    let refreshed = refresh(durable, replaced, refs, parts);
+    if refreshed {
         mark_all(dirty, parts);
     }
-    if materialize(durable, carried, refs, parts, "fsync", full)?
-        && let Ok(node) = node_at(durable, parts, "fsync", full)
-    {
+    let materialized = materialize(durable, carried, refs, parts, "fsync", full)?;
+    if materialized && let Ok(node) = node_at(durable, parts, "fsync", full) {
         mark_subtree_all(dirty, &mut parts.to_vec(), node);
     }
-    Ok(())
+    Ok(held_directory && (refreshed || materialized))
+}
+
+/// Brings the unnamed marks beneath `parts` up to date once a sync has renewed the durable
+/// directory there: the marks of a directory it `replaced` name nothing any more, and a carried
+/// snapshot it materialized brings the marks it carried.
+fn adopt_marks(
+    unnamed: &mut HashSet<Vec<OsString>>,
+    carried_unnamed: &mut HashMap<Vec<OsString>, Vec<Vec<OsString>>>,
+    carried: &HashMap<Vec<OsString>, Node>,
+    parts: &[OsString],
+    replaced: bool,
+) {
+    if replaced {
+        unnamed.retain(|marked| marked.len() <= parts.len() || !marked.starts_with(parts));
+    }
+    if !carried.contains_key(parts)
+        && let Some(marks) = carried_unnamed.remove(parts)
+    {
+        unnamed.extend(
+            marks
+                .into_iter()
+                .map(|relative| [parts, &relative[..]].concat()),
+        );
+    }
+}
+
+/// The marks strictly beneath `parts`, relative to it.
+fn marks_beneath(unnamed: &HashSet<Vec<OsString>>, parts: &[OsString]) -> Vec<Vec<OsString>> {
+    unnamed
+        .iter()
+        .filter(|marked| marked.len() > parts.len() && marked.starts_with(parts))
+        .map(|marked| marked[parts.len()..].to_vec())
+        .collect()
 }
 
 /// Marks the directory `node`, at `path`, and every directory beneath it for a full sync.
@@ -538,9 +579,10 @@ fn for_each_dir(path: &mut Vec<OsString>, node: &Node, f: &mut impl FnMut(&[OsSt
 /// snapshot's copy belongs to its predecessor.
 fn extract_carried(
     carried: &mut HashMap<Vec<OsString>, Node>,
+    carried_unnamed: &mut HashMap<Vec<OsString>, Vec<Vec<OsString>>>,
     replaced: &HashSet<Vec<OsString>>,
     parts: &[OsString],
-) -> Option<Node> {
+) -> Option<(Node, Vec<Vec<OsString>>)> {
     let ancestor = (1..parts.len())
         .rev()
         .map(|depth| &parts[..depth])
@@ -561,7 +603,21 @@ fn extract_carried(
             _ => return None,
         }
     }
-    cur.remove(name)
+    let node = cur.remove(name)?;
+    // The marks beneath the extracted directory go with it; its own name is its new parent's.
+    let mut marks = Vec::new();
+    if let Some(held) = carried_unnamed.get_mut(&ancestor) {
+        held.retain(|marked| {
+            if !marked.starts_with(rest) {
+                return true;
+            }
+            if marked.len() > rest.len() {
+                marks.push(marked[rest.len()..].to_vec());
+            }
+            false
+        });
+    }
+    Some((node, marks))
 }
 
 /// Collects every inode id reachable in `map` (recursively) into `out`.
@@ -760,6 +816,7 @@ fn sync_into_carried(
 /// The path-keyed state a carried sync updates alongside the snapshot itself.
 struct Bookkeeping<'a, 'r> {
     carried: &'a mut HashMap<Vec<OsString>, Node>,
+    carried_unnamed: &'a mut HashMap<Vec<OsString>, Vec<Vec<OsString>>>,
     replaced: &'a mut HashSet<Vec<OsString>>,
     unnamed: &'a mut HashSet<Vec<OsString>>,
     refs: &'a mut Refs<'r>,
@@ -786,9 +843,8 @@ fn sync_snapshot(
     }
     for prefix in &below {
         let relative = &prefix[depth..];
-        if books.replaced.remove(prefix) {
-            reset_within(snapshot, relative, books.refs);
-        }
+        let mut emptied =
+            books.replaced.remove(prefix) && reset_within(snapshot, relative, books.refs);
         if books.carried.contains_key(prefix) {
             let Node::Dir(map) = &mut *snapshot else {
                 return Ok(());
@@ -798,9 +854,17 @@ fn sync_snapshot(
             if let Some(nested) = books.carried.remove(prefix)
                 && let Some(displaced) = dir.insert(name.clone(), nested)
             {
+                emptied |= matches!(displaced, Node::Dir(_));
                 books.refs.release_node(&displaced);
             }
         }
+        adopt_marks(
+            books.unnamed,
+            books.carried_unnamed,
+            books.carried,
+            prefix,
+            emptied,
+        );
     }
     let Node::Dir(map) = snapshot else {
         return Ok(());
@@ -828,13 +892,14 @@ fn sync_snapshot(
     books.unnamed.retain(|marked| {
         marked.len() <= parts.len()
             || !marked.starts_with(parts)
-            || live_children.contains_key(&marked[parts.len()])
+            || matches!(live_children.get(&marked[parts.len()]), Some(Node::Dir(_)))
     });
     Ok(())
 }
 
-/// Empties the directory at `relative` inside `snapshot`, releasing what it held.
-fn reset_within(snapshot: &mut Node, relative: &[OsString], refs: &mut Refs<'_>) {
+/// Empties the directory at `relative` inside `snapshot`, releasing what it held. Returns
+/// whether there was a directory there to empty.
+fn reset_within(snapshot: &mut Node, relative: &[OsString], refs: &mut Refs<'_>) -> bool {
     let target = match relative.split_last() {
         None => Some(snapshot),
         Some((name, between)) => match snapshot {
@@ -847,7 +912,9 @@ fn reset_within(snapshot: &mut Node, relative: &[OsString], refs: &mut Refs<'_>)
     if let Some(node @ Node::Dir(_)) = target {
         let old = std::mem::replace(node, Node::Dir(BTreeMap::new()));
         refs.release_node(&old);
+        return true;
     }
+    false
 }
 
 /// Drops one live name for `id`, and its live bytes with the last one.
@@ -868,9 +935,11 @@ fn unlink_live(
 /// Discards every carried snapshot at or beneath `parts`, releasing what each one named.
 fn drop_carried_under(
     carried: &mut HashMap<Vec<OsString>, Node>,
+    carried_unnamed: &mut HashMap<Vec<OsString>, Vec<Vec<OsString>>>,
     refs: &mut Refs<'_>,
     parts: &[OsString],
 ) {
+    carried_unnamed.retain(|key, _| !key.starts_with(parts));
     carried.retain(|key, snapshot| {
         let keep = !key.starts_with(parts);
         if !keep {

@@ -209,3 +209,38 @@ bookkeeping helpers, which a child module can see, so the cut needed no visibili
 durable-tree helpers named as the first candidate were rejected because the parent calls them,
 which would have needed widening. `cargo fmt` was a no-op on the moved code, and `git blame -w
 -C1 -C1` attributes only the provenance header of [vfs.rs](src/mem/vfs.rs) to the split.
+
+## Moved 2026-11-17 -- Fixes from the third 2026-11-17 acadia review
+
+Decision for every item below: [DESIGN-NOTES.md](DESIGN-NOTES.md) "MemFs marks travel with what
+they describe; empty lock ranges; the poller retires outside its lock".
+
+### <a id="m18-1"></a>M18-1 -- A `MemFs` directory sync drops stale unnamed marks, so a file synced where an unnamed directory stood survives a crash. *(completed 2026-11-17 19:33:25 -05:00)*
+
+A sync keeps marks only beneath children that are live directories, and a sync that replaces a
+durable directory drops the marks beneath it. Scenario `file-over-unnamed-dir` and replay
+`mem_model_a_file_synced_where_an_unnamed_directory_stood_survives` pin it; the replay failed
+against the committed `mem.rs`.
+
+### <a id="m18-2"></a>M18-2 -- A moved `MemFs` directory's unnamed marks travel with its carried snapshot and apply when it is materialized. *(completed 2026-11-17 19:33:25 -05:00)*
+
+Scenarios `rename-over-stale-mark` and `rename-keeps-old-dst`, with replays
+`mem_model_a_renamed_directory_drops_its_stale_marks_when_named` and
+`mem_model_a_renamed_directory_keeps_its_old_contents_until_named`, pin it. Both replays failed
+against the committed code; the second shows that copying the marks to the destination at rename
+time, as `M16-4` did, loses the destination's durable contents on a crash before the parent sync.
+
+### <a id="m18-3"></a>M18-3 -- An empty byte range overlaps no `MemFs` lock. *(completed 2026-11-17 19:33:25 -05:00)*
+
+Zero-length reads, reads at end of file, empty appends and same-length truncations under another
+process's exclusive lock succeed; the test failed when `overlaps` admitted an empty range.
+
+### <a id="m18-4"></a>M18-4 -- A `MemFs` rename of a path onto itself resolves the source first. *(completed 2026-11-17 19:33:25 -05:00)*
+
+A missing source and a missing parent fail as on `OsFs`, and an existing path still renames onto
+itself; the conformance test runs against both filesystems.
+
+### <a id="m18-5"></a>M18-5 -- The file poller drops retired registrations after releasing its state. *(completed 2026-11-17 19:33:25 -05:00)*
+
+A test registration whose drop withdraws another notice reaches the poller's retirement; with the
+retirement inside the lock the poller deadlocked and the test hung.

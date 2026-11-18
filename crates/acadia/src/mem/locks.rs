@@ -72,8 +72,9 @@ impl LockTable {
 }
 
 impl Hold {
+    /// Whether `[start, end)` shares a byte with this hold; an empty range shares none.
     fn overlaps(&self, start: u64, end: u64) -> bool {
-        self.start < end && start < self.end
+        start < end && self.start < end && start < self.end
     }
 
     /// Whether a lock of `mode` on `[start, end)` may not be held alongside this one.

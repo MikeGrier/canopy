@@ -139,20 +139,22 @@ impl Poller {
                 let (ringing, quiet) = sample(due);
                 state = self.state();
                 let now = Instant::now();
-                let mut rings = Vec::new();
-                state.registrations.retain_mut(|r| {
-                    if ringing.contains(&r.id) {
-                        rings.extend(r.ring.take());
-                        return false;
-                    }
+                // Retired outside the lock: dropping a registration drops its participant, whose
+                // last owner may withdraw a notice of its own.
+                let mut retired: Vec<Registration> = state
+                    .registrations
+                    .extract_if(.., |r| ringing.contains(&r.id))
+                    .collect();
+                for r in &mut state.registrations {
                     if quiet.contains(&r.id) {
                         r.next = now + r.interval;
                         r.interval = (r.interval * 2).min(LAST_INTERVAL);
                     }
-                    true
-                });
-                if !rings.is_empty() {
+                }
+                if !retired.is_empty() {
                     drop(state);
+                    let rings: Vec<_> = retired.iter_mut().filter_map(|r| r.ring.take()).collect();
+                    drop(retired);
                     for ring in rings {
                         let _ = catch_unwind(AssertUnwindSafe(ring));
                     }

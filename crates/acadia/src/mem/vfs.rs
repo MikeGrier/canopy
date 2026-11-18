@@ -212,6 +212,7 @@ impl Vfs for MemFs {
             durable_data,
             unnamed,
             carried,
+            carried_unnamed,
             replaced,
             refs,
             dirty,
@@ -247,6 +248,7 @@ impl Vfs for MemFs {
                 if let Some(depth) = carried_anchor(durable, carried, &parts) {
                     let mut books = Bookkeeping {
                         carried,
+                        carried_unnamed,
                         replaced,
                         unnamed,
                         refs: &mut refs,
@@ -263,7 +265,9 @@ impl Vfs for MemFs {
                     if depth >= 2 && node_at(durable, prefix, "fsync", path).is_err() {
                         unnamed.insert(prefix.to_vec());
                     }
-                    renew(durable, carried, replaced, dirty, &mut refs, prefix, path)?;
+                    let emptied =
+                        renew(durable, carried, replaced, dirty, &mut refs, prefix, path)?;
+                    adopt_marks(unnamed, carried_unnamed, carried, prefix, emptied);
                     if !matches!(node_at(durable, prefix, "fsync", path), Ok(Node::Dir(_))) {
                         mark_all(dirty, prefix);
                     }
@@ -295,7 +299,7 @@ impl Vfs for MemFs {
                 for child in &child_dirs {
                     let mut child_parts = parts.clone();
                     child_parts.push((*child).clone());
-                    renew(
+                    let emptied = renew(
                         durable,
                         carried,
                         replaced,
@@ -304,6 +308,7 @@ impl Vfs for MemFs {
                         &child_parts,
                         path,
                     )?;
+                    adopt_marks(unnamed, carried_unnamed, carried, &child_parts, emptied);
                 }
                 let ddir = dir_of_mut(durable, &parts, "fsync", path)?;
                 #[cfg(test)]
@@ -333,10 +338,11 @@ impl Vfs for MemFs {
                     unnamed.remove(&child_parts);
                 }
                 dirty.remove(&parts);
+                // A mark beneath a child that is no longer a directory names nothing durable.
                 unnamed.retain(|marked| {
                     marked.len() <= parts.len()
                         || !marked.starts_with(&parts)
-                        || live_children.contains_key(&marked[parts.len()])
+                        || matches!(live_children.get(&marked[parts.len()]), Some(Node::Dir(_)))
                 });
             }
         }
@@ -347,7 +353,8 @@ impl Vfs for MemFs {
         let from_parts = split_path(from, "rename")?;
         let to_parts = split_path(to, "rename")?;
         if from_parts == to_parts {
-            return Ok(());
+            // Renaming a path onto itself changes nothing, but only a path that exists.
+            return node_at(&self.tree().live, &from_parts, "rename", from).map(|_| ());
         }
         // Reject renaming a directory into its own subtree.
         if from_parts.len() < to_parts.len() && to_parts.starts_with(&from_parts) {
@@ -376,6 +383,7 @@ impl Vfs for MemFs {
             live_data,
             durable_data,
             carried,
+            carried_unnamed,
             replaced,
             unnamed,
             refs,
@@ -469,17 +477,33 @@ impl Vfs for MemFs {
             // or above that path has been replaced since.
             let durable_is_ours =
                 !(1..=from_parts.len()).any(|depth| replaced.contains(&from_parts[..depth]));
-            let snapshot = carried
-                .remove(&from_parts)
-                .or_else(|| extract_carried(carried, replaced, &from_parts))
-                .or_else(|| {
-                    durable_is_ours
-                        .then(|| node_at(durable, &from_parts, "rename", from).ok())
-                        .flatten()
-                        .filter(|node| matches!(node, Node::Dir(_)))
-                        .cloned()
-                        .inspect(|copy| refs.retain_node(copy))
-                });
+            // The unnamed marks beneath the directory travel with its snapshot. Those beneath its
+            // old path stay too, for whatever the durable tree still holds there.
+            let durable_holds_a_file = matches!(
+                node_at(durable, &from_parts, "rename", from),
+                Ok(Node::File(_))
+            );
+            let snapshot = match carried.remove(&from_parts) {
+                Some(node) => {
+                    let mut marks = carried_unnamed.remove(&from_parts).unwrap_or_default();
+                    // Beneath a durable file, the marks there are this snapshot's own.
+                    if durable_holds_a_file {
+                        marks.extend(marks_beneath(unnamed, &from_parts));
+                    }
+                    Some((node, marks))
+                }
+                None => {
+                    extract_carried(carried, carried_unnamed, replaced, &from_parts).or_else(|| {
+                        durable_is_ours
+                            .then(|| node_at(durable, &from_parts, "rename", from).ok())
+                            .flatten()
+                            .filter(|node| matches!(node, Node::Dir(_)))
+                            .cloned()
+                            .inspect(|copy| refs.retain_node(copy))
+                            .map(|copy| (copy, marks_beneath(unnamed, &from_parts)))
+                    })
+                }
+            };
             // The destination's own history goes with it: an empty directory renamed over
             // carries nothing, and must not inherit a snapshot the replaced one was carrying.
             for key in carried.keys().cloned().collect::<Vec<_>>() {
@@ -489,6 +513,7 @@ impl Vfs for MemFs {
                     refs.release_node(&old);
                 }
             }
+            carried_unnamed.retain(|key, _| !key.starts_with(&to_parts));
             replaced.retain(|key| key.len() == to_parts.len() || !key.starts_with(&to_parts));
             for map_keys in [
                 carried.keys().cloned().collect::<Vec<_>>(),
@@ -503,31 +528,24 @@ impl Vfs for MemFs {
                     if let Some(subtree) = carried.remove(&key) {
                         carried.insert(rekeyed.clone(), subtree);
                     }
+                    if let Some(marks) = carried_unnamed.remove(&key) {
+                        carried_unnamed.insert(rekeyed.clone(), marks);
+                    }
                     if replaced.remove(&key) {
                         replaced.insert(rekeyed);
                     }
                 }
             }
-            // A descendant whose name the moved directory has not made durable is just as
-            // unnamed in the snapshot; the mark stays at the old path too, which the durable tree
-            // keeps holding until the old parent syncs.
-            let moved_unnamed: Vec<Vec<OsString>> = unnamed
-                .iter()
-                .filter(|key| key.len() > from_parts.len() && key.starts_with(&from_parts))
-                .map(|key| {
-                    let mut rekeyed = to_parts.clone();
-                    rekeyed.extend_from_slice(&key[from_parts.len()..]);
-                    rekeyed
-                })
-                .collect();
-            unnamed.extend(moved_unnamed);
             // Whatever is at either path from now on is not what the durable tree holds there.
             replaced.insert(from_parts.clone());
             replaced.insert(to_parts.clone());
-            if let Some(snapshot) = snapshot
-                && let Some(old) = carried.insert(to_parts, snapshot)
-            {
-                refs.release_node(&old);
+            if let Some((snapshot, marks)) = snapshot {
+                if !marks.is_empty() {
+                    carried_unnamed.insert(to_parts.clone(), marks);
+                }
+                if let Some(old) = carried.insert(to_parts, snapshot) {
+                    refs.release_node(&old);
+                }
             }
         }
         Ok(())
@@ -643,6 +661,7 @@ impl Vfs for MemFs {
             live,
             durable_data,
             carried,
+            carried_unnamed,
             replaced,
             refs,
             dirty,
@@ -669,7 +688,7 @@ impl Vfs for MemFs {
             Some(Node::Dir(children)) => {
                 if children.is_empty() {
                     dir.remove(name);
-                    drop_carried_under(carried, &mut refs, &parts);
+                    drop_carried_under(carried, carried_unnamed, &mut refs, &parts);
                     mark(dirty, parents, name);
                     dirty.remove(&parts);
                     replaced.insert(parts.clone());
@@ -702,6 +721,7 @@ impl Vfs for MemFs {
             live_data,
             durable_data,
             carried,
+            carried_unnamed,
             replaced,
             refs,
             live_refs,
@@ -745,7 +765,7 @@ impl Vfs for MemFs {
             });
         }
         mark(dirty, parents, name);
-        drop_carried_under(carried, &mut refs, &parts);
+        drop_carried_under(carried, carried_unnamed, &mut refs, &parts);
         replaced.insert(parts);
         Ok(())
     }

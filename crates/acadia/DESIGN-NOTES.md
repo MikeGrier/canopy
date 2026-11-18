@@ -1405,6 +1405,11 @@ announces each such step before it acts[^ac-5]:
 
 ## Second review fixes: lock-free sampling, MemFs naming and lock checks, 2026-11-17
 
+> **SUPERSEDED in part, 2026-11-17, by "MemFs marks travel with what they describe; empty lock
+> ranges; the poller retires outside its lock" below.** A rename does not copy the moved
+> directory's unnamed marks to the new path; they travel with its carried snapshot and apply when
+> it is materialized. The rest of this decision stands.
+
 - **A file-based sample takes no lock.** The abandoned flag sits beside the table of holds as an
   atomic, set only while the table is held. `alive()` reads it without the table, so a sample --
   promised to take no lock and wait for no writer -- never waits for a change its own participant
@@ -1428,3 +1433,24 @@ announces each such step before it acts[^ac-5]:
 - **Linux `wait_native` reports a dead descriptor.** Readable data is reported first; otherwise an
   invalid, failed or hung-up descriptor is an error, as `wait_native_any` reports it, rather than a
   poll that returns at once until the deadline.
+
+## MemFs marks travel with what they describe; empty lock ranges; the poller retires outside its lock, 2026-11-17
+
+- **An unnamed mark belongs to the directory content it describes.** A rename that carries a moved
+  directory's snapshot carries the marks beneath it with the snapshot, keyed by the destination
+  path, and they apply only when the snapshot is materialized by a sync. Until then the
+  destination's own marks stand, so its old durable contents survive a crash before the parent
+  sync, as `MemFsDurability.tla` requires. A sync that replaces a durable directory -- refreshing
+  it or materializing a snapshot over it -- drops the marks beneath it before the carried ones are
+  adopted, so a mark never outlives the directory it was taken in.
+- **A directory sync keeps marks only beneath children that are live directories.** A path whose
+  name now holds a file, or nothing, has no descendants for a mark to protect, and a stale mark
+  there would drop a file synced in its place.
+- **An empty byte range overlaps no lock.** An operation that touches no bytes -- a zero-length or
+  end-of-file read, an empty append, a truncation to the same length -- is never refused by
+  another process's lock.
+- **A rename of a path onto itself resolves its source**, so a missing source or parent fails as
+  it does on `OsFs`.
+- **The file poller retires registrations outside its lock.** Retired registrations are taken out
+  of the state under the lock and dropped, with their rings run, after it is released, because a
+  registration's drop may withdraw another notice and take the same lock.

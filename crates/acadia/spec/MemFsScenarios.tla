@@ -11,7 +11,8 @@ CONSTANT Scenario
 ASSUME Scenario \in {"double-name", "replace-file", "carried-move", "unnamed-child",
                      "remove-tree-unsynced", "remove-tree-synced", "remove-tree-recreate",
                      "remove-empty-recreate", "moved-descendant-sync",
-                     "moved-unnamed-child"}
+                     "moved-unnamed-child", "file-over-unnamed-dir",
+                     "rename-over-stale-mark", "rename-keeps-old-dst"}
 
 MoveFromTo(from, to) == Move(CHOOSE move \in AvailableMoves :
     move.from = from /\ move.to = to)
@@ -140,6 +141,47 @@ MovedUnnamedChildNext ==
       [] steps = 11 -> Crash
       [] OTHER -> UNCHANGED vars
 
+FileOverUnnamedDirNext ==
+    CASE steps = 0 -> CreateDir(1)
+      [] steps = 1 -> SyncDir(1)
+      [] steps = 2 -> CreateDir(6)
+      [] steps = 3 -> SyncDir(6)
+      [] steps = 4 -> RemoveEmptyDir(6)
+      [] steps = 5 -> CreateFile(6, "A")
+      [] steps = 6 -> SyncFile(6)
+      [] steps = 7 -> SyncDir(1)
+      [] steps = 8 -> Crash
+      [] OTHER -> UNCHANGED vars
+
+RenameOverStaleMarkNext ==
+    IF steps < 9 THEN MovedTreeSteps
+    ELSE CASE steps = 9 -> CreateDir(6)
+           [] steps = 10 -> CreateDir(11)
+           [] steps = 11 -> SyncDir(11)
+           [] steps = 12 -> RemoveEmptyDir(11)
+           [] steps = 13 -> MoveFromTo(8, 6)
+           [] steps = 14 -> SyncDir(1)
+           [] steps = 15 -> Crash
+           [] OTHER -> UNCHANGED vars
+
+RenameKeepsOldDstNext ==
+    CASE steps = 0 -> CreateDir(1)
+      [] steps = 1 -> SyncDir(1)
+      [] steps = 2 -> CreateDir(6)
+      [] steps = 3 -> CreateDir(11)
+      [] steps = 4 -> SyncDir(6)
+      [] steps = 5 -> SyncDir(1)
+      [] steps = 6 -> RemoveEmptyDir(11)
+      [] steps = 7 -> CreateDir(8)
+      [] steps = 8 -> SyncDir(1)
+      [] steps = 9 -> CreateDir(9)
+      [] steps = 10 -> CreateFile(10, "A")
+      [] steps = 11 -> SyncFile(10)
+      [] steps = 12 -> SyncDir(9)
+      [] steps = 13 -> MoveFromTo(8, 6)
+      [] steps = 14 -> Crash
+      [] OTHER -> UNCHANGED vars
+
 RemoveEmptyRecreateNext ==
     IF steps < 10 THEN MovedTreeSteps
     ELSE CASE steps = 10 -> RemoveFile(12)
@@ -161,6 +203,9 @@ ScenarioNext ==
       [] Scenario = "remove-empty-recreate" -> RemoveEmptyRecreateNext
       [] Scenario = "moved-descendant-sync" -> MovedDescendantSyncNext
       [] Scenario = "moved-unnamed-child" -> MovedUnnamedChildNext
+      [] Scenario = "file-over-unnamed-dir" -> FileOverUnnamedDirNext
+      [] Scenario = "rename-over-stale-mark" -> RenameOverStaleMarkNext
+      [] Scenario = "rename-keeps-old-dst" -> RenameKeepsOldDstNext
       [] OTHER -> UNCHANGED vars
 
 ScenarioSpec == Init /\ [][ScenarioNext]_vars
@@ -264,6 +309,36 @@ ScenarioWitness_MovedUnnamedChildLost == ~(
 )
 
 \* Audience: internal.
+ScenarioWitness_FileOverUnnamedDirSurvives == ~(
+    /\ Scenario = "file-over-unnamed-dir"
+    /\ steps = 9
+    /\ live[6].kind = "file"
+    /\ liveData[live[6].inode] = "A"
+)
+
+\* Audience: internal.
+ScenarioWitness_RenameOverStaleMarkKeepsSubtree == ~(
+    /\ Scenario = "rename-over-stale-mark"
+    /\ steps = 16
+    /\ live[6] = Directory
+    /\ live[11] = Directory
+    /\ live[12].kind = "file"
+    /\ liveData[live[12].inode] = "A"
+    /\ live[8] = Absent
+)
+
+\* Audience: internal.
+ScenarioWitness_RenameKeepsOldDstChild == ~(
+    /\ Scenario = "rename-keeps-old-dst"
+    /\ steps = 15
+    /\ live[6] = Directory
+    /\ live[11] = Directory
+    /\ live[12] = Absent
+    /\ live[8] = Directory
+    /\ live[9] = Absent
+)
+
+\* Audience: internal.
 ScenarioExpected ==
     /\ (Scenario = "double-name" /\ steps = 11) =>
         /\ live[4] = live[5]
@@ -313,5 +388,20 @@ ScenarioExpected ==
         /\ live[11] = Absent
         /\ live[12] = Absent
         /\ live[8] = Absent
+    /\ (Scenario = "file-over-unnamed-dir" /\ steps = 9) =>
+        /\ live[6].kind = "file"
+        /\ liveData[live[6].inode] = "A"
+    /\ (Scenario = "rename-over-stale-mark" /\ steps = 16) =>
+        /\ live[6] = Directory
+        /\ live[11] = Directory
+        /\ live[12].kind = "file"
+        /\ liveData[live[12].inode] = "A"
+        /\ live[8] = Absent
+    /\ (Scenario = "rename-keeps-old-dst" /\ steps = 15) =>
+        /\ live[6] = Directory
+        /\ live[11] = Directory
+        /\ live[12] = Absent
+        /\ live[8] = Directory
+        /\ live[9] = Absent
 
 =============================================================================
