@@ -5240,7 +5240,8 @@ The harness that replays `Creation`'s traces against acadia's creation contract 
 
 [^m11-3]: `M11-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-3) [completed 2026-11-15; `dfcd5be`]
 
-[^m12-4]: `M12-4`, now `M15-4`, in [CHECKLIST.md](CHECKLIST.md)
+[^m12-4]: `M12-4`, now `M15-4`, in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m15-4)
+    [completed 2026-11-17; `6acbbc0`]
 
 ## The contract is bridged before the documents above it, and the shared implementation announces its steps, 2026-11-15
 
