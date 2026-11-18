@@ -737,7 +737,7 @@ fn an_injected_lock_fault_is_confined_to_its_path() {
     );
 }
 
-/// The open of a child's output handle is injectable (`EO-17`). The stated reason
+/// The open of a child's output handle is injectable. The stated reason
 /// the open went *into* the `Vfs` is that it is the one place a handle is created,
 /// so it must be a place a test can make fail.
 #[test]
@@ -799,7 +799,7 @@ fn an_observed_output_open_is_recorded_and_proceeds() {
 }
 
 /// The ranged read is injectable on its own, so a test can fail the tail of a growing file without
-/// failing a whole-file read of it (`EO-18`).
+/// failing a whole-file read of it.
 #[test]
 fn a_ranged_read_is_injectable_and_independent_of_the_whole_file_read() {
     let fs = faulty(FaultPolicy::new().inject(

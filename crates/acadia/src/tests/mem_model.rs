@@ -324,6 +324,24 @@ fn mem_model_directory_removal_traces() {
     );
 
     replay(
+        "directory recreated where a durable one was removed starts empty",
+        &[
+            &durable_tree[..],
+            &[
+                Action::CreateDir("/d/x"),
+                Action::Fsync("/d"),
+                Action::Crash,
+            ],
+        ]
+        .concat(),
+        &[
+            Expected::Dir("/d/x"),
+            Expected::Missing("/d/x/y"),
+            Expected::Missing("/d/x/y/f"),
+        ],
+    );
+
+    replay(
         "directory recreated after recursive removal starts empty",
         &[
             &moved_tree[..],

@@ -22,12 +22,13 @@ impl FileConversion {
     }
 
     fn gate(&mut self) -> CoordResult<bool> {
-        if self.gate.is_some() {
-            return Ok(true);
-        }
         let held = self.held.as_mut().ok_or(CoordError::Malformed {
             what: "finished conversion",
         })?;
+        held.participant.alive()?;
+        if self.gate.is_some() {
+            return Ok(true);
+        }
         let path = held.participant.layout().gate_lock();
         match held.take(&path, LockMode::Exclusive, LockSpan::File, Waiting::Never) {
             Ok(gate) => {
@@ -54,6 +55,7 @@ impl FileConversion {
         let held = self.held.as_mut().ok_or(CoordError::Malformed {
             what: "finished conversion",
         })?;
+        held.participant.alive()?;
         let path = held.participant.layout().tiers_lock();
         if safety == ReaderSafety::Unsafe && !self.reader {
             match held.take(

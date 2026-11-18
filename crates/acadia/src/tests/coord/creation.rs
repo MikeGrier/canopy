@@ -74,8 +74,9 @@ impl FileMaker {
     }
 }
 
-impl ArtifactMaker for FileMaker {
-    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+impl FileMaker {
+    /// Runs the action or the failure scripted for the next artifact.
+    fn step(&mut self) -> CoordResult<()> {
         let index = self.made.len();
         if let Some((at, action)) = &mut self.before
             && *at == index
@@ -85,11 +86,24 @@ impl ArtifactMaker for FileMaker {
         if self.fail_at == Some(index) {
             return Err(VfsError::new(VfsErrorKind::Other, "make", "injected").into());
         }
+        Ok(())
+    }
+}
+
+impl ArtifactMaker for FileMaker {
+    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+        self.step()?;
         let path = self.root.join(name);
         self.vfs.write(&path, inputs)?;
         self.vfs.fsync(&path)?;
         self.made.push(name.to_os_string());
         Ok(())
+    }
+
+    fn marker(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        self.step()?;
+        self.made.push(name.to_os_string());
+        Ok(inputs.to_vec())
     }
 }
 
@@ -148,6 +162,24 @@ fn store_names(vfs: &dyn Vfs, root: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// `prefix` followed by a code unit no Unicode string holds.
+fn non_unicode(prefix: &str) -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let mut bytes = prefix.as_bytes().to_vec();
+        bytes.push(0xFF);
+        OsString::from_vec(bytes)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        let mut wide: Vec<u16> = prefix.encode_utf16().collect();
+        wide.push(0xD800);
+        OsString::from_wide(&wide)
+    }
 }
 
 /// Asserts that every artifact exists and holds `inputs`.
@@ -297,16 +329,27 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
         let vfs = backend.process();
         let root = backend.root();
         let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
-        let bad: [&[&str]; 6] = [
+        let bad: [&[&str]; 12] = [
             &[],
             &["dir/marker"],
             &[".."],
             &[".coord-marker"],
             &["log", "log"],
             &["files", ""],
+            &[".COORD-reservation"],
+            &["log", "LOG", "marker"],
+            &["\u{e9}t\u{e9}", "\u{c9}T\u{c9}"],
+            &["files", "files.publishing.1-0"],
+            &["files", "FILES.publishing.x", "marker"],
+            &["files.publishing.7", "files"],
         ];
+        let reserved_non_unicode = non_unicode(".coord");
+        let bad = bad
+            .iter()
+            .map(|names| names.iter().map(OsString::from).collect::<Vec<_>>())
+            .chain([vec![reserved_non_unicode]]);
         for artifacts in bad {
-            let artifacts: Vec<&OsStr> = artifacts.iter().map(OsStr::new).collect();
+            let artifacts: Vec<&OsStr> = artifacts.iter().map(OsString::as_os_str).collect();
             let plan = CreationPlan {
                 inputs: INPUTS,
                 nonce: nonce(1),
@@ -866,6 +909,53 @@ fn a_marker_no_open_made_durable_is_lost_to_a_crash() {
     root_with_an_unsynced_marker(&FileFactory::new(), &mem, &root);
     mem.simulate_crash();
     assert!(!mem.exists(&root.join(MARKER)).expect("exists"));
+}
+
+#[test]
+fn a_marker_cut_short_is_never_found_as_the_store() {
+    for implementation in implementations() {
+        for publication_fails in [false, true] {
+            let mem = Backend::mem();
+            let root = PathBuf::from(Backend::MEM_ROOT);
+            let marker = root.join(MARKER);
+            let policy = FaultPolicy::new()
+                .inject(
+                    FaultOp::Write,
+                    &marker,
+                    Fault::ShortWrite { persist: 3 },
+                    When::Always,
+                )
+                .inject(
+                    FaultOp::PublishNew,
+                    &marker,
+                    Fault::io_error(),
+                    if publication_fails {
+                        When::Always
+                    } else {
+                        When::OnCall(0)
+                    },
+                );
+            let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(mem.another_process(), policy));
+            let creator = implementation.open(Arc::clone(&vfs), &root).expect("open");
+            let first = create(
+                &*creator,
+                INPUTS,
+                nonce(1),
+                &mut FileMaker::new(Arc::clone(&vfs), &root),
+            );
+            creator.abandon();
+            create_through(
+                &implementation,
+                Arc::new(mem.another_process()),
+                &root,
+                INPUTS,
+                2,
+            )
+            .expect("an identical creator ends with the store");
+            assert_created(&mem, &root, INPUTS);
+            assert_eq!(first.is_err(), publication_fails, "{first:?}");
+        }
+    }
 }
 
 /// The ways a creation is cut short: the n-th sync of the root failing, or the maker failing at

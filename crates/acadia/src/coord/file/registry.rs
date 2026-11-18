@@ -22,6 +22,9 @@ use crate::{LockMode, VfsErrorKind};
 use super::layout::{Layout, REGISTRY_ENTRIES};
 use super::{FileCoordination, HoldId};
 
+#[cfg(test)]
+mod tests;
+
 /// The encodings of an entry's record and of the overflow record. Changing any value is a
 /// breaking change to the state's format.
 mod format {
@@ -47,7 +50,7 @@ pub(crate) struct Entry {
 
 /// A token no other registration has: this process's identifier, the time its first token was
 /// made, and a count of the tokens it has made.
-fn next_token() -> RegistryToken {
+fn next_token() -> CoordResult<RegistryToken> {
     static STARTED: OnceLock<u64> = OnceLock::new();
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let started = *STARTED.get_or_init(|| {
@@ -55,11 +58,22 @@ fn next_token() -> RegistryToken {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos() as u64)
     });
-    RegistryToken::new(
-        (u128::from(std::process::id()) << 96)
-            | (u128::from(started) << 32)
-            | u128::from(NEXT.fetch_add(1, Ordering::Relaxed)),
-    )
+    token_from(&NEXT, started)
+}
+
+/// The token `next` counts next for a process whose first token was made at `started`, refused
+/// once the count is spent rather than repeating one a registration may still hold.
+fn token_from(next: &AtomicU32, started: u64) -> CoordResult<RegistryToken> {
+    let count = next
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            count.checked_add(1)
+        })
+        .map_err(|_| CoordError::Exhausted {
+            what: "registry token",
+        })?;
+    Ok(RegistryToken::new(
+        (u128::from(std::process::id()) << 96) | (u128::from(started) << 32) | u128::from(count),
+    ))
 }
 
 fn encode_tier(tier: Option<TierHold>) -> u8 {
@@ -196,7 +210,14 @@ impl FileCoordination {
                     }
                 }
             };
-            let token = next_token();
+            let token = match next_token() {
+                Ok(token) => token,
+                Err(error) => {
+                    drop(self.release_lock(liveness));
+                    drop(self.release_lock(claim));
+                    return Err(error);
+                }
+            };
             let written = self.publishing(|vfs| {
                 vfs.write(
                     &layout.registry_entry(index),

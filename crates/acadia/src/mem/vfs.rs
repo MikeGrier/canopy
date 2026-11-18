@@ -6,12 +6,12 @@ use super::*;
 impl Vfs for MemFs {
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
         let parts = split_path(path, "read")?;
-        let holds = self.holds_on(&parts);
+        let holds = self.holds();
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read", path)? {
             Node::File(id) => {
                 let bytes = guard.live_data.get(id).cloned().unwrap_or_default();
-                holds.check(Access::Read, 0, bytes.len() as u64, "read", path)?;
+                holds.check(*id, Access::Read, 0, bytes.len() as u64, "read", path)?;
                 Ok(bytes)
             }
             Node::Dir(_) => Err(err(
@@ -25,7 +25,7 @@ impl Vfs for MemFs {
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
         let parts = split_path(path, "read_at")?;
-        let holds = self.holds_on(&parts);
+        let holds = self.holds();
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read_at", path)? {
             Node::File(id) => {
@@ -39,7 +39,7 @@ impl Vfs for MemFs {
                     .unwrap_or(usize::MAX)
                     .min(bytes.len());
                 let end = start.saturating_add(len).min(bytes.len());
-                holds.check(Access::Read, start as u64, end as u64, "read_at", path)?;
+                holds.check(*id, Access::Read, start as u64, end as u64, "read_at", path)?;
                 Ok(bytes[start..end].to_vec())
             }
             Node::Dir(_) => Err(err(
@@ -56,7 +56,7 @@ impl Vfs for MemFs {
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, "write", path, "empty path"));
         };
-        let holds = self.holds_on(&parts);
+        let holds = self.holds();
         let mut guard = self.tree();
         let Inner {
             live,
@@ -79,12 +79,11 @@ impl Vfs for MemFs {
                 let id = *id;
                 let old_len = live_data.get(&id).map_or(0, Vec::len);
                 let touched = old_len.max(contents.len()) as u64;
-                holds.check(Access::Write, 0, touched, "write", path)?;
+                holds.check(id, Access::Write, 0, touched, "write", path)?;
                 live_data.insert(id, contents.to_vec());
                 Ok(())
             }
             None => {
-                holds.check(Access::Write, 0, contents.len() as u64, "write", path)?;
                 let id = next_id(next_inode, "write", path)?;
                 live_data.insert(id, contents.to_vec());
                 dir.insert(name.clone(), Node::File(id));
@@ -106,7 +105,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let holds = self.holds_on(&parts);
+        let holds = self.holds();
         let mut guard = self.tree();
         let Inner {
             live,
@@ -130,12 +129,11 @@ impl Vfs for MemFs {
                 let bytes = live_data.entry(id).or_default();
                 let old_len = bytes.len() as u64;
                 let new_len = old_len + contents.len() as u64;
-                holds.check(Access::Write, old_len, new_len, "append", path)?;
+                holds.check(id, Access::Write, old_len, new_len, "append", path)?;
                 bytes.extend_from_slice(contents);
                 Ok(())
             }
             None => {
-                holds.check(Access::Write, 0, contents.len() as u64, "append", path)?;
                 let id = next_id(next_inode, "append", path)?;
                 live_data.insert(id, contents.to_vec());
                 dir.insert(name.clone(), Node::File(id));
@@ -165,7 +163,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let holds = self.holds_on(&parts);
+        let holds = self.holds();
         let mut guard = self.tree();
         let Inner {
             live, live_data, ..
@@ -182,7 +180,17 @@ impl Vfs for MemFs {
                 let id = *id;
                 let bytes = live_data.entry(id).or_default();
                 let (low, high) = (bytes.len().min(new_len), bytes.len().max(new_len));
-                holds.check(Access::Write, low as u64, high as u64, "truncate", path)?;
+                holds.check(id, Access::Write, low as u64, high as u64, "truncate", path)?;
+                bytes
+                    .try_reserve(new_len.saturating_sub(bytes.len()))
+                    .map_err(|_| {
+                        err(
+                            VfsErrorKind::InvalidInput,
+                            "truncate",
+                            path,
+                            "length too large",
+                        )
+                    })?;
                 bytes.resize(new_len, 0);
                 Ok(())
             }
@@ -245,16 +253,23 @@ impl Vfs for MemFs {
             counts: refs,
             durable_data,
         };
-        let src_kind = {
+        let (src_kind, src_file) = {
             let sdir = dir_of(live, from_parents, "rename", from)?;
             match sdir.get(from_name) {
                 None => return Err(err(VfsErrorKind::NotFound, "rename", from, "no such path")),
-                Some(Node::File(_)) => Kind::File,
-                Some(Node::Dir(_)) => Kind::Dir,
+                Some(Node::File(id)) => (Kind::File, Some(*id)),
+                Some(Node::Dir(_)) => (Kind::Dir, None),
             }
         };
         let dst_info = {
             let ddir = dir_of(live, to_parents, "rename", to)?;
+            if let (Some(Node::File(id)), Some(source)) = (ddir.get(to_name), src_file)
+                && *id == source
+            {
+                // Two names of one file, which a crash can leave: renaming one over the other
+                // changes nothing, as POSIX `rename` does.
+                return Ok(());
+            }
             ddir.get(to_name).map(|n| match n {
                 Node::File(_) => (Kind::File, true),
                 Node::Dir(m) => (Kind::Dir, m.is_empty()),

@@ -161,6 +161,9 @@ impl Poller {
                         ring_ids.push(id);
                     }
                 }
+                // Sets, so the pass under the lock below costs one lookup per arm.
+                let ring_ids: std::collections::HashSet<u64> = ring_ids.into_iter().collect();
+                let quiet_ids: std::collections::HashSet<u64> = quiet_ids.into_iter().collect();
                 state = self.state();
                 let mut rings = Vec::new();
                 let mut retired = Vec::new();

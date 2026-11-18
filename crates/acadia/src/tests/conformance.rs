@@ -2,7 +2,7 @@
 // Split from tests.rs at 0b1f7d4.
 
 //! The shared two-backend conformance suite, the error taxonomy, and the
-//! durability model (VFS-5).
+//! durability model.
 
 use super::*;
 
@@ -53,6 +53,48 @@ fn truncate_grows_with_zeros_and_shrinks() {
         fs.truncate(&f, 0).unwrap();
         assert_eq!(fs.read(&f).unwrap(), b"");
     });
+}
+
+#[test]
+fn a_mem_rename_between_two_names_of_one_file_changes_nothing() {
+    let fs = MemFs::new();
+    for dir in ["/p", "/q"] {
+        fs.create_dir_all(Path::new(dir)).unwrap();
+        fs.fsync(Path::new(dir)).unwrap();
+    }
+    let (a, b) = (Path::new("/p/a"), Path::new("/q/b"));
+    fs.write(a, b"one file").unwrap();
+    fs.fsync(a).unwrap();
+    fs.fsync(Path::new("/p")).unwrap();
+    fs.rename(a, b).unwrap();
+    fs.fsync(Path::new("/q")).unwrap();
+    fs.simulate_crash();
+    assert!(
+        fs.exists(a).unwrap() && fs.exists(b).unwrap(),
+        "the crash leaves both names of the file"
+    );
+    fs.rename(a, b).unwrap();
+    assert_eq!(fs.read(a).unwrap(), b"one file", "the source name is kept");
+    assert_eq!(fs.read(b).unwrap(), b"one file");
+    fs.fsync(Path::new("/p")).unwrap();
+    fs.fsync(Path::new("/q")).unwrap();
+    fs.simulate_crash();
+    assert_eq!(fs.read(a).unwrap(), b"one file");
+    assert_eq!(fs.read(b).unwrap(), b"one file");
+}
+
+#[test]
+fn a_mem_truncate_to_a_length_no_buffer_holds_is_refused_and_changes_nothing() {
+    let fs = MemFs::new();
+    let f = Path::new("f");
+    fs.write(f, b"hello").unwrap();
+    for len in [u64::MAX, u64::MAX / 2, isize::MAX as u64 + 1] {
+        let refused = fs.truncate(f, len).unwrap_err();
+        assert_eq!(refused.kind(), VfsErrorKind::InvalidInput, "{len}");
+        assert_eq!(fs.read(f).unwrap(), b"hello");
+    }
+    fs.truncate(f, 2).unwrap();
+    assert_eq!(fs.read(f).unwrap(), b"he");
 }
 
 #[test]
@@ -186,6 +228,7 @@ fn metadata_and_exists_report_type_and_len() {
         let dm = fs.metadata(&d).unwrap();
         assert!(dm.is_dir());
         assert!(!dm.is_file());
+        assert_eq!(dm.len, 0, "a directory's length is zero");
 
         assert!(fs.exists(&f).unwrap());
         assert!(!fs.exists(&root.join("nope")).unwrap());
@@ -606,7 +649,7 @@ fn mem_a_directory_recreated_after_removal_does_not_inherit_old_contents() {
 // ---------------------------------------------------------------------------
 // Exclusive locking (`D116`) -- the contract both backends honour, each at its
 // own scope. Cross-process behaviour is not testable here by construction; it is
-// the store's `LOCK-4` suite that spawns a real second process.
+// canopy-lock-holder's suite that spawns a real second process.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -804,7 +847,7 @@ fn the_default_implementation_reports_unsupported() {
 }
 
 // ---------------------------------------------------------------------------
-// `open_output`: the handle a child writes into (`EO-17`).
+// `open_output`: the handle a child writes into.
 // ---------------------------------------------------------------------------
 
 /// The handle is a real file the opener can write through, the file is created
@@ -923,7 +966,7 @@ fn a_vfs_error_converts_to_the_nearest_io_error_and_is_kept_as_its_source() {
 }
 
 // ---------------------------------------------------------------------------
-// `read_at`: the read of a file still being written (`EO-18`), on both backends.
+// `read_at`: the read of a file still being written, on both backends.
 // ---------------------------------------------------------------------------
 
 #[test]

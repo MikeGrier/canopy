@@ -1,6 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! The in-memory mock [`Vfs`] backend (VFS-3, D55).
+//! The in-memory mock [`Vfs`] backend (D55).
 //!
 //! [`MemFs`] is a complete filesystem held in memory: a tree of directories and
 //! named files that lets store logic run disk-free and deterministically. It

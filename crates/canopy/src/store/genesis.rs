@@ -567,19 +567,15 @@ impl ArtifactMaker for GenesisMaker<'_> {
                 self.vfs.fsync(&partition)?;
             }
             self.vfs.fsync(&self.root.join(NAMESPACE_TREE_DIR))?;
-        } else {
-            self.vouch()?;
-            // The marker appears atomically and last (D40); one already there is this creation's,
-            // published whole.
-            match self
-                .vfs
-                .publish_new(&self.root.join(MARKER_NAME), self.marker)
-            {
-                Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {}
-                published => published?,
-            }
         }
         Ok(())
+    }
+
+    /// The marker the coordination publishes atomically and last (D40), once the root's
+    /// coordination state is vouched for.
+    fn marker(&mut self, _name: &OsStr, _inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        self.vouch()?;
+        Ok(self.marker.to_vec())
     }
 }
 

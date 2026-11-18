@@ -52,6 +52,13 @@
             Overrides = @{ Control = '"remove-tree-leaves-descendants"' }
         }
         @{
+            Name = 'removal-leaves-its-path-unreplaced'
+            Base = 'MemFsScenarios-RemoveTreeRecreateInPlace'
+            Kind = 'INVARIANTS'
+            Property = 'ScenarioExpected'
+            Overrides = @{ Control = '"removal-keeps-the-path"' }
+        }
+        @{
             Name = 'recursive-removal-is-durable-without-sync'
             Base = 'MemFsScenarios-RemoveTreeUnsynced'
             Kind = 'INVARIANTS'

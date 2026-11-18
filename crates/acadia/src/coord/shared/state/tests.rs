@@ -129,6 +129,57 @@ fn failed_initialization_is_never_vouched_and_can_be_retried() {
 }
 
 #[test]
+fn identities_a_retry_issues_survive_a_crash_after_the_first_attempt_died_before_syncing() {
+    let fs = MemFs::new();
+    let root = Path::new("/state");
+    fs.create_dir_all(root).unwrap();
+    fs.fsync(root).unwrap();
+    let policy = crate::FaultPolicy::new().inject(
+        crate::FaultOp::Fsync,
+        root,
+        crate::Fault::io_error(),
+        crate::When::Once,
+    );
+    let dying = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    assert!(SharedState::open(dying, root).is_err());
+    let retry = SharedState::open(Arc::new(fs.another_process()), root).unwrap();
+    let range = root.join(DIRECTORY).join("generation-range");
+    let issued = fs.read(&range).unwrap();
+    retry.abandon();
+    fs.simulate_crash();
+    assert_eq!(
+        fs.read(&range).ok(),
+        Some(issued),
+        "the reservation the retry issued from was lost"
+    );
+}
+
+#[test]
+fn an_epoch_write_cut_short_leaves_a_root_the_next_participant_opens() {
+    let fs = filesystem();
+    let root = Path::new("/state");
+    drop(SharedState::open(fs.clone(), root).unwrap());
+    let epoch = root.join(DIRECTORY).join("epoch");
+    let policy = crate::FaultPolicy::new()
+        .inject(
+            crate::FaultOp::Write,
+            &epoch,
+            crate::Fault::ShortWrite { persist: 5 },
+            crate::When::Once,
+        )
+        .inject_matching(
+            crate::FaultOp::Write,
+            crate::PathMatcher::file_name_prefix("epoch"),
+            crate::Fault::ShortWrite { persist: 5 },
+            crate::When::Once,
+        );
+    let torn = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    assert!(SharedState::open(torn, root).is_err());
+    let reopened = SharedState::open(fs.clone(), root).expect("the next participant opens");
+    assert!(reopened.snapshot().unwrap().fenced);
+}
+
+#[test]
 fn damaged_inactive_instance_and_mapping_are_recreated_fenced() {
     for name in ["instance", "cells"] {
         let fs = filesystem();

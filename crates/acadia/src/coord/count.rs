@@ -15,7 +15,9 @@ use super::types::ModCount;
 /// [`ExclusionHold`](super::ExclusionHold).
 pub trait ModificationCount {
     /// Samples the published count: one read of a value published atomically, taking no lock and
-    /// waiting for no writer.
+    /// waiting for no writer. A participant whose first use of the coordination state this is
+    /// first makes that state its own, which can wait for another participant doing the same --
+    /// never for a writer -- and takes no lock in any later sample.
     ///
     /// A sample is never assembled from parts published separately, and never stale: a sample
     /// taken after observing any filesystem effect of a modification reflects that modification's

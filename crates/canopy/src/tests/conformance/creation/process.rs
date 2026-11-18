@@ -249,6 +249,10 @@ impl ArtifactMaker for Maker {
         self.vfs.fsync(&path)?;
         Ok(())
     }
+
+    fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        Ok(inputs.to_vec())
+    }
 }
 
 /// A process's whole attempt: a creation for a creator, an open for an opener, and the model's

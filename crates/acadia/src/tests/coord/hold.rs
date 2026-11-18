@@ -37,6 +37,63 @@ fn owner_recorded(participant: &FileCoordination) -> bool {
         .expect("exists")
 }
 
+/// A recovery cut short at any step of a root never vouched for, whose holder died, leaves the
+/// sample settled exactly
+/// when the state is trusted, and recovery required exactly while the state is untrusted or
+/// fenced: the vouched count is the step that makes the state trusted and settled together.
+#[test]
+fn a_recovery_cut_short_at_any_step_never_leaves_a_settled_sample_beside_untrusted_state() {
+    for implementation in implementations() {
+        for op in [FaultOp::Write, FaultOp::Rename, FaultOp::RemoveFile] {
+            for n in 1.. {
+                let mem = Backend::mem();
+                let root = PathBuf::from(Backend::MEM_ROOT);
+                let dying = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+                let _dead = acquire(&dying);
+                dying.abandon();
+                let gate = FaultGate::closed();
+                let policy = FaultPolicy::new().inject_gated(
+                    op,
+                    PathMatcher::predicate(|_| true),
+                    Fault::io_error(),
+                    When::OnCall(n),
+                    gate.clone(),
+                );
+                let vfs: std::sync::Arc<dyn Vfs> =
+                    std::sync::Arc::new(FaultyFs::new(mem.another_process(), policy));
+                let recovering = participant_on(&implementation, vfs, &root);
+                let mut hold = acquire(&recovering);
+                assert!(hold.acquired().fenced(), "the death fenced the root");
+                gate.open();
+                let completed = hold.complete_recovery();
+                gate.close();
+                drop(hold);
+                let observer = participant_on(
+                    &implementation,
+                    std::sync::Arc::new(mem.another_process()),
+                    &root,
+                );
+                let sample = observer.sample().expect("sample");
+                let trust = observer.trust().expect("trust");
+                assert_eq!(
+                    sample.is_settled(),
+                    trust == Trust::Vouched,
+                    "{op:?} {n}: {sample:?} beside {trust:?}"
+                );
+                let next = acquire(&observer);
+                assert_eq!(
+                    next.acquired().recovery_required(),
+                    completed.is_err(),
+                    "{op:?} {n}: {completed:?}"
+                );
+                if completed.is_ok() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn the_first_acquisition_of_new_state_requires_recovery_and_makes_the_boot_record() {
     on_every_implementation("coord-hold-first", &|implementation, backend| {

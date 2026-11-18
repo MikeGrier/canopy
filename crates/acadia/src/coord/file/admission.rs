@@ -122,6 +122,7 @@ impl FileCoordination {
 
 impl Admission for FileCoordination {
     fn attach(&self, access: Access, waiting: Waiting) -> CoordResult<Box<dyn Attachment>> {
+        self.check_implementation()?;
         Ok(Box::new(self.attach_file(access, waiting)?))
     }
 }

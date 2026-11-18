@@ -37,6 +37,24 @@ fn a_lock_creates_its_file_and_keeps_what_is_already_there() {
 }
 
 #[test]
+fn a_lock_follows_its_file_through_a_rename() {
+    on_both("lock-follows-the-file", |fs, root| {
+        let (first, second) = (root.join("a.lock"), root.join("b.lock"));
+        let held = fs.try_lock(&first, EXCLUSIVE, range(0, 1)).unwrap();
+        fs.rename(&first, &second).unwrap();
+        assert_kind(
+            fs.try_lock(&second, EXCLUSIVE, range(0, 1)),
+            VfsErrorKind::Locked,
+        );
+        let fresh = fs
+            .try_lock(&first, EXCLUSIVE, range(0, 1))
+            .expect("a new file at the old name is not the locked one");
+        drop((held, fresh));
+        drop(fs.try_lock(&second, EXCLUSIVE, range(0, 1)).unwrap());
+    });
+}
+
+#[test]
 fn two_guards_in_one_process_are_two_holders() {
     on_both("lock-two-guards", |fs, root| {
         let path = root.join("one.lock");
@@ -328,15 +346,25 @@ fn abandoning_one_process_leaves_every_other_process_its_locks() {
 fn a_crash_loses_storage_and_leaves_the_locks_held() {
     let fs = MemFs::new();
     fs.create_dir_all(Path::new("/d")).unwrap();
-    let held = fs
-        .try_lock(Path::new("/d/x.lock"), EXCLUSIVE, LockSpan::File)
+    let kept = fs
+        .try_lock(Path::new("/d/kept.lock"), EXCLUSIVE, LockSpan::File)
+        .unwrap();
+    // A direct entry of the implicit root is durable once it is itself synced.
+    fs.fsync(Path::new("/d")).unwrap();
+    let lost = fs
+        .try_lock(Path::new("/d/lost.lock"), EXCLUSIVE, LockSpan::File)
         .unwrap();
     fs.simulate_crash();
     assert_kind(
-        fs.try_lock(Path::new("/d/x.lock"), EXCLUSIVE, LockSpan::File),
+        fs.try_lock(Path::new("/d/kept.lock"), EXCLUSIVE, LockSpan::File),
         VfsErrorKind::Locked,
     );
-    drop(held);
+    // The crash lost the file the lock was on; the name's new file is another one.
+    drop(
+        fs.try_lock(Path::new("/d/lost.lock"), EXCLUSIVE, LockSpan::File)
+            .unwrap(),
+    );
+    drop((kept, lost));
 }
 
 #[test]

@@ -74,6 +74,31 @@ fn an_inspection_that_unwinds_releases_its_probe() {
     });
 }
 
+#[test]
+fn a_first_writer_that_appears_while_discovery_looks_is_not_reported_dead() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let writer = implementation.participant(Arc::new(mem.another_process()), &root);
+        let fence = writer.layout().fence();
+        let held: Arc<std::sync::Mutex<Option<Box<dyn ExclusionHold>>>> = Arc::default();
+        let holding = Arc::clone(&held);
+        let policy = crate::FaultPolicy::new().inject(
+            crate::FaultOp::Metadata,
+            &fence,
+            crate::Fault::observe_with(move |_, _| {
+                *holding.lock().unwrap() = Some(writer.acquire(Waiting::Never).expect("acquire"));
+            }),
+            crate::When::Once,
+        );
+        let vfs: Arc<dyn Vfs> = Arc::new(crate::FaultyFs::new(mem.another_process(), policy));
+        let discovering = implementation.participant(vfs, &root);
+        let need = discovering.discover_recovery().expect("discover");
+        assert!(!need.holder_died(), "a live first writer was reported dead");
+        assert!(!need.fenced());
+    }
+}
+
 fn discover(participant: &FileCoordination) -> RecoveryNeed {
     participant.discover_recovery().expect("discover")
 }

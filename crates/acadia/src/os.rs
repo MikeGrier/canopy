@@ -1,6 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! The real operating-system [`Vfs`] backend (VFS-2, D55).
+//! The real operating-system [`Vfs`] backend (D55).
 //!
 //! [`OsFs`] is a thin passthrough that implements the [`Vfs`] contract over
 //! `std::fs`. It is the *only* place in the whole workspace that touches
@@ -509,8 +509,7 @@ fn publish_staged(
     let staged = file.write_all(contents).and_then(|()| file.sync_all());
     drop(file);
     let published = staged.and_then(|()| place_without_replacing(&staging, path));
-    // On Unix the staging name is a second link; on Windows only a failed move leaves it.
-    if cfg!(not(windows)) || published.is_err() {
+    if published.is_err() {
         let _ = fs::remove_file(&staging);
     }
     published.map_err(|e| err("publish_new", path, &e))
@@ -518,10 +517,13 @@ fn publish_staged(
 
 /// Gives the staged file the name `path`, failing where anything has that name.
 ///
-/// A hard link, which a replacing rename would not be.
+/// A hard link, which a replacing rename would not be, and then the staging name's removal: until
+/// it goes the file has two names, which `publish_new` promises it does not, so a failure to
+/// remove it fails the publication.
 #[cfg(not(windows))]
 fn place_without_replacing(staging: &Path, path: &Path) -> io::Result<()> {
-    fs::hard_link(staging, path)
+    fs::hard_link(staging, path)?;
+    fs::remove_file(staging)
 }
 
 /// Gives the staged file the name `path`, failing where anything has that name.
@@ -731,9 +733,15 @@ impl Vfs for OsFs {
 
     fn metadata(&self, path: &Path) -> VfsResult<Metadata> {
         let meta = fs::metadata(path).map_err(|e| err("metadata", path, &e))?;
+        let file_type = file_type_of(meta.file_type());
         Ok(Metadata {
-            file_type: file_type_of(meta.file_type()),
-            len: meta.len(),
+            file_type,
+            // The platform's size of a directory is its own bookkeeping, not a length.
+            len: if file_type == FileType::Dir {
+                0
+            } else {
+                meta.len()
+            },
         })
     }
 

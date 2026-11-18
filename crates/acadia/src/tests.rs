@@ -1,6 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! Unit tests for ACADIA-M1 (VFS-5).
+//! Unit tests for the seam, its backends and its fault decorator.
 //!
 //! Three concerns are exercised here:
 //!

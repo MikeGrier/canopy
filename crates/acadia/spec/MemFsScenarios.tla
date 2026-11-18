@@ -10,6 +10,7 @@ EXTENDS MemFsDurability
 CONSTANT Scenario
 ASSUME Scenario \in {"double-name", "replace-file", "carried-move", "unnamed-child",
                      "remove-tree-unsynced", "remove-tree-synced", "remove-tree-recreate",
+                     "remove-tree-recreate-in-place",
                      "remove-empty-recreate", "moved-descendant-sync",
                      "moved-unnamed-child", "file-over-unnamed-dir",
                      "rename-over-stale-mark", "rename-keeps-old-dst"}
@@ -119,6 +120,13 @@ RemoveTreeRecreateNext ==
            [] steps = 13 -> Crash
            [] OTHER -> UNCHANGED vars
 
+RemoveTreeRecreateInPlaceNext ==
+    IF steps < 10 THEN DurableTreeSteps
+    ELSE CASE steps = 10 -> CreateDir(6)
+           [] steps = 11 -> SyncDir(1)
+           [] steps = 12 -> Crash
+           [] OTHER -> UNCHANGED vars
+
 MovedDescendantSyncNext ==
     IF steps < 10 THEN MovedTreeSteps
     ELSE CASE steps = 10 -> SyncDir(11)
@@ -200,6 +208,7 @@ ScenarioNext ==
       [] Scenario = "remove-tree-unsynced" -> RemoveTreeUnsyncedNext
       [] Scenario = "remove-tree-synced" -> RemoveTreeSyncedNext
       [] Scenario = "remove-tree-recreate" -> RemoveTreeRecreateNext
+      [] Scenario = "remove-tree-recreate-in-place" -> RemoveTreeRecreateInPlaceNext
       [] Scenario = "remove-empty-recreate" -> RemoveEmptyRecreateNext
       [] Scenario = "moved-descendant-sync" -> MovedDescendantSyncNext
       [] Scenario = "moved-unnamed-child" -> MovedUnnamedChildNext
@@ -275,6 +284,15 @@ ScenarioWitness_RecreatedAfterRemovalEmpty == ~(
     /\ live[11] = Absent
     /\ live[12] = Absent
     /\ live[8] = Absent
+)
+
+\* Audience: internal.
+ScenarioWitness_RecreatedInPlaceEmpty == ~(
+    /\ Scenario = "remove-tree-recreate-in-place"
+    /\ steps = 13
+    /\ live[6] = Directory
+    /\ live[11] = Absent
+    /\ live[12] = Absent
 )
 
 \* Audience: internal.
@@ -372,6 +390,10 @@ ScenarioExpected ==
         /\ live[11] = Absent
         /\ live[12] = Absent
         /\ live[8] = Absent
+    /\ (Scenario = "remove-tree-recreate-in-place" /\ steps = 13) =>
+        /\ live[6] = Directory
+        /\ live[11] = Absent
+        /\ live[12] = Absent
     /\ (Scenario = "remove-empty-recreate" /\ steps = 16) =>
         /\ live[6] = Directory
         /\ live[11] = Absent

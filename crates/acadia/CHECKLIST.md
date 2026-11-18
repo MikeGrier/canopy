@@ -105,3 +105,48 @@ cross-process creation tests (canopy's [CHECKLIST.md](../canopy/CHECKLIST.md) ->
 
   > **-> CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M15` -> `M15-6`
   > (creation's tests at scale and across processes). See [CHECKLIST.md](../canopy/CHECKLIST.md).
+
+## M22 -- Fourth 2026-11-17 review: fault injection and the OS backend
+
+Review report: findings of the fourth acadia review (GPT-6.2 Astra), each confirmed by a failing test
+before it is fixed; a finding that does not hold is recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md)
+instead of being changed.
+
+- [x] **M22-1** -- `When::OnCall(u32::MAX)` fires once, not on every later matching call. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m22-1)
+- [x] **M22-2** -- A `PathMatcher::Predicate` runs outside the rules mutex, so it may use the decorator it is installed in. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m22-2)
+- [x] **M22-3** -- `MemFs::truncate` to a length no buffer can hold is refused without a panic. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m22-3)
+- [x] **M22-4** -- `OsFs::metadata` reports a directory's length as zero, as `Metadata::len` specifies. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m22-4)
+- [x] **M22-5** -- On Unix, `publish_new` does not report success while the staging name survives. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m22-5)
+
+## M23 -- Fourth review: creation plans and markers
+
+- [x] **M23-1** -- A creation plan is refused when an artifact is a staging name of another, or names another artifact or a reserved name by a case variant or a non-UTF-8 spelling. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m23-1)
+- [x] **M23-2** -- A creator finds a marker only once it is complete: the marker is made atomically, which the creation contract requires of its maker. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m23-2)
+
+## M24 -- Fourth review: file-based coordination
+
+- [x] **M24-1** -- Ending a modification when none is open changes nothing, fence included. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m24-1)
+- [x] **M24-2** -- A recovery that fails part way never leaves a settled sample beside untrusted state. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m24-2)
+- [x] **M24-3** -- Discovery never reports a writer that appeared while it looked as dead. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m24-3)
+- [x] **M24-4** -- An abandoned upgrade conversion stops reporting that it holds the gate. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m24-4)
+- [x] **M24-5** -- File registry tokens are never reused within a process. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m24-5)
+
+## M25 -- Fourth review: shared-memory coordination
+
+- [x] **M25-1** -- The shared state directory's name is durable before any identity is issued from it. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m25-1)
+- [x] **M25-2** -- The shared-state epoch survives a write cut short. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m25-2)
+- [x] **M25-3** -- An abandoned shared participant publishes no reservation once `abandon` returns. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m25-3)
+- [x] **M25-4** -- No participant takes writer exclusion on a root reserved for another implementation. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m25-4)
+- [x] **M25-5** -- The sampling contract states that a participant's first use of the state initializes it, which can wait for another participant's initialization and never for a writer. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m25-5)
+
+## M26 -- Fourth review: MemFs as a reference
+
+- [x] **M26-1** -- `MemFs` range locks follow the file, not the name. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m26-1)
+- [x] **M26-2** -- A `MemFs` rename between two names of one file changes nothing. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m26-2)
+- [x] **M26-3** -- `MemFsDurability.tla` does not restore the children of a removed and recreated directory. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m26-3)
+
+## M27 -- Fourth review: cost and conventions
+
+- [x] **M27-1** -- A burst of due notifications costs linear work under the process-wide mutex. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m27-1)
+- [x] **M27-2** -- Source comments cite design decisions, not work-item ids. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m27-2)
+- [x] **M27-3** -- The findings that did not hold are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m27-3)

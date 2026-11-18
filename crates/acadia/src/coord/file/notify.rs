@@ -137,6 +137,9 @@ impl Poller {
             if !due.is_empty() {
                 drop(state);
                 let (ringing, quiet) = sample(due);
+                // Sets, so the passes under the lock below cost one lookup per registration.
+                let ringing: std::collections::HashSet<u64> = ringing.into_iter().collect();
+                let quiet: std::collections::HashSet<u64> = quiet.into_iter().collect();
                 state = self.state();
                 let now = Instant::now();
                 // Retired outside the lock: dropping a registration drops its participant, whose

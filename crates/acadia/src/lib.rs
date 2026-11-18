@@ -2,9 +2,8 @@
 
 //! `acadia` -- the filesystem seam under Canopy (D55).
 //!
-//! Identifiers such as `D55` or `VFS-2` in these docs name design decisions and work
-//! items in the project's design records; they are kept for traceability and are not
-//! needed to use the API.
+//! Identifiers such as `D55` in these docs name design decisions in the project's design
+//! records; they are kept for traceability and are not needed to use the API.
 //!
 //! This crate is the ground every other Canopy crate's storage stands on -- the one
 //! place where filesystem intent is *specified*, so that the rest of the system
@@ -42,11 +41,10 @@
 //!   atomically on the same filesystem; the *effect* of the rename is durable
 //!   only after the containing directory is [`fsync`](Vfs::fsync)'d.
 //!
-//! This file defines the contract (VFS-1). The real OS backend ([`OsFs`],
-//! VFS-2) and the in-memory mock ([`MemFs`], VFS-3) build on top of it; fault
-//! injection ([`FaultyFs`], VFS-4) layers over any backend, and the conformance
-//! suite (VFS-5) exercises both backends and the fault decorator against this
-//! contract.
+//! This file defines the contract. The real OS backend ([`OsFs`]) and the in-memory
+//! mock ([`MemFs`]) build on top of it; fault injection ([`FaultyFs`]) layers over any
+//! backend, and the conformance suite exercises both backends and the fault decorator
+//! against this contract.
 //!
 //! # Coordination
 //!
@@ -588,7 +586,8 @@ pub trait Vfs: Send + Sync {
     ///
     /// Anything already at `path` -- a file or a directory -- fails it with
     /// [`VfsErrorKind::AlreadyExists`] and changes nothing, so of any number of publishers
-    /// racing for one path exactly one succeeds.
+    /// racing for one path exactly one succeeds. Any other failure may leave the file published
+    /// whole, as a crash after its publication would.
     ///
     /// **The file is never visible incomplete, and a power loss leaves it complete or absent.**
     /// Its bytes are durable before its name appears. The name itself is durable once the

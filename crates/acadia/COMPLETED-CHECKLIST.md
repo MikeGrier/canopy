@@ -282,3 +282,75 @@ publishing and at once replacing a file by a rename, and a directory at the name
 publication without leaving a staging sibling. Revert-probe: with the hard link, the replace test
 failed on this host. Canopy's cross-process creation tests, which had failed in about half of runs,
 passed 20 looped runs, and the `os` tests pass under WSL.
+
+## Moved 2026-11-17 -- Fixes from the fourth 2026-11-17 acadia review
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Fourth review fixes: markers, plan names, recovery
+order, foreign roots and MemFs locks", which also records the findings that did not hold. Each fix
+was shown by a failing test, or for the MemFs reference model by a control its probe catches,
+before it was made, except where noted.
+
+### <a id="m22-1"></a>M22-1 -- `When::OnCall(u32::MAX)` fires once, not on every later matching call. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m22-2"></a>M22-2 -- A `PathMatcher::Predicate` runs outside the rules mutex, so it may use the decorator it is installed in. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m22-3"></a>M22-3 -- `MemFs::truncate` to a length no buffer can hold is refused without a panic. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m22-4"></a>M22-4 -- `OsFs::metadata` reports a directory's length as zero, as `Metadata::len` specifies. *(completed 2026-11-17 23:47:13 -05:00)*
+
+The failing assertion was seen under WSL, where a directory's native size is not zero.
+
+### <a id="m22-5"></a>M22-5 -- On Unix, `publish_new` does not report success while the staging name survives. *(completed 2026-11-17 23:47:13 -05:00)*
+
+No test: an unlink that fails after a successful link cannot be provoked portably. The contract now
+states that a failure other than `AlreadyExists` may leave the file published whole.
+
+### <a id="m23-1"></a>M23-1 -- A creation plan is refused when an artifact is a staging name of another, or names another artifact or a reserved name by a case variant or a non-UTF-8 spelling. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m23-2"></a>M23-2 -- A creator finds a marker only once it is complete: the marker is made atomically, which the creation contract requires of its maker. *(completed 2026-11-17 23:47:13 -05:00)*
+
+`ArtifactMaker::marker` returns the marker's bytes and coordination publishes them; canopy's
+genesis maker and its conformance maker moved to it in the same change.
+
+### <a id="m24-1"></a>M24-1 -- Ending a modification when none is open changes nothing, fence included. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m24-2"></a>M24-2 -- A recovery that fails part way never leaves a settled sample beside untrusted state. *(completed 2026-11-17 23:47:13 -05:00)*
+
+A first fix that published the count last, after setting the fence and vouching the boot record,
+broke canopy's `Coordination` and `SharedPublication` replays, because the model publishes count and
+trust in one step and sets no fence in recovery. The kept fix makes the file implementation's
+vouched count record vouch for the state. A revert-probe that read trust from the boot record alone
+failed the cut-short test on a root never vouched for; the same test on a root already vouched for
+did not, so the test starts from a never-vouched root whose holder died.
+
+### <a id="m24-3"></a>M24-3 -- Discovery never reports a writer that appeared while it looked as dead. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m24-4"></a>M24-4 -- An abandoned upgrade conversion stops reporting that it holds the gate. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m24-5"></a>M24-5 -- File registry tokens are never reused within a process. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m25-1"></a>M25-1 -- The shared state directory's name is durable before any identity is issued from it. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m25-2"></a>M25-2 -- The shared-state epoch survives a write cut short. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m25-3"></a>M25-3 -- An abandoned shared participant publishes no reservation once `abandon` returns. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m25-4"></a>M25-4 -- No participant takes writer exclusion on a root reserved for another implementation. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m25-5"></a>M25-5 -- The sampling contract states that a participant's first use of the state initializes it, which can wait for another participant's initialization and never for a writer. *(completed 2026-11-17 23:47:13 -05:00)*
+
+A documentation change to the contract; no behavior changed.
+
+### <a id="m26-1"></a>M26-1 -- `MemFs` range locks follow the file, not the name. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m26-2"></a>M26-2 -- A `MemFs` rename between two names of one file changes nothing. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m26-3"></a>M26-3 -- `MemFsDurability.tla` does not restore the children of a removed and recreated directory. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m27-1"></a>M27-1 -- A burst of due notifications costs linear work under the process-wide mutex. *(completed 2026-11-17 23:47:13 -05:00)*
+
+No test: the change is to cost, not behavior; the notification tests cover what it must preserve.
+
+### <a id="m27-2"></a>M27-2 -- Source comments cite design decisions, not work-item ids. *(completed 2026-11-17 23:47:13 -05:00)*
+
+### <a id="m27-3"></a>M27-3 -- The findings that did not hold are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-17 23:47:13 -05:00)*

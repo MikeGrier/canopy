@@ -187,6 +187,9 @@ impl ExclusionHold for FileHold {
     fn end_modification(&mut self, end: ModificationEnd) -> CoordResult<()> {
         let participant = self.participant().same_participant();
         let ended = participant.end_modification(&mut self.modifications, end);
+        if matches!(ended, Err(CoordError::NoModificationOpen)) {
+            return ended;
+        }
         if end == ModificationEnd::Unresolved || ended.is_err() {
             self.fenced = true;
         }
@@ -209,6 +212,8 @@ impl ExclusionHold for FileHold {
                     what: "modification count",
                 })?
         };
+        // The vouched count is recovery's commit point: it makes the state trusted and settled in
+        // one publication, and the boot record vouched after it adds nothing a reader relies on.
         participant.publish_count(even, Standing::Vouched)?;
         participant.record_boot(Standing::Vouched)?;
         participant.publishing(|vfs| match vfs.remove_file(&participant.layout().fence()) {
@@ -233,6 +238,7 @@ impl Drop for FileHold {
 
 impl WriterExclusion for FileCoordination {
     fn acquire(&self, waiting: Waiting) -> CoordResult<Box<dyn ExclusionHold>> {
+        self.check_implementation()?;
         Ok(Box::new(self.acquire_hold(waiting)?))
     }
 }

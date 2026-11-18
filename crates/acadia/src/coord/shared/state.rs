@@ -225,17 +225,21 @@ impl SharedState {
 
     /// Opens an epoch, serializing initialization before taking its shared liveness hold.
     /// A last-participant exit, host restart or interrupted initialization requires recovery.
-    pub fn open(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Self> {
+    /// Reached only through a participant, which first refuses a root another implementation
+    /// reserved.
+    pub(crate) fn open(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Self> {
         vfs.read_dir(root)?;
         let directory = root.join(DIRECTORY);
         match vfs.metadata(&directory) {
             Ok(_) => {}
             Err(error) if error.kind() == VfsErrorKind::NotFound => {
                 vfs.create_dir_all(&directory)?;
-                vfs.fsync(root)?;
             }
             Err(error) => return Err(error.into()),
         }
+        // Whoever made the directory may have died before its name was durable, and identities
+        // are issued from what lies in it.
+        vfs.fsync(root)?;
         let _setup = vfs.lock(
             &directory.join("setup.lock"),
             LockMode::Exclusive,
@@ -326,8 +330,11 @@ impl SharedState {
                 };
                 let mut bytes = format::EPOCH.to_vec();
                 bytes.extend_from_slice(&next.to_le_bytes());
-                vfs.write(&epoch_path, &bytes)?;
-                vfs.fsync(&epoch_path)?;
+                // Replaced whole: the record has no predecessor to fall back on if torn.
+                let staging = directory.join("epoch.staging");
+                vfs.write(&staging, &bytes)?;
+                vfs.fsync(&staging)?;
+                vfs.rename(&staging, &epoch_path)?;
                 vfs.fsync(&directory)?;
                 Some(next)
             } else {

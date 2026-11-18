@@ -4,7 +4,8 @@
 //!
 //! The state directory's boot record names the boot it was made in and whether a completed
 //! recovery has vouched for it since. State made in another boot, state never made, and state no
-//! recovery has vouched for are all untrusted.
+//! recovery has vouched for are all untrusted. A count record vouched in this boot vouches for the
+//! state too, since a recovery publishes it before the boot record.
 //!
 //! The record is replaced whole, by renaming a fresh file over it, so a reader sees one record or
 //! the other and never part of one. It is never synced: a restart is the one thing that could
@@ -102,6 +103,11 @@ impl RestartRecognition for FileCoordination {
         let Some(boot) = self.current_boot()? else {
             return Ok(Trust::Untrusted(Untrusted::CannotTell));
         };
+        // A count record vouched in this boot is recovery's commit point, published before the
+        // boot record is vouched, so it vouches for the state whatever the boot record says.
+        if self.read_count()?.standing == Standing::Vouched {
+            return Ok(Trust::Vouched);
+        }
         let bytes = match self.vfs().read(&self.layout().boot()) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == VfsErrorKind::NotFound => {

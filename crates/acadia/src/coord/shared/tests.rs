@@ -15,6 +15,10 @@ impl ArtifactMaker for Maker {
         self.fs.fsync(&path)?;
         Ok(())
     }
+
+    fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        Ok(inputs.to_vec())
+    }
 }
 
 fn filesystem() -> Arc<crate::MemFs> {
@@ -235,6 +239,10 @@ fn failed_creation_resumes_and_invalid_plans_leave_the_root_unreserved() {
                 what: "failed artifact",
             })
         }
+
+        fn marker(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+            self.make(name, inputs).map(|()| Vec::new())
+        }
     }
     let names = [OsStr::new("data"), OsStr::new("marker")];
     let plan = CreationPlan {
@@ -262,6 +270,59 @@ fn failed_creation_resumes_and_invalid_plans_leave_the_root_unreserved() {
 }
 
 #[test]
+fn a_participant_abandoned_while_it_publishes_its_reservation_publishes_none_after() {
+    let fs = filesystem();
+    let root = Path::new("/factory");
+    let participant: Arc<std::sync::OnceLock<Arc<dyn Coordination>>> = Arc::default();
+    let abandoned_first = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (reached, abandoning) = (Arc::clone(&participant), Arc::clone(&abandoned_first));
+    let policy = crate::FaultPolicy::new().inject(
+        crate::FaultOp::PublishNew,
+        root.join(format_reservation()),
+        crate::Fault::observe_with(move |_, _| {
+            let target = Arc::clone(reached.get().expect("installed"));
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                target.abandon();
+                let _ = done.send(());
+            });
+            if test_timers::mpsc::recv_timeout(&finished, std::time::Duration::from_millis(200))
+                .is_ok()
+            {
+                abandoning.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }),
+        crate::When::Once,
+    );
+    let vfs: Arc<dyn Vfs> = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    let opened: Arc<dyn Coordination> = Arc::from(SharedFactory::new().open(vfs, root).unwrap());
+    let _ = participant.set(Arc::clone(&opened));
+    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let plan = CreationPlan {
+        inputs: b"inputs",
+        nonce: CreationNonce::from_bytes([1; 16]),
+        artifacts: &names,
+    };
+    let _ = opened.create(
+        &plan,
+        &mut Maker {
+            fs: fs.clone(),
+            root: root.to_path_buf(),
+        },
+    );
+    if abandoned_first.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(
+            !fs.exists(&root.join(format_reservation())).unwrap(),
+            "a reservation was published after abandon returned"
+        );
+    }
+}
+
+fn format_reservation() -> &'static str {
+    ".coord-reservation"
+}
+
+#[test]
 fn creation_abandonment_releases_exclusion_and_cannot_make_the_next_artifact() {
     let fs = filesystem();
     let participant = SharedFactory::new()
@@ -274,6 +335,11 @@ fn creation_abandonment_releases_exclusion_and_cannot_make_the_next_artifact() {
         fn make(&mut self, _: &OsStr, _: &[u8]) -> CoordResult<()> {
             self.participant.abandon();
             Ok(())
+        }
+
+        fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+            self.participant.abandon();
+            Ok(inputs.to_vec())
         }
     }
     let names = [OsStr::new("data"), OsStr::new("marker")];
@@ -317,13 +383,15 @@ struct OpensBeforeTheMarker {
 }
 impl ArtifactMaker for OpensBeforeTheMarker {
     fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
-        if name == "marker" {
-            self.gate.open();
-        }
         let path = self.root.join(name);
         self.fs.write(&path, inputs)?;
         self.fs.fsync(&path)?;
         Ok(())
+    }
+
+    fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        self.gate.open();
+        Ok(inputs.to_vec())
     }
 }
 

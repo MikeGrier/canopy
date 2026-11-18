@@ -279,3 +279,41 @@ paper over the publication's shape. The hard link stays on Unix, where the link 
 no-replace rename would be and nothing outside the process blocks them;
 `renameat2` with `RENAME_NOREPLACE` is the alternative if that changes, and is not portable to
 every filesystem a root may live on.
+
+## The fourth 2026-11-17 review
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Fourth review fixes: markers, plan
+names, recovery order, foreign roots and MemFs locks". The review was run by a second model over the
+whole crate, and the engineer asked for each finding to be verified before it was fixed, with those
+that did not verify recorded rather than changed.
+
+- **The marker's publication moved into coordination** rather than tightening the maker's contract
+  to require atomic visibility. A maker that must make its own marker atomic must know to use
+  `publish_new`, and the contract's reading of a staging sibling as its artifact already belongs to
+  coordination; giving the marker its own method lets coordination own both, and a maker cannot get
+  it wrong. Waiting for the creation exclusion before trusting a marker was rejected because the
+  writer of a torn marker may have died, which no wait repairs.
+- **Case folding is the policy for every implementation and backend**, not only on Windows roots. A
+  plan is data that a caller may carry to a root on another filesystem, and a plan accepted on one
+  platform and refused on another would make portability depend on where it was first tested.
+  Simple uppercase folding was chosen over full case folding because it maps one character to one,
+  as filesystems that fold case do.
+- **The vouched count was made recovery's commit point for trust** rather than reordering
+  recovery to publish it last. Publishing it last was tried first, setting the fence and vouching
+  the boot record before it, and canopy's replay of
+  [Coordination.tla](../canopy/spec/Coordination.tla) refused it: the model never sets a fence in
+  recovery, and makes the state trusted and settled in the one step that publishes the count. A
+  trust read from the count record gives exactly that step. Undoing the count when a later step
+  fails was rejected because an undo can fail too.
+- **File participants check the reservation's implementation when they take exclusion or attach**,
+  rather than requiring every caller to have called `confirm_created`: the contract's promise of one
+  writer per root holds only if no capability can be had without the check. The shared low-level
+  constructor was made crate-private for the same reason rather than given a check of its own.
+- **The first-sample exception was documented** rather than removed by an explicit initialization
+  step, which would add a call every user must make before the contract's cheapest operation, and
+  rather than by eager initialization, which would make a shared participant touch a root before it
+  could refuse a foreign reservation.
+- **MemFs locks were keyed by file identity** because native locks belong to the open file, and a
+  reference that keys them by name makes a test pass on `MemFs` that fails on the OS after a rename.
+  The cost is a change in what a crash does to a lock on an erased file, which now follows the same
+  rule: the lock belongs to the file, and the file is gone.

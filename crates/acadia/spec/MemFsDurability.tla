@@ -7,7 +7,8 @@
 (* names without syncing child data. Carried snapshots preserve durable      *)
 (* directory contents across a rename or while an ancestor still names a    *)
 (* file. Removing a directory, empty or not, drops the carried snapshots at  *)
-(* or beneath it and leaves the durable tree to its parent's next sync. A    *)
+(* or beneath it, marks its path replaced so a directory made there later    *)
+(* starts empty, and leaves the durable tree to its parent's next sync. A    *)
 (* crash replaces live names and bytes with their durable state.             *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
@@ -24,7 +25,7 @@ ASSUME MaxSteps \in Nat
 ASSUME Control \in {"none", "file-fsync-skips-data", "dir-fsync-fails-to-name",
                     "rename-loses-carried", "crash-keeps-live",
                     "removal-keeps-carried", "remove-tree-leaves-descendants",
-                    "remove-tree-is-durable"}
+                    "remove-tree-is-durable", "removal-keeps-the-path"}
 
 Absent == [kind |-> "absent", inode |-> 0]
 Directory == [kind |-> "dir", inode |-> 0]
@@ -110,6 +111,9 @@ Materialize(root, snapshot, state) == [p \in Paths |->
     IF p \in Below(root) THEN snapshot[p]
     ELSE state[p]]
 
+MarkReplaced(p) ==
+    IF Control = "removal-keeps-the-path" THEN replaced ELSE replaced \cup {p}
+
 DropCarriedUnder(p) ==
     IF Control = "removal-keeps-carried" THEN carried
     ELSE [q \in Paths |-> IF q \in Below(p) THEN NoSnapshot ELSE carried[q]]
@@ -157,8 +161,9 @@ RemoveEmptyDir(p) ==
     /\ \A q \in DirectChildren(p) : live[q] = Absent
     /\ live' = [live EXCEPT ![p] = Absent]
     /\ carried' = DropCarriedUnder(p)
+    /\ replaced' = MarkReplaced(p)
     /\ steps' = steps + 1
-    /\ UNCHANGED <<durable, liveData, durableData, replaced, nextInode>>
+    /\ UNCHANGED <<durable, liveData, durableData, nextInode>>
 
 RemoveTree(p) ==
     /\ steps < MaxSteps
@@ -170,8 +175,9 @@ RemoveTree(p) ==
                   THEN [q \in Paths |-> IF q \in Below(p) THEN Absent ELSE durable[q]]
                   ELSE durable
     /\ carried' = DropCarriedUnder(p)
+    /\ replaced' = MarkReplaced(p)
     /\ steps' = steps + 1
-    /\ UNCHANGED <<liveData, durableData, replaced, nextInode>>
+    /\ UNCHANGED <<liveData, durableData, nextInode>>
 
 SyncFile(p) ==
     /\ steps < MaxSteps
@@ -194,9 +200,19 @@ BaseForChild(p) ==
     THEN NoSnapshot
     ELSE IF ~SnapshotEmpty(carried[p])
     THEN carried[p]
-    ELSE IF durable[p] = Directory
+    ELSE IF durable[p] = Directory /\ p \notin replaced
     THEN PresentSubtree(p, durable)
     ELSE NoSnapshot
+
+\* A directory at a replaced path is a new one: what lay beneath its predecessor is gone, unless
+\* it carries a snapshot of its own.
+ReplacedBelow(p, q) ==
+    \E child \in DirectChildren(p) :
+        /\ live[child] = Directory
+        /\ child \in replaced
+        /\ SnapshotEmpty(carried[child])
+        /\ q # child
+        /\ q \in Below(child)
 
 HasSnapshotBelow(p, q) ==
     \E child \in DirectChildren(p) :
@@ -226,6 +242,7 @@ SyncedEntry(p, q) ==
               IF ~SnapshotEmpty(BaseForChild(q)) THEN BaseForChild(q)[q] ELSE Directory
           ELSE live[q]
       [] ClearedBelow(p, q) -> Absent
+      [] ReplacedBelow(p, q) -> Absent
       [] HasSnapshotBelow(p, q) -> SnapshotBelow(p, q)
       [] OTHER -> durable[q]
 

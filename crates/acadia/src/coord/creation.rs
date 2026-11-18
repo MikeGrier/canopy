@@ -4,8 +4,10 @@
 //! "Creating a store root, modelled in `Creation.tla`").
 
 use std::ffi::OsStr;
+use std::path::{Component, Path};
 
-use super::error::CoordResult;
+use super::RESERVED_PREFIX;
+use super::error::{CoordError, CoordResult};
 use super::types::{Created, CreationNonce};
 
 /// What a creation makes: the caller's inputs, the creator's nonce, and the artifacts in order.
@@ -17,15 +19,123 @@ pub struct CreationPlan<'a> {
     /// This creator's nonce, recorded if it publishes the reservation.
     pub nonce: CreationNonce,
     /// The names, directly beneath the root, of what creation makes, in the order it makes them;
-    /// the last is the marker. None begins with [`RESERVED_PREFIX`](super::RESERVED_PREFIX), which
-    /// names the coordination's own entries.
+    /// the last is the marker. The names are compared as a case-insensitive filesystem compares
+    /// them: none begins with [`RESERVED_PREFIX`](super::RESERVED_PREFIX), which names the
+    /// coordination's own entries, none names another, and none is a sibling a publication of
+    /// another is staged in ([`is_publication_staging_of`](crate::is_publication_staging_of)).
     pub artifacts: &'a [&'a OsStr],
 }
 
-/// The caller's half of creation: making each artifact.
+/// `name` as a case-insensitive filesystem compares it: a Unicode name by each character's
+/// single-character uppercase, any other by the uppercase of its ASCII code units.
+fn folded(name: &OsStr) -> Vec<u8> {
+    match name.to_str() {
+        Some(text) => text
+            .chars()
+            .map(|c| {
+                let mut upper = c.to_uppercase();
+                match (upper.next(), upper.next()) {
+                    (Some(single), None) => single,
+                    _ => c,
+                }
+            })
+            .collect::<String>()
+            .into_bytes(),
+        None => name.as_encoded_bytes().to_ascii_uppercase(),
+    }
+}
+
+/// Makes `plan`'s artifacts but the marker through `maker`, in order, each made durable with its
+/// directory entry before the next, then publishes the marker's bytes complete or not at all and
+/// makes its entry durable. `alive` stops it as soon as its participant is abandoned.
+pub(crate) fn make_artifacts(
+    plan: &CreationPlan<'_>,
+    maker: &mut dyn ArtifactMaker,
+    vfs: &dyn crate::Vfs,
+    root: &Path,
+    alive: &dyn Fn() -> CoordResult<()>,
+) -> CoordResult<()> {
+    let (marker, others) = plan
+        .artifacts
+        .split_last()
+        .expect("a validated plan has artifacts");
+    for artifact in others {
+        alive()?;
+        maker.make(artifact, plan.inputs)?;
+        alive()?;
+        vfs.fsync(root)?;
+    }
+    alive()?;
+    let bytes = maker.marker(marker, plan.inputs)?;
+    alive()?;
+    vfs.publish_new(&root.join(marker), &bytes)?;
+    alive()?;
+    vfs.fsync(root)?;
+    Ok(())
+}
+
+/// Refuses a name that is not one plain name directly beneath the root, or that begins with the
+/// reserved prefix in any case.
+pub(crate) fn validate_artifact_name(name: &OsStr) -> CoordResult<()> {
+    let mut components = Path::new(name).components();
+    if !matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(only)), None) if only == name
+    ) {
+        return Err(CoordError::InvalidPlan {
+            why: "an artifact is one plain name directly beneath the root",
+        });
+    }
+    if folded(name).starts_with(RESERVED_PREFIX.to_ascii_uppercase().as_bytes()) {
+        return Err(CoordError::InvalidPlan {
+            why: "an artifact's name has the coordination's reserved prefix",
+        });
+    }
+    Ok(())
+}
+
+/// Refuses a plan [`Creation::create`] could not make: one with no artifacts, a name
+/// [`validate_artifact_name`] refuses, or two names one of which is the other, or a sibling a
+/// publication of the other is staged in, as a case-insensitive filesystem compares them.
+pub(crate) fn validate_plan(plan: &CreationPlan<'_>) -> CoordResult<()> {
+    if plan.artifacts.is_empty() {
+        return Err(CoordError::InvalidPlan {
+            why: "a creation makes at least its marker",
+        });
+    }
+    let infix = crate::PUBLISHING_INFIX.to_ascii_uppercase();
+    let names: Vec<Vec<u8>> = plan.artifacts.iter().map(|name| folded(name)).collect();
+    for (i, name) in plan.artifacts.iter().enumerate() {
+        validate_artifact_name(name)?;
+        for (j, other) in names.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if names[i] == *other {
+                return Err(CoordError::InvalidPlan {
+                    why: "an artifact is named twice",
+                });
+            }
+            let staged = names[i]
+                .strip_prefix(other.as_slice())
+                .and_then(|rest| rest.strip_prefix(infix.as_bytes()))
+                .is_some_and(|suffix| !suffix.is_empty());
+            if staged {
+                return Err(CoordError::InvalidPlan {
+                    why: "an artifact's name is one another artifact's publication is staged in",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The caller's half of creation: making each artifact but the marker, and giving the marker's
+/// bytes, which the coordination publishes itself so that a marker is never found incomplete.
 pub trait ArtifactMaker {
     /// Makes the artifact `name` from `inputs`, and makes it and everything in it durable before
-    /// returning; the coordination makes its directory entry durable.
+    /// returning; the coordination makes its directory entry durable. It is never asked for the
+    /// marker.
     ///
     /// It may find the artifact partly made by a creation that was interrupted, and finishes it:
     /// making an artifact is idempotent.
@@ -34,6 +144,15 @@ pub trait ArtifactMaker {
     ///
     /// Any failure ends the creation, which a later call resumes.
     fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()>;
+
+    /// Gives the bytes of the marker `name` for `inputs`, once every other artifact is durable;
+    /// whatever must precede the marker is done here. The coordination publishes them with
+    /// [`Vfs::publish_new`](crate::Vfs::publish_new), complete or not at all.
+    ///
+    /// # Errors
+    ///
+    /// Any failure ends the creation, which a later call resumes.
+    fn marker(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>>;
 }
 
 /// Creation exclusion and the creation reservation.
@@ -61,14 +180,16 @@ pub trait Creation {
     /// `plan.nonce` -- complete or not at all even across a power loss, and made durable with its
     /// directory entry before any artifact exists; a reservation published first by another
     /// creator refuses this one. With a reservation this call may resume, it is made durable in
-    /// case its creator died first. Each artifact is then made through `maker`, in order, and made
-    /// durable before the next, the marker last. The exclusion is released once the marker is
-    /// durable.
+    /// case its creator died first. Each artifact but the marker is then made through `maker`, in
+    /// order, and made durable before the next; last, the marker's bytes from `maker` are published
+    /// complete or not at all and made durable with their directory entry. The exclusion is
+    /// released once the marker is durable.
     ///
     /// # Errors
     ///
-    /// [`InvalidPlan`](super::CoordError::InvalidPlan) for a plan with no artifacts or with a name
-    /// that is not one plain name or has the reserved prefix; the refusals above, which change
+    /// [`InvalidPlan`](super::CoordError::InvalidPlan) for a plan with no artifacts, with a name
+    /// that is not one plain name or has the reserved prefix, or with names that collide as
+    /// [`CreationPlan::artifacts`] describes; the refusals above, which change
     /// nothing in the root; a failure of `maker` or of the filesystem, which leaves a creation a
     /// later call resumes.
     fn create(

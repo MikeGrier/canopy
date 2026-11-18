@@ -2,11 +2,11 @@
 
 use super::*;
 use crate::VfsErrorKind;
+use crate::coord::creation::{make_artifacts, validate_artifact_name, validate_plan};
 use crate::coord::{
     ArtifactMaker, Created, Creation, CreationNonce, CreationPlan, RESERVED_PREFIX,
 };
 use std::ffi::{OsStr, OsString};
-use std::path::Component;
 
 /// Changing these tags or names breaks creation admission between implementations.
 mod format {
@@ -102,20 +102,8 @@ impl Drop for CreationHold {
 }
 
 fn reserved(name: &OsStr) -> bool {
-    name.to_str()
-        .is_some_and(|name| name.starts_with(RESERVED_PREFIX))
-}
-
-fn validate_name(name: &OsStr) -> CoordResult<()> {
-    let mut components = Path::new(name).components();
-    if !matches!((components.next(), components.next()), (Some(Component::Normal(component)), None) if component == name)
-        || reserved(name)
-    {
-        return Err(CoordError::InvalidPlan {
-            why: "an artifact is one plain non-reserved root name",
-        });
-    }
-    Ok(())
+    name.as_encoded_bytes()
+        .starts_with(RESERVED_PREFIX.as_bytes())
 }
 
 impl SharedParticipant {
@@ -239,7 +227,13 @@ impl SharedParticipant {
         Ok(Created::Existing)
     }
 
-    fn settle(&self, course: Found, inputs: &[u8], nonce: CreationNonce) -> CoordResult<Created> {
+    fn settle(
+        &self,
+        hold: &CreationHold,
+        course: Found,
+        inputs: &[u8],
+        nonce: CreationNonce,
+    ) -> CoordResult<Created> {
         self.alive()?;
         let path = self.inner.root.join(format::RESERVATION);
         let result = match course {
@@ -249,7 +243,20 @@ impl SharedParticipant {
                     nonce,
                     inputs: inputs.to_vec(),
                 };
-                match self.inner.vfs.publish_new(&path, &reservation.encode()) {
+                // Published under the table `abandon` clears, with this hold still in it, so no
+                // reservation is published once `abandon` has returned.
+                let owned = self
+                    .inner
+                    .creation
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !owned.contains_key(&hold.id) {
+                    return Err(CoordError::Abandoned);
+                }
+                self.alive()?;
+                let published = self.inner.vfs.publish_new(&path, &reservation.encode());
+                drop(owned);
+                match published {
                     Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {
                         return Err(CoordError::Reserved);
                     }
@@ -275,25 +282,13 @@ impl Creation for SharedParticipant {
         maker: &mut dyn ArtifactMaker,
     ) -> CoordResult<Created> {
         self.alive()?;
-        if plan.artifacts.is_empty() {
-            return Err(CoordError::InvalidPlan {
-                why: "a creation includes its marker",
-            });
-        }
-        for (index, name) in plan.artifacts.iter().enumerate() {
-            validate_name(name)?;
-            if plan.artifacts[..index].contains(name) {
-                return Err(CoordError::InvalidPlan {
-                    why: "an artifact is named twice",
-                });
-            }
-        }
+        validate_plan(plan)?;
         let marker = plan.artifacts.last().expect("validated plan");
         let first = Self::creation_course(self.read_root(plan)?)?;
         if matches!(first, Found::Existing) {
             return self.found(marker);
         }
-        let _creation = self.creation_hold(LockMode::Exclusive)?;
+        let creation = self.creation_hold(LockMode::Exclusive)?;
         self.alive()?;
         let course = Self::creation_course(self.read_root(plan)?)?;
         if matches!(course, Found::Existing) {
@@ -304,20 +299,17 @@ impl Creation for SharedParticipant {
         {
             return Err(CoordError::Reserved);
         }
-        let result = self.settle(course, plan.inputs, plan.nonce)?;
-        for artifact in plan.artifacts {
-            self.alive()?;
-            maker.make(artifact, plan.inputs)?;
-            self.alive()?;
-            self.inner.vfs.fsync(&self.inner.root)?;
-        }
+        let result = self.settle(&creation, course, plan.inputs, plan.nonce)?;
+        make_artifacts(plan, maker, &*self.inner.vfs, &self.inner.root, &|| {
+            self.alive()
+        })?;
         Ok(result)
     }
 
     fn reserve(&self, inputs: &[u8], nonce: CreationNonce) -> CoordResult<Created> {
         self.alive()?;
         let first = self.reservation_course(inputs)?;
-        let _creation = self.creation_hold(LockMode::Exclusive)?;
+        let creation = self.creation_hold(LockMode::Exclusive)?;
         self.alive()?;
         let course = self.reservation_course(inputs)?;
         if let (Found::Reserved(before), Found::Reserved(now)) = (&first, &course)
@@ -325,11 +317,11 @@ impl Creation for SharedParticipant {
         {
             return Err(CoordError::Reserved);
         }
-        self.settle(course, inputs, nonce)
+        self.settle(&creation, course, inputs, nonce)
     }
 
     fn confirm_created(&self, marker: &OsStr) -> CoordResult<()> {
-        validate_name(marker)?;
+        validate_artifact_name(marker)?;
         self.alive()?;
         let _creation = self.creation_hold(LockMode::Shared)?;
         self.alive()?;

@@ -30,6 +30,11 @@ fallback or platform-specific loss of protection is permitted.
 
 ## D107 elaboration -- the fault-injection rule model
 
+> **SUPERSEDED in part, 2026-11-17, by "Fourth review fixes: markers, plan names, recovery order,
+> foreign roots and MemFs locks" below.** Selecting a rule runs every matcher, predicates
+> included, with nothing locked; only the chosen rule's call count is taken under the lock. The
+> rest of this section stands.
+
 [D107](../../DESIGN-NOTES.md) fixes what `acadia` guarantees every consumer for injecting and
 observing storage faults. This section is the mechanism: how a rule is written and how a call is
 evaluated against it. The implementation is [src/fault.rs](src/fault.rs); the conformance suite
@@ -321,6 +326,11 @@ release one. Its purpose is fixtures: a store populated once can be handed to ev
 private copy instead of being rebuilt per test.
 
 ## Locks on a file or a range of one, taken without waiting, 2026-11-12
+
+> **SUPERSEDED in part, 2026-11-17, by "Fourth review fixes: markers, plan names, recovery order,
+> foreign roots and MemFs locks" below.** A `MemFs` lock belongs to the file it was taken on, not
+> to the name: it follows the file through a rename, and a lock on a file that a crash erased does
+> not block a file made later at that name. The rest of this decision stands.
 
 `Vfs::try_lock` takes a shared or exclusive lock on a whole file or a byte range of one, fails at
 once with `Locked` on a conflict, and is released when its guard drops or its process dies. It
@@ -659,6 +669,11 @@ contract on it[^m6-1]:
 
 ## Creating a root through the file-based implementation, 2026-11-13
 
+> **SUPERSEDED in part, 2026-11-17, by "Fourth review fixes: markers, plan names, recovery order,
+> foreign roots and MemFs locks" below.** The maker does not make the marker: it returns the
+> marker's bytes, and coordination publishes them with `Vfs::publish_new` and syncs the root. The
+> rest of this decision stands.
+
 The file-based implementation builds `Creation` as canopy's creation design states it ([canopy's
 DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Creating a store root, modelled in
 `Creation.tla`")[^m6-2], with these choices of its own:
@@ -696,6 +711,11 @@ open.
     [completed 2026-11-13; `d7daade`]
 
 ## A host restart is recognised from the boot identity the filesystem reports, 2026-11-13
+
+> **SUPERSEDED in part, 2026-11-17, by "Fourth review fixes: markers, plan names, recovery order,
+> foreign roots and MemFs locks" below.** The file implementation's state is also trusted when
+> the count record is vouched and from this boot, whatever the boot record says: the vouched count
+> is recovery's commit point. The rest of this decision stands.
 
 The coordination state is trusted only within the boot it was made in, and only once a completed
 recovery has vouched for it (canopy's DESIGN-NOTES.md, "Several processes may open one store",
@@ -1528,3 +1548,125 @@ the staged file is still hard-linked and its staging name removed.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "Moving rather than linking a
 publication on Windows".
+
+## Fourth review fixes: markers, plan names, recovery order, foreign roots and MemFs locks, 2026-11-17
+
+A fourth review of the crate, made on 2026-11-17, raised twenty-three findings. Each one that held
+was shown by a failing test, or by a model control that a probe catches, before it was fixed; the
+work is milestones M22 to M27 in [CHECKLIST.md](CHECKLIST.md). Those that did not hold, or held
+only in part, are recorded at the end of this decision.
+
+Creation:
+
+- **Coordination publishes the marker; the maker supplies its bytes.** `ArtifactMaker::marker`
+  makes whatever the marker vouches for and returns the marker's bytes, and `make` is never called
+  for the marker. Coordination publishes them with `Vfs::publish_new` and syncs the root, in both
+  implementations. The marker is therefore complete or absent, which `Created::Existing` and
+  `confirm_created` rely on: a maker's own write and sync made it durable but not atomic, and a
+  write cut short left a prefix that the next creator found and synced as a finished store.
+  Canopy's genesis maker vouches for the store in `marker` and returns the marker's bytes.
+- **A plan's names are compared as a filesystem may compare them.** Two names are the same artifact
+  when they are equal after Unicode simple uppercase folding, or ASCII folding for a name that is
+  not UTF-8, so a plan is portable to a root on a case-insensitive filesystem. A plan is refused
+  when an artifact begins with `RESERVED_PREFIX` in any case, checked on the name's bytes so a
+  non-UTF-8 suffix does not hide it; when two artifacts fold equal; or when an artifact is a
+  publication staging name of another, which a creator would read as that other artifact. A root's
+  reading still recognizes coordination's own entries by their exact bytes, since that is how
+  coordination spells them.
+- **A shared participant abandoned during `reserve` publishes no reservation.** The reservation is
+  published under the mutex that serializes `abandon` with creation holds, after checking that the
+  hold is still in the table and the participant is alive, as the file implementation's record
+  changes are.
+
+Writer exclusion and recovery:
+
+- **The vouched count is recovery's commit point.** [Coordination.tla](../canopy/spec/Coordination.tla)
+  makes the state trusted and settled in one step, `RecCount`, and then clears the fence. The file
+  implementation publishes the vouched even count, records the boot vouched, then removes the
+  fence, and its `trust()` reports the state vouched when the count record is vouched and from this
+  boot, whatever the boot record says. A recovery cut short before the count changes nothing a
+  reader sees; one cut short after it leaves the state trusted and settled and the fence set, so
+  recovery is still required, as the model's state is between `RecCount` and `RecClear`. A sample
+  therefore never reads settled beside state that is not trusted. The shared implementation's
+  count is a compare-and-swap that changes nothing when it fails, and nothing after it can fail
+  before the fence is cleared, so its order is unchanged.
+- **Ending a modification that is not open changes nothing.** `NoModificationOpen` is returned
+  before the hold's state is touched, so it fences nothing.
+- **Discovery on a root with no state directory reports that observation alone.** No holder has
+  existed, so there is nothing to probe and no dead holder: it returns at once, untrusted, with no
+  fence and no holder that died. Reading the owner afterwards could find a first writer that
+  appeared in between and report it dead.
+- **No participant uses a root reserved for another implementation.** The file implementation
+  checks the reservation's implementation when it takes writer exclusion and when it attaches, as
+  the shared one does at first use; an unreserved root is allowed, for the creation path.
+  `SharedState::open`, which skips that check, is crate-private.
+
+Identities and durability of the shared state:
+
+- **File registry tokens are never reused within a process.** The count in a token is advanced by
+  a checked read-modify-write, and running out is `Exhausted`.
+- **The shared state directory's name is durable before any identity is issued from it.** Opening
+  always syncs the root after ensuring `.coord-shared` exists, so a retry after an opener that died
+  before syncing does not rely on an entry a power loss could remove.
+- **The epoch record is replaced whole.** It is written to a staging file, synced, renamed into
+  place and the directory synced, so a write cut short leaves the previous epoch, never a torn one
+  that every later participant would refuse.
+- **A first sample may initialize the shared state.** The sampling contract states the exception:
+  a participant's first use initializes the state it samples, which can wait for another
+  participant's initialization, never for a writer. Every later sample is one atomic operation.
+
+Notification and fault injection:
+
+- **A burst of due notifications costs linear work under the poller's mutex.** Both pollers turn
+  the ringing and quiet identifiers into sets before taking the mutex.
+- **Matchers run with nothing locked.** A predicate may use the decorator it is installed in; only
+  the chosen rule's call count is taken under the lock.
+- **`When::OnCall(k)` fires on call `k` only**, including `u32::MAX`; the call count saturates, so a
+  call past the last countable one is no call `k` names.
+
+The backends:
+
+- **`MemFs::truncate` to a length no buffer can hold is refused** with `InvalidInput`, and the file
+  is unchanged.
+- **`OsFs::metadata` reports a directory's length as zero**, as `Metadata::len` specifies.
+- **On Unix, `publish_new` fails if the staging name cannot be removed**, since the file would
+  otherwise have two names. The contract states that a failure other than `AlreadyExists` may leave
+  the file published whole, as a crash after its publication would.
+- **A `MemFs` lock belongs to the file it was taken on.** Holds are keyed by the file's identity,
+  so a lock follows its file through a rename, and two names of one file share its locks. A lock on
+  a file that a crash erased no longer blocks a file made later at that name.
+- **A `MemFs` rename between two names of one file changes nothing**, as POSIX `rename` specifies.
+  A crash can leave two durable names for one inode (see "MemFs durability reference and replay").
+- **The durability reference marks a removed directory's path replaced.**
+  [MemFsDurability.tla](spec/MemFsDurability.tla) gives a directory recreated where one was removed
+  no base in the durable tree, so a sync of its parent followed by a crash does not restore the
+  removed directory's children. The scenario `remove-tree-recreate-in-place` witnesses it, the
+  control `removal-keeps-the-path` and its probe fail without it, and
+  [mem_model.rs](src/tests/mem_model.rs) replays it through `MemFs`.
+
+### Findings that did not hold, or held only in part
+
+- **Relaxed counters.** The staging-name counters of `publish_new` and of the file implementation's
+  records, and the count in a registry token, only hand out distinct values. Every ordering gives a read-modify-write on one location a total order,
+  which is all uniqueness needs, and none of them publishes other memory. The acquire-release
+  convention is for atomics that order other data, so `Relaxed` stays.
+- **Liveness in `begin_conversion` and `admit_readers`.** The review reported success paths without
+  a liveness check. `begin_conversion` releases the attachment's locks and returns a conversion
+  whose first poll checks liveness before reporting any lock held. `admit_readers` only releases the
+  gate, which an abandonment has already released, so success reports nothing false. The cached
+  answers of `gate` and `tiers` did need the check, and have it.
+- **A first sample can wait.** The review read it as a broken promise. Initializing eagerly was
+  rejected, because a shared participant then touches the root before it refuses a reservation of
+  another implementation; the contract instead states the first-use exception above.
+- **A partial marker.** The review proposed that coordination wait for the creation exclusion
+  before trusting a marker. The defect was in the maker's contract, which promised durability but
+  not atomicity, so the fix moved the marker's publication into coordination and left the reading
+  unchanged.
+- **MemFs locks across a crash.** A test asserted that a crash keeps a lock on a name whose file
+  the crash erased. That followed from keying locks by name, so the test was restated: a lock on a
+  file that survives the crash is kept, and one on a file the crash erased blocks nothing.
+- **An atomic no-replace rename on Unix.** The review suggested one for `publish_new`. It is not
+  portable to every filesystem a root may live on (see "A publication is a move on Windows"), so the
+  link stays and a failure to remove the staging name fails the publication.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The fourth 2026-11-17 review".

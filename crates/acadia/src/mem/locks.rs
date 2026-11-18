@@ -43,9 +43,9 @@ impl std::fmt::Debug for CheckHook {
 /// Every lock held in one filesystem, by every simulated process over it.
 #[derive(Debug, Default)]
 struct LockTable {
-    /// The holds on each file, keyed by normalized components so a lock does not depend on how
-    /// a caller spelled the path.
-    holds: HashMap<Vec<OsString>, Vec<Hold>>,
+    /// The holds on each file, keyed by the file rather than a name of it, so a lock follows its
+    /// file through a rename as a native lock follows its handle.
+    holds: HashMap<u64, Vec<Hold>>,
     /// The last hold id handed out. Never reused, so a guard whose hold was already released by
     /// an abandonment can never release a later holder's.
     last_hold: u64,
@@ -64,9 +64,9 @@ pub(super) struct Hold {
 }
 
 impl LockTable {
-    fn excludes(&self, parts: &[OsString], mode: LockMode, start: u64, end: u64) -> bool {
+    fn excludes(&self, file: u64, mode: LockMode, start: u64, end: u64) -> bool {
         self.holds
-            .get(parts)
+            .get(&file)
             .is_some_and(|holds| holds.iter().any(|hold| hold.excludes(mode, start, end)))
     }
 }
@@ -94,24 +94,20 @@ impl Hold {
 /// bytes it touches once it knows them. Keeps the table, so no lock is taken until it drops.
 pub(super) struct Holds<'a> {
     table: MutexGuard<'a, LockTable>,
-    parts: &'a [OsString],
 }
 
 impl Holds<'_> {
     /// Refuses `access` to `[start, end)` with [`VfsErrorKind::Locked`] if a hold covers it.
     pub(super) fn check(
         &self,
+        file: u64,
         access: Access,
         start: u64,
         end: u64,
         op: &'static str,
         path: &Path,
     ) -> VfsResult<()> {
-        let holds = self
-            .table
-            .holds
-            .get(self.parts)
-            .map_or(&[][..], Vec::as_slice);
+        let holds = self.table.holds.get(&file).map_or(&[][..], Vec::as_slice);
         if holds.iter().any(|hold| hold.refuses(access, start, end)) {
             return Err(err(
                 VfsErrorKind::Locked,
@@ -131,7 +127,7 @@ impl Holds<'_> {
 #[derive(Debug)]
 struct MemHold {
     shared: Arc<LockShared>,
-    parts: Vec<OsString>,
+    file: u64,
     id: u64,
 }
 
@@ -144,10 +140,10 @@ impl Drop for MemHold {
             .table
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(holds) = table.holds.get_mut(&self.parts) {
+        if let Some(holds) = table.holds.get_mut(&self.file) {
             holds.retain(|hold| hold.id != self.id);
             if holds.is_empty() {
-                table.holds.remove(&self.parts);
+                table.holds.remove(&self.file);
             }
         }
         drop(table);
@@ -192,9 +188,9 @@ impl MemFs {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The holds on the file `parts` names, for an operation to check once it knows what bytes
-    /// it touches, and to keep until its change is made.
-    pub(super) fn holds_on<'a>(&'a self, parts: &'a [OsString]) -> Holds<'a> {
+    /// The holds, for an operation to check once it knows the file and the bytes it touches, and
+    /// to keep until its change is made.
+    pub(super) fn holds(&self) -> Holds<'_> {
         let table = self.table();
         #[cfg(test)]
         if let Some(hook) = self
@@ -206,7 +202,7 @@ impl MemFs {
         {
             (hook.0)();
         }
-        Holds { table, parts }
+        Holds { table }
     }
 
     /// Runs `hook` in every operation of this filesystem just after it takes the holds it
@@ -240,14 +236,17 @@ impl MemFs {
             ));
         };
         let mut table = self.table();
-        while wait && table.excludes(&parts, mode, start, end) {
+        // Opened first, as a native lock opens its handle: a waiter keeps the file it opened
+        // whatever names it has by the time it is let in.
+        let file = self.create_if_absent(&parts, op, path)?;
+        while wait && table.excludes(file, mode, start, end) {
             table = self
                 .locks
                 .released
                 .wait(table)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        if table.excludes(&parts, mode, start, end) {
+        if table.excludes(file, mode, start, end) {
             return Err(err(
                 VfsErrorKind::Locked,
                 op,
@@ -255,10 +254,9 @@ impl MemFs {
                 "already locked in this filesystem",
             ));
         }
-        self.create_if_absent(&parts, op, path)?;
         table.last_hold += 1;
         let id = table.last_hold;
-        table.holds.entry(parts.clone()).or_default().push(Hold {
+        table.holds.entry(file).or_default().push(Hold {
             id,
             process: self.process,
             mode,
@@ -267,13 +265,19 @@ impl MemFs {
         });
         Ok(Box::new(MemHold {
             shared: Arc::clone(&self.locks),
-            parts,
+            file,
             id,
         }))
     }
 
-    /// Creates an empty file at `parts` if nothing is there, as opening a lock's file does.
-    fn create_if_absent(&self, parts: &[OsString], op: &'static str, path: &Path) -> VfsResult<()> {
+    /// Creates an empty file at `parts` if nothing is there, as opening a lock's file does, and
+    /// returns the file.
+    fn create_if_absent(
+        &self,
+        parts: &[OsString],
+        op: &'static str,
+        path: &Path,
+    ) -> VfsResult<u64> {
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, op, path, "empty path"));
         };
@@ -290,7 +294,7 @@ impl MemFs {
         let dir = dir_of_mut(live, parents, op, path)?;
         match dir.get(name) {
             Some(Node::Dir(_)) => Err(err(VfsErrorKind::IsADirectory, op, path, "is a directory")),
-            Some(Node::File(_)) => Ok(()),
+            Some(Node::File(id)) => Ok(*id),
             None => {
                 let id = next_id(next_inode, op, path)?;
                 live_data.insert(id, Vec::new());
@@ -298,7 +302,7 @@ impl MemFs {
                 *refs.entry(id).or_default() += 1;
                 *live_refs.entry(id).or_default() += 1;
                 mark(dirty, parents, name);
-                Ok(())
+                Ok(id)
             }
         }
     }

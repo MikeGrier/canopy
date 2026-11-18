@@ -1,6 +1,6 @@
 // Copyright (c) Michael Grier.
 
-//! Deterministic fault injection over any [`Vfs`] (VFS-4, D55/D56).
+//! Deterministic fault injection over any [`Vfs`] (D55, D56).
 //!
 //! [`FaultyFs`] wraps another [`Vfs`] (in practice the in-memory mock
 //! [`MemFs`](crate::mem::MemFs)) and makes chosen operations on chosen paths
@@ -66,6 +66,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crate::{
     DirEntry, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult,
 };
+
+#[cfg(test)]
+mod tests;
 
 /// Which [`Vfs`] operation a [`FaultPolicy`] rule intercepts.
 ///
@@ -484,7 +487,6 @@ struct Rule {
     gate: Option<FaultGate>,
     when: When,
     fault: Fault,
-    matched: u32,
 }
 
 impl Rule {
@@ -572,7 +574,6 @@ impl FaultPolicy {
             gate,
             when,
             fault,
-            matched: 0,
         });
         self
     }
@@ -587,7 +588,9 @@ impl FaultPolicy {
 #[derive(Debug)]
 pub struct FaultyFs<V> {
     inner: V,
-    rules: Mutex<Vec<Rule>>,
+    rules: Vec<Rule>,
+    /// How many calls each rule has applied to, by its index in `rules`.
+    matched: Mutex<Vec<u32>>,
 }
 
 impl<V> FaultyFs<V> {
@@ -595,7 +598,8 @@ impl<V> FaultyFs<V> {
     pub fn new(inner: V, policy: FaultPolicy) -> Self {
         Self {
             inner,
-            rules: Mutex::new(policy.rules),
+            matched: Mutex::new(vec![0; policy.rules.len()]),
+            rules: policy.rules,
         }
     }
 
@@ -604,10 +608,10 @@ impl<V> FaultyFs<V> {
         &self.inner
     }
 
-    /// Locks the rule state, recovering the guard on poison (D56: poisoning is
+    /// Locks the rules' call counts, recovering the guard on poison (D56: poisoning is
     /// not a fault to propagate).
-    fn rule_state(&self) -> MutexGuard<'_, Vec<Rule>> {
-        self.rules.lock().unwrap_or_else(PoisonError::into_inner)
+    fn matched(&self) -> MutexGuard<'_, Vec<u32>> {
+        self.matched.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Returns the [`Fault`] to apply to this call, if the first rule applying
@@ -627,18 +631,15 @@ impl<V> FaultyFs<V> {
         }
     }
 
-    /// Picks the fault the policy scripts for this call, holding the rule state
-    /// only for as long as the decision takes.
+    /// Picks the fault the policy scripts for this call. Matchers run with nothing locked, since
+    /// a predicate may use this decorator; only the rule's count is taken under the lock.
     fn select(&self, op: FaultOp, path: &Path) -> Option<Fault> {
-        let mut rules = self.rule_state();
-        for rule in rules.iter_mut() {
-            if rule.applies(op, path) {
-                let fire = should_fire(rule.when, rule.matched);
-                rule.matched = rule.matched.saturating_add(1);
-                return if fire { Some(rule.fault.clone()) } else { None };
-            }
-        }
-        None
+        let index = self.rules.iter().position(|rule| rule.applies(op, path))?;
+        let rule = &self.rules[index];
+        let mut matched = self.matched();
+        let fire = should_fire(rule.when, matched[index]);
+        matched[index] = matched[index].saturating_add(1);
+        fire.then(|| rule.fault.clone())
     }
 }
 
@@ -649,7 +650,8 @@ fn should_fire(when: When, matched: u32) -> bool {
         When::Always => true,
         When::Once => matched == 0,
         When::Times(n) => matched < n,
-        When::OnCall(k) => matched.saturating_add(1) == k,
+        // The count saturates, so a call past the last countable one is no call `k` names.
+        When::OnCall(k) => matched.checked_add(1) == Some(k),
     }
 }
 

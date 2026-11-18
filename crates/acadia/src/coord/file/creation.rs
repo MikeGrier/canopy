@@ -3,8 +3,9 @@
 //! [`Creation`] for the file-based implementation.
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Component, Path};
+use std::path::Path;
 
+use crate::coord::creation::{make_artifacts, validate_artifact_name, validate_plan};
 use crate::coord::{
     ArtifactMaker, CoordError, CoordResult, Created, Creation, CreationNonce, CreationPlan,
     RESERVED_PREFIX, Waiting,
@@ -58,6 +59,19 @@ impl FileCoordination {
             participant: self,
             id,
         })
+    }
+
+    /// Refuses a root whose reservation names another implementation, whose participants would
+    /// not see the locks this one takes.
+    pub(super) fn check_implementation(&self) -> CoordResult<()> {
+        match self.read_reservation()? {
+            Some(reservation) if reservation.implementation != self.id => {
+                Err(CoordError::ImplementationMismatch {
+                    recorded: reservation.implementation,
+                })
+            }
+            _ => Ok(()),
+        }
     }
 
     fn read_reservation(&self) -> CoordResult<Option<Reservation>> {
@@ -188,7 +202,7 @@ impl Creation for FileCoordination {
         plan: &CreationPlan<'_>,
         maker: &mut dyn ArtifactMaker,
     ) -> CoordResult<Created> {
-        validate(plan)?;
+        validate_plan(plan)?;
         self.alive()?;
         let marker = plan
             .artifacts
@@ -208,14 +222,10 @@ impl Creation for FileCoordination {
         {
             return Err(CoordError::Reserved);
         }
-        let root = self.layout().root();
         let created = self.settle_reservation(course, plan.inputs, plan.nonce)?;
-        for artifact in plan.artifacts {
-            self.alive()?;
-            maker.make(artifact, plan.inputs)?;
-            self.alive()?;
-            self.vfs().fsync(root)?;
-        }
+        make_artifacts(plan, maker, self.vfs(), self.layout().root(), &|| {
+            self.alive()
+        })?;
         Ok(created)
     }
 
@@ -233,7 +243,7 @@ impl Creation for FileCoordination {
     }
 
     fn confirm_created(&self, marker: &OsStr) -> CoordResult<()> {
-        validate_name(marker)?;
+        validate_artifact_name(marker)?;
         self.alive()?;
         let _opening = self.keep(&self.layout().creation_lock(), LockMode::Shared)?;
         let reservation = self.read_reservation()?.ok_or(CoordError::NotCreated)?;
@@ -253,41 +263,6 @@ impl Creation for FileCoordination {
 }
 
 fn is_reserved(name: &OsStr) -> bool {
-    name.to_str()
-        .is_some_and(|name| name.starts_with(RESERVED_PREFIX))
-}
-
-fn validate(plan: &CreationPlan<'_>) -> CoordResult<()> {
-    if plan.artifacts.is_empty() {
-        return Err(CoordError::InvalidPlan {
-            why: "a creation makes at least its marker",
-        });
-    }
-    for (i, artifact) in plan.artifacts.iter().enumerate() {
-        validate_name(artifact)?;
-        if plan.artifacts[..i].contains(artifact) {
-            return Err(CoordError::InvalidPlan {
-                why: "an artifact is named twice",
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_name(name: &OsStr) -> CoordResult<()> {
-    let mut components = Path::new(name).components();
-    if !matches!(
-        (components.next(), components.next()),
-        (Some(Component::Normal(only)), None) if only == name
-    ) {
-        return Err(CoordError::InvalidPlan {
-            why: "an artifact is one plain name directly beneath the root",
-        });
-    }
-    if is_reserved(name) {
-        return Err(CoordError::InvalidPlan {
-            why: "an artifact's name has the coordination's reserved prefix",
-        });
-    }
-    Ok(())
+    name.as_encoded_bytes()
+        .starts_with(RESERVED_PREFIX.as_bytes())
 }

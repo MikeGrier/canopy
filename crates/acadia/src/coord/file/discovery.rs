@@ -11,7 +11,8 @@
 //! bookkeeping of a hold: it sets no fence, replaces no record and advances no generation.
 
 use crate::coord::{
-    CoordError, CoordResult, RecoveryDiscovery, RecoveryNeed, RestartRecognition, Trust, Waiting,
+    CoordError, CoordResult, RecoveryDiscovery, RecoveryNeed, RestartRecognition, Trust, Untrusted,
+    Waiting,
 };
 
 use super::FileCoordination;
@@ -20,15 +21,19 @@ impl RecoveryDiscovery for FileCoordination {
     fn discover_recovery_with(&self, inspect: &mut dyn FnMut()) -> CoordResult<RecoveryNeed> {
         self.alive()?;
         let layout = self.layout();
-        // A root whose state directory is not there has had no holder, so it has no lock to probe.
-        let (probe, holder_alive) = if self.vfs().exists(&layout.state_dir())? {
-            match self.acquire_exclusion(Waiting::Never) {
-                Ok(probe) => (Some(probe), false),
-                Err(CoordError::WouldWait) => (None, true),
-                Err(error) => return Err(error),
-            }
-        } else {
-            (None, false)
+        // A root whose state directory is not there has had no holder, so it has no lock to probe;
+        // that is the whole observation, since what a writer appearing now makes is no dead one's.
+        if !self.vfs().exists(&layout.state_dir())? {
+            let why = match self.current_boot()? {
+                Some(_) => Untrusted::Created,
+                None => Untrusted::CannotTell,
+            };
+            return Ok(RecoveryNeed::new(false, Some(why), false));
+        }
+        let (probe, holder_alive) = match self.acquire_exclusion(Waiting::Never) {
+            Ok(probe) => (Some(probe), false),
+            Err(CoordError::WouldWait) => (None, true),
+            Err(error) => return Err(error),
         };
         let fenced = self.fence_is_set()?;
         let holder_died = !holder_alive && self.vfs().exists(&layout.owner())?;

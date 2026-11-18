@@ -51,6 +51,93 @@ fn public_count_and_generation_contract_on_every_implementation_and_backend() {
 }
 
 #[test]
+fn no_participant_takes_exclusion_or_attaches_on_a_root_reserved_for_another_implementation() {
+    on_every_contract("coord-contract-identity", &|owner, backend| {
+        opened(owner, backend)
+            .reserve(b"inputs", CreationNonce::from_bytes([1; 16]))
+            .unwrap();
+        let others: Vec<Box<dyn CoordinationFactory>> = vec![
+            Box::new(FileFactory::new()),
+            Box::new(FileFactory::alternate()),
+            Box::new(crate::coord::shared::SharedFactory::new()),
+        ];
+        for other in others
+            .iter()
+            .filter(|other| other.implementation() != owner.implementation())
+        {
+            let participant = opened(other.as_ref(), backend);
+            assert!(
+                matches!(
+                    participant.acquire(crate::coord::Waiting::Never),
+                    Err(CoordError::ImplementationMismatch { .. })
+                ),
+                "{} acquired on {}'s root",
+                other.implementation(),
+                owner.implementation()
+            );
+            assert!(
+                matches!(
+                    participant.attach(Access::Read, crate::coord::Waiting::Never),
+                    Err(CoordError::ImplementationMismatch { .. })
+                ),
+                "{} attached on {}'s root",
+                other.implementation(),
+                owner.implementation()
+            );
+        }
+        let own = opened(owner, backend);
+        drop(own.acquire(crate::coord::Waiting::Never).unwrap());
+        drop(
+            own.attach(Access::Read, crate::coord::Waiting::Never)
+                .unwrap(),
+        );
+    });
+}
+
+#[test]
+fn an_abandoned_conversion_no_longer_reports_holding_the_gate() {
+    on_every_contract(
+        "coord-contract-conversion-abandoned",
+        &|factory, backend| {
+            let participant = opened(factory, backend);
+            let attachment = participant
+                .attach(Access::Read, crate::coord::Waiting::Never)
+                .unwrap();
+            let mut conversion = attachment.begin_conversion().unwrap();
+            assert!(conversion.poll_gate().unwrap());
+            participant.abandon();
+            assert!(matches!(conversion.poll_gate(), Err(CoordError::Abandoned)));
+            assert!(matches!(
+                conversion.poll_tiers(ReaderSafety::Safe),
+                Err(CoordError::Abandoned | CoordError::Malformed { .. })
+            ));
+        },
+    );
+}
+
+#[test]
+fn ending_a_modification_when_none_is_open_changes_nothing() {
+    on_every_contract("coord-contract-end-none", &|factory, backend| {
+        let first = opened(factory, backend);
+        let second = opened(factory, backend);
+        let mut hold = first.acquire(crate::coord::Waiting::Never).unwrap();
+        hold.complete_recovery().unwrap();
+        for end in [ModificationEnd::Settled, ModificationEnd::Unresolved] {
+            assert!(matches!(
+                hold.end_modification(end),
+                Err(CoordError::NoModificationOpen)
+            ));
+        }
+        hold.begin_modification(Purpose::Ordinary)
+            .expect("refusing the end left the hold unfenced");
+        hold.end_modification(ModificationEnd::Settled).unwrap();
+        hold.release().unwrap();
+        assert!(!second.discover_recovery().unwrap().fenced());
+        assert!(second.sample().unwrap().is_settled());
+    });
+}
+
+#[test]
 fn public_abandonment_and_unresolved_work_preserve_recovery_on_every_backend() {
     on_every_contract("coord-contract-abandon", &|factory, backend| {
         let first = opened(factory, backend);
@@ -252,6 +339,10 @@ fn public_creation_reservation_contract_on_every_implementation_and_backend() {
                 self.fs.write(&path, inputs)?;
                 self.fs.fsync(&path)?;
                 Ok(())
+            }
+
+            fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
+                Ok(inputs.to_vec())
             }
         }
         let names = [OsStr::new("data"), OsStr::new("marker")];
