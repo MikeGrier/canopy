@@ -12,7 +12,10 @@ use super::*;
 use crate::store::blob::blob_partition_root;
 use crate::store::migration::Found;
 use crate::store::namespace::namespace_partition_root;
-use acadia::coord::{Access, CoordinationFactory, Waiting};
+use acadia::coord::{
+    Access, ArtifactMaker, CoordError, CoordResult, Coordination, CoordinationFactory,
+    CreationNonce, CreationPlan, ModificationEnd, Purpose, Waiting,
+};
 use std::ffi::OsStr;
 
 use super::coordinated::Coordinated;
@@ -53,24 +56,28 @@ impl Store {
         }
     }
 
-    /// Creates a new store under `root`, writing the genesis marker and the
-    /// `N` empty partition replicas (D40/LAY-1).
+    /// Makes `root` a store with the identity `config` and `options` describe, or opens the store
+    /// with that identity it already is (D40/LAY-1).
     ///
-    /// `root` must already exist as a directory and hold no store: it must be
-    /// empty apart from ignorable dotfiles, and in particular must not already
-    /// contain a [`.store`](MARKER_NAME) marker. The genesis is serialized once
-    /// and mirrored into every partition; the root marker is written **last**
-    /// (atomically, via a temp sibling and rename) so a crash mid-init leaves no
-    /// marker and [`open`](Store::open) cleanly refuses the partial store rather
-    /// than adopting it.
+    /// **Idempotent.** Any number of calls with one identity -- at once, in any processes, or one
+    /// after another -- end with one store, and a call returns it whether it made the store,
+    /// finished a creation another call began, or found it made; a store it finds is opened under
+    /// [`open`](Store::open)'s rules. A store is never made over. A caller that seeds a store does
+    /// so idempotently: a creator can die between finishing the store and seeding it, and the next
+    /// call cannot tell. The identity is the store id, the layout and the agent's identifier; the
+    /// creation time and the agent's version, description and schema are the provenance of
+    /// whichever call makes the marker, and are not compared.
     ///
-    /// Holds coordination's writer exclusion for creation only. A concurrent creation
-    /// with identical inputs that finds a completed marker is [`StoreError::AlreadyInitialized`].
-    ///
-    /// Before it makes anything else it records, durably, the coordination implementation
-    /// `options` names as the one that owns the root, so a root with a marker always has the
-    /// record; a root already recorded for another implementation is refused with
-    /// [`StoreError::RootReserved`].
+    /// `root` must already exist as a directory, holding nothing but what a creation of this
+    /// store makes: a root holding anything else, dotfiles included, is [`StoreError::NotEmpty`],
+    /// and one that is another store is [`StoreError::AlreadyInitialized`]. The creation goes
+    /// through the coordination implementation `options` names, which records itself and the
+    /// identity in a reservation before anything else is made; a root recorded for another
+    /// implementation or another identity is [`StoreError::RootReserved`], as is one a build that
+    /// compared every creation input began and did not finish. The two partition trees are made
+    /// first and the [`.store`](MARKER_NAME) marker **last**, published atomically, so a crash
+    /// leaves no marker and a later call finishes the creation; [`open`](Store::open) refuses a
+    /// root without one.
     ///
     /// `root` must be on a local filesystem; a networked root is unsupported and not
     /// detected (see [`Store`]).
@@ -121,69 +128,48 @@ impl Store {
             Err(e) => return Err(StoreError::Vfs(e)),
         }
 
-        let refuse_occupied = |root: &PathBuf| -> Result<(), StoreError> {
-            for entry in vfs.read_dir(root)? {
-                let name = entry.file_name;
-                if name == MARKER_NAME || name == LEGACY_MARKER_NAME {
-                    return Err(StoreError::AlreadyInitialized { root: root.clone() });
-                }
-                if !name.to_string_lossy().starts_with('.') {
-                    return Err(StoreError::NotEmpty {
-                        root: root.clone(),
-                        entry: name,
-                    });
-                }
-            }
-            Ok(())
-        };
+        // No creation makes the marker of the format before migration, so its presence is read
+        // without exclusion: the root is a store an older binary made.
+        if vfs.exists(&root.join(LEGACY_MARKER_NAME))? {
+            return Err(StoreError::AlreadyInitialized { root });
+        }
 
-        // A refusal before reserving leaves an occupied root untouched; exclusion protects the recheck.
-        refuse_occupied(&root)?;
         let genesis = Genesis::from_config(config, agent);
-        let bytes = serde_json::to_vec_pretty(&genesis)?;
-
-        // The implementation record comes before any artifact, as a creation's reservation does:
-        // a root that gets as far as a marker is a root whose implementation is on record.
-        Self::reserve_implementation(&vfs, &root, factory, &bytes)?;
-
+        let marker = serde_json::to_vec_pretty(&genesis)?;
+        let inputs = genesis.creation_inputs()?;
+        let artifacts = [
+            OsStr::new(BLOB_TREE_DIR),
+            OsStr::new(NAMESPACE_TREE_DIR),
+            OsStr::new(MARKER_NAME),
+        ];
+        // Creators with one identity make one creation, so the nonce tells nothing apart.
+        let plan = CreationPlan {
+            inputs: &inputs,
+            nonce: CreationNonce::from_bytes([0; 16]),
+            artifacts: &artifacts,
+        };
+        let vouching = factory.open(Arc::clone(&vfs), &root)?;
+        let mut maker = GenesisMaker {
+            vfs: &vfs,
+            root: &root,
+            genesis: &genesis,
+            marker: &marker,
+            vouching: &*vouching,
+        };
         let participant = factory.open(Arc::clone(&vfs), &root)?;
-        let mut creation = participant.acquire(Waiting::Wait)?;
-        refuse_occupied(&root)?;
-        creation.begin_modification(acadia::coord::Purpose::Recovery)?;
-
-        // Additive first: build both trees before the root marker exists.
-        //
-        // The blob tree's partitions, whose count is independent of the namespace's
-        // (`D316`, `D320`). Shard directories under them are created lazily on first
-        // ingest, so an empty store carries 1024 absent directories rather than 1024
-        // empty ones.
-        for index in 0..genesis.blob_replica_count {
-            let partition = blob_partition_root(&root, index);
-            vfs.create_dir_all(&partition)?;
-            vfs.fsync(&partition)?;
+        match participant.create(&plan, &mut maker) {
+            Ok(_) => {}
+            Err(CoordError::AlreadyCreated) => return Err(StoreError::AlreadyInitialized { root }),
+            Err(CoordError::Occupied { name }) => {
+                return Err(StoreError::NotEmpty { root, entry: name });
+            }
+            Err(CoordError::Reserved) => return Err(StoreError::RootReserved { root }),
+            Err(CoordError::Vfs(error)) => return Err(StoreError::Vfs(error)),
+            Err(error) => return Err(error.into()),
         }
-        vfs.fsync(&root.join(BLOB_TREE_DIR))?;
-
-        // The namespace's partitions, whose count is odd and independent of the blob
-        // tree's (`D320`). Node directories under them are created by the first write that
-        // needs one, exactly as the blob tree's shards are.
-        for index in 0..genesis.pointer_replica_count {
-            let partition = namespace_partition_root(&root, index);
-            vfs.create_dir_all(&partition)?;
-            vfs.fsync(&partition)?;
-        }
-        vfs.fsync(&root.join(NAMESPACE_TREE_DIR))?;
-
-        // Commit: the root marker appears atomically and last (D40).
-        Self::publish_durably(&vfs, &root, MARKER_NAME, &bytes)?;
-
-        // A root made now has nothing to recover, and its coordination state, which no one has
-        // vouched for yet, is vouched for by the first hold of writer exclusion.
-        creation.end_modification(acadia::coord::ModificationEnd::Settled)?;
-        creation.complete_recovery()?;
-        drop(creation);
         let (genesis, coordination) =
             Self::attach_store(&vfs, &root, factory, agent, Access::Write)?;
+        drop((participant, vouching));
 
         Ok(Store {
             vfs,
@@ -500,6 +486,97 @@ impl Store {
                     return Err(StoreError::MissingPartition { root, index });
                 }
                 Err(e) => return Err(StoreError::Vfs(e)),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The identity a creation's reservation records and every creator compares: what a store is, and
+/// what an opener must also match. Provenance -- the creation time, the agent's version,
+/// description and schemas -- is recorded by the marker alone. The encoding is the reservation's
+/// inputs, so changing a field, its name or their order changes which interrupted creations a build
+/// resumes.
+#[derive(Serialize)]
+struct CreationIdentity<'genesis> {
+    format_version: u32,
+    store_id: &'genesis str,
+    blob_replica_count: usize,
+    pointer_replica_count: usize,
+    shard_width: usize,
+    agent_identifier: &'genesis str,
+}
+
+impl Genesis {
+    /// The canonical encoding of this genesis's identity: one identity, one byte string.
+    fn creation_inputs(&self) -> Result<Vec<u8>, StoreError> {
+        Ok(serde_json::to_vec(&CreationIdentity {
+            format_version: self.format_version,
+            store_id: &self.store_id,
+            blob_replica_count: self.blob_replica_count,
+            pointer_replica_count: self.pointer_replica_count,
+            shard_width: self.shard_width,
+            agent_identifier: &self.metadata.agent_identifier,
+        })?)
+    }
+}
+
+/// Makes a store's artifacts for the creation contract -- the blob tree, the namespace tree, then
+/// the marker -- each idempotently, since a resumed creation can find one partly made.
+struct GenesisMaker<'a> {
+    vfs: &'a Arc<dyn Vfs>,
+    root: &'a Path,
+    genesis: &'a Genesis,
+    marker: &'a [u8],
+    /// A participant that lives until the store holds its own coordination, since state a
+    /// participant vouches for need not outlive the last participant open on the root.
+    vouching: &'a dyn Coordination,
+}
+
+impl GenesisMaker<'_> {
+    /// Vouches for the coordination state of a root that has nothing to recover. It runs before
+    /// the marker exists, so no handle can be attached to the root to have done work since.
+    fn vouch(&self) -> CoordResult<()> {
+        let mut hold = self.vouching.acquire(Waiting::Wait)?;
+        hold.begin_modification(Purpose::Recovery)?;
+        hold.end_modification(ModificationEnd::Settled)?;
+        hold.complete_recovery()
+    }
+}
+
+impl ArtifactMaker for GenesisMaker<'_> {
+    fn make(&mut self, name: &OsStr, _inputs: &[u8]) -> CoordResult<()> {
+        if name == BLOB_TREE_DIR {
+            // The blob tree's partitions, whose count is independent of the namespace's
+            // (`D316`, `D320`). Shard directories under them are created lazily on first
+            // ingest, so an empty store carries 1024 absent directories rather than 1024
+            // empty ones.
+            for index in 0..self.genesis.blob_replica_count {
+                let partition = blob_partition_root(self.root, index);
+                self.vfs.create_dir_all(&partition)?;
+                self.vfs.fsync(&partition)?;
+            }
+            self.vfs.fsync(&self.root.join(BLOB_TREE_DIR))?;
+        } else if name == NAMESPACE_TREE_DIR {
+            // The namespace's partitions, whose count is odd and independent of the blob
+            // tree's (`D320`). Node directories under them are created by the first write that
+            // needs one, exactly as the blob tree's shards are.
+            for index in 0..self.genesis.pointer_replica_count {
+                let partition = namespace_partition_root(self.root, index);
+                self.vfs.create_dir_all(&partition)?;
+                self.vfs.fsync(&partition)?;
+            }
+            self.vfs.fsync(&self.root.join(NAMESPACE_TREE_DIR))?;
+        } else {
+            self.vouch()?;
+            // The marker appears atomically and last (D40); one already there is this creation's,
+            // published whole.
+            match self
+                .vfs
+                .publish_new(&self.root.join(MARKER_NAME), self.marker)
+            {
+                Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {}
+                published => published?,
             }
         }
         Ok(())

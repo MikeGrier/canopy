@@ -86,3 +86,54 @@ fn a_path_naming_no_file_is_invalid_input() {
         publish_staged(Path::new("/"), b"x", || publishing_path(Path::new("/"))).unwrap_err();
     assert_eq!(error.kind(), VfsErrorKind::InvalidInput);
 }
+
+#[test]
+fn every_staging_name_a_publication_tries_is_recognised_as_its_own() {
+    for target in ["record", ".store", "a.b", "publishing"] {
+        let path = Path::new("/root").join(target);
+        for _ in 0..10 {
+            let staging = publishing_path(&path).unwrap();
+            let name = staging.file_name().unwrap();
+            assert!(
+                crate::is_publication_staging_of(name, std::ffi::OsStr::new(target)),
+                "{name:?}"
+            );
+            assert!(!crate::is_publication_staging_of(
+                name,
+                std::ffi::OsStr::new("other")
+            ));
+        }
+    }
+}
+
+/// Windows refuses for a while to remove the last link of a file whose other link was removed
+/// while an outside opener -- a scanner of new files -- still held it, so a publication is a
+/// move there and leaves its file with one name.
+#[test]
+fn a_published_file_can_be_replaced_by_a_rename_at_once() {
+    let dir = Scratch::new("replace-published");
+    let fs_ = OsFs::new();
+    for round in 0..40 {
+        let target = dir.0.join(format!("record-{round}"));
+        fs_.publish_new(&target, b"published").unwrap();
+        let replacement = dir.0.join(format!("record-{round}.tmp"));
+        fs::write(&replacement, b"replaced").unwrap();
+        fs::rename(&replacement, &target).unwrap_or_else(|e| panic!("round {round}: {e}"));
+        assert_eq!(fs::read(&target).unwrap(), b"replaced");
+    }
+}
+
+#[test]
+fn a_publication_racing_a_directory_of_its_name_refuses() {
+    let dir = Scratch::new("directory-taken");
+    let target = dir.0.join("record");
+    fs::create_dir(&target).unwrap();
+    let error = OsFs::new().publish_new(&target, b"x").unwrap_err();
+    assert_eq!(error.kind(), VfsErrorKind::AlreadyExists);
+    assert!(target.is_dir());
+    assert_eq!(
+        fs::read_dir(&dir.0).unwrap().count(),
+        1,
+        "no staging sibling is left"
+    );
+}

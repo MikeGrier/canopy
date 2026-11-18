@@ -81,5 +81,50 @@ adur' = IF path[p] = "resume" \/ (Control = "body-not-synced-before-marker" /\ a
 /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ CanPublish
 '@
         }
+
+        @{
+            Name      = 'FinderIgnoresTheInputs'
+            Base      = 'Creation'
+            Kind      = 'PROPERTIES'
+            Property  = 'AStoreIsFoundOnlyWhereItIs'
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '0'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"DifferentInputs"' }
+            Def       = 'FindsItsStore'
+            Old = @'
+Identical(p) /\ Control # "stop-at-the-store"
+'@
+            New = @'
+res.st = "whole" /\ res.impl = ImplOf[p] /\ Control # "stop-at-the-store"
+'@
+        }
+
+        @{
+            Name      = 'FinderIgnoresTheImplementation'
+            Base      = 'Creation'
+            Kind      = 'PROPERTIES'
+            Property  = 'AStoreIsFoundOnlyWhereItIs'
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '0'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"TwoImplementations"' }
+            Def       = 'FindsItsStore'
+            Old = @'
+Identical(p) /\ Control # "stop-at-the-store"
+'@
+            New = @'
+res.st = "whole" /\ res.inp = InOf[p] /\ Control # "stop-at-the-store"
+'@
+        }
+
+        @{
+            Name      = 'FinderSkipsTheMarkerSync'
+            Base      = 'Creation'
+            Kind      = 'INVARIANTS'
+            Property  = 'AnOpenedStoreKeepsItsMarker'
+            Overrides = @{ Procs = '{1, 2}'; NArt = '2'; MaxDeaths = '1'; MaxCrashes = '0'; Intrusion = 'FALSE'; Scenario = '"TwoCreators"' }
+            Def       = 'FindStore'
+            Old = @'
+/\ adur' = Set(adur, Marker, TRUE)
+'@
+            New = @'
+/\ adur' = adur
+'@
+        }
     )
 }

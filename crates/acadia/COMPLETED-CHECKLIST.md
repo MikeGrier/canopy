@@ -244,3 +244,41 @@ itself; the conformance test runs against both filesystems.
 
 A test registration whose drop withdraws another notice reaches the poller's retirement; with the
 retirement inside the lock the poller deadlocked and the test hung.
+
+## Moved 2026-11-17 -- An identical creator finds the store it asked for
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "An identical creator finds the store it asked for".
+
+### <a id="m19-1"></a>M19-1 -- `Creation::create` returns `Created::Existing` when it finds the marker under its own implementation's reservation for its inputs. *(completed 2026-11-17 21:26:02 -05:00)*
+
+Both implementations decide it at either reading and make the marker durable before returning.
+Revert-probes pin both halves in both implementations: reporting the old refusal failed exactly the
+tests of an identical creator after a finished, a racing, a waited-for and an unsynced creation, and
+skipping the marker's sync failed only the tests whose crash after finding the store would lose an
+unsynced marker. Canopy's `Creation` replay still holds the code to the corpus exported before
+canopy's M15-1, so it fails on the traces in which an identical creator ends at a finished store
+until canopy's M15-2 re-exports it.
+
+## Moved 2026-11-17 -- A creation's own publication leftovers do not occupy its root
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "A creation's own publication leftovers are its
+artifacts'".
+
+### <a id="m20-1"></a>M20-1 -- `Creation::create` reads an artifact's `publish_new` staging sibling as that artifact. *(completed 2026-11-17 21:55:24 -05:00)*
+
+`PUBLISHING_INFIX` and `is_publication_staging_of` name the convention in the `Vfs` contract, and
+`OsFs` builds its staging names from them. A revert-probe that stopped both implementations
+recognizing the sibling failed exactly the two tests of a creation resumed beside a leftover, while
+a leftover with no reservation, or beside no artifact, still occupies the root.
+
+## Moved 2026-11-17 -- A published file can be replaced at once on Windows
+
+### <a id="m21-1"></a>M21-1 -- On Windows `publish_new` moves its staged file into place without replacing, so a rename can replace what it published at once. *(completed 2026-11-17 22:33:07 -05:00)*
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "A publication is a move on Windows". `OsFs`
+gives the staged file its name with `MoveFileExW` and no replace flag; Unix keeps the hard link.
+`publish_new`'s contract now promises the published file has one name. Two `os` tests were added:
+publishing and at once replacing a file by a rename, and a directory at the name refusing the
+publication without leaving a staging sibling. Revert-probe: with the hard link, the replace test
+failed on this host. Canopy's cross-process creation tests, which had failed in about half of runs,
+passed 20 looped runs, and the `os` tests pass under WSL.

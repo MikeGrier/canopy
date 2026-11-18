@@ -17,22 +17,25 @@
 (* exclusive publish-if-absent that leaves the complete file or none, and  *)
 (* whoever publishes it owns the creation.                                 *)
 (*                                                                         *)
-(* A creator reads the root and decides. A marker means the root is a      *)
-(* store and it stops. Something under the root that creation does not     *)
-(* make means the root is not one to create in, and it stops. A            *)
-(* reservation means a creation was begun: it stops if the reservation     *)
-(* names another implementation or other inputs, and otherwise resumes it. *)
-(* With no reservation it creates. Either way it then takes its own        *)
+(* A creator reads the root and decides. A marker under a reservation that *)
+(* names its implementation and records its inputs is the store it asked   *)
+(* for: it makes the marker durable, as an opener does, and ends with the  *)
+(* store existing. Any other marker means the root is another store, and   *)
+(* it stops. Something under the root that creation does not make means    *)
+(* the root is not one to create in, and it stops. A reservation means a   *)
+(* creation was begun: it stops if the reservation names another           *)
+(* implementation or other inputs, and otherwise resumes it. With no       *)
+(* reservation it creates. Either way it then takes its own                *)
 (* implementation's creation exclusion, reads the root again under it, and *)
-(* decides again in the same order. A marker or something creation does    *)
-(* not make stops it. A creator that finds no reservation publishes one,   *)
-(* and one that finds a reservation published since it looked resumes it   *)
-(* as its own if it names the creator's implementation and inputs, and     *)
-(* otherwise stops. A resumer stops unless the reservation is the one it   *)
-(* read. It then makes the reservation durable and only then makes the     *)
-(* artifacts, in order, making each durable before it makes the next. The  *)
-(* last artifact is the marker. It releases the exclusion when the marker  *)
-(* is durable.                                                             *)
+(* decides again in the same order. A marker ends it as at its first look, *)
+(* and something creation does not make stops it. A creator that finds no  *)
+(* reservation publishes one, and one that finds a reservation published   *)
+(* since it looked resumes it as its own if it names the creator's         *)
+(* implementation and inputs, and otherwise stops. A resumer stops unless  *)
+(* the reservation is the one it read. It then makes the reservation       *)
+(* durable and only then makes the artifacts, in order, making each        *)
+(* durable before it makes the next. The last artifact is the marker. It   *)
+(* releases the exclusion when the marker is durable.                      *)
 (*                                                                         *)
 (* Whether a file is durable is its own state, apart from whether it       *)
 (* exists. A process's death changes no file and releases its exclusion.   *)
@@ -78,6 +81,9 @@
 (*                                   a creator does not refuse a root that *)
 (*                                   holds something creation does not     *)
 (*                                   make.                                 *)
+(*   "stop-at-the-store"             a creator that finds the marker       *)
+(*                                   stops, whatever the reservation       *)
+(*                                   records.                              *)
 (*                                                                         *)
 (* The Witness_ properties are false on purpose: a run that checks one     *)
 (* must report it violated, which shows the state or step it names is      *)
@@ -141,7 +147,7 @@ ASSUME Control \in {"none", "reservation-in-two-writes", "reservation-not-synced
                     "publish-without-exclusion", "resume-without-exclusion",
                     "resume-without-reread", "resume-ignores-inputs",
                     "open-ignores-implementation", "open-trusts-a-live-marker",
-                    "creation-ignores-foreign-content"}
+                    "creation-ignores-foreign-content", "stop-at-the-store"}
 
 VARIABLES
     pc,         \* [Procs -> process states]
@@ -157,7 +163,7 @@ VARIABLES
     path,       \* [Procs -> "none", "fresh" or "resume"]: what a creator decided
     ak,         \* [Procs -> Arts or None]: the artifact a creator is making
     sawPartial, \* ghost: some process read a reservation that was not complete
-    relied,     \* ghost: some open succeeded
+    relied,     \* ghost: some open succeeded, or a creator found its store
     everPub,    \* ghost: a reservation has been published
     deaths,
     crashes
@@ -180,9 +186,9 @@ CreatingStates == {"syncRes", "writeArt", "syncArt"}
 HoldingStates == {"holdsX", "partialPub"} \cup CreatingStates
 LiveStates == {"wantX"} \cup HoldingStates
 States == {"new", "done", "dead"} \cup LiveStates
-Outcomes == {"none", "created", "resumed", "exists", "occupied", "otherImpl",
-             "differentInputs", "lostRace", "changed", "partial", "opened",
-             "notAStore", "mismatch"}
+Outcomes == {"none", "created", "resumed", "exists", "existing", "occupied",
+             "otherImpl", "differentInputs", "lostRace", "changed", "partial",
+             "opened", "notAStore", "mismatch"}
 
 NoRes == [st |-> "none", impl |-> 0, inp |-> 0, nonce |-> 0]
 Half == [st |-> "partial", impl |-> 0, inp |-> 0, nonce |-> 0]
@@ -195,6 +201,10 @@ MarkerLive == aliv[Marker]
 \* Whether a creator finds the root free of anything creation does not make.
 Unoccupied == ~foreign \/ Control = "creation-ignores-foreign-content"
 ReleaseX(p) == [i \in Impls |-> IF cx[i] = p THEN None ELSE cx[i]]
+\* The reservation records this creator's implementation and inputs.
+Identical(p) == res.st = "whole" /\ res.impl = ImplOf[p] /\ res.inp = InOf[p]
+\* Whether a creator that finds the marker has found the store it asked for.
+FindsItsStore(p) == Identical(p) /\ Control # "stop-at-the-store"
 
 -----------------------------------------------------------------------------
 \* Audience: internal.
@@ -244,28 +254,38 @@ EndAs(p, why) ==
     /\ pc' = Set(pc, p, "done")
     /\ out' = Set(out, p, why)
 
+\* A creator that finds the store it asked for makes the marker durable, as an
+\* opener does, and ends with the store existing.
+FindStore(p) ==
+    /\ EndAs(p, "existing")
+    /\ adur' = Set(adur, Marker, TRUE)
+    /\ relied' = TRUE
+
 \* A creator reads the root, which is one step, and decides.
 Look(p) ==
     /\ pc[p] = "new" /\ RoleOf[p] = "creator"
     /\ \/ /\ res.st = "partial"
           /\ EndAs(p, "partial")
           /\ sawPartial' = TRUE
-          /\ UNCHANGED <<seen, path>>
-       \/ /\ res.st # "partial" /\ MarkerLive
-          /\ EndAs(p, "exists")
+          /\ UNCHANGED <<seen, path, adur, relied>>
+       \/ /\ res.st # "partial" /\ MarkerLive /\ FindsItsStore(p)
+          /\ FindStore(p)
           /\ UNCHANGED <<sawPartial, seen, path>>
+       \/ /\ res.st # "partial" /\ MarkerLive /\ ~FindsItsStore(p)
+          /\ EndAs(p, "exists")
+          /\ UNCHANGED <<sawPartial, seen, path, adur, relied>>
        \/ /\ res.st # "partial" /\ ~MarkerLive /\ ~Unoccupied
           /\ EndAs(p, "occupied")
-          /\ UNCHANGED <<sawPartial, seen, path>>
+          /\ UNCHANGED <<sawPartial, seen, path, adur, relied>>
        \/ /\ res.st = "whole" /\ ~MarkerLive /\ Unoccupied
           /\ res.impl # ImplOf[p]
           /\ EndAs(p, "otherImpl")
-          /\ UNCHANGED <<sawPartial, seen, path>>
+          /\ UNCHANGED <<sawPartial, seen, path, adur, relied>>
        \/ /\ res.st = "whole" /\ ~MarkerLive /\ Unoccupied
           /\ res.impl = ImplOf[p]
           /\ res.inp # InOf[p] /\ Control # "resume-ignores-inputs"
           /\ EndAs(p, "differentInputs")
-          /\ UNCHANGED <<sawPartial, seen, path>>
+          /\ UNCHANGED <<sawPartial, seen, path, adur, relied>>
        \/ /\ res.st = "whole" /\ ~MarkerLive /\ Unoccupied
           /\ res.impl = ImplOf[p]
           /\ (res.inp = InOf[p] \/ Control = "resume-ignores-inputs")
@@ -273,13 +293,13 @@ Look(p) ==
                                  THEN "holdsX" ELSE "wantX")
           /\ seen' = Set(seen, p, res)
           /\ path' = Set(path, p, "resume")
-          /\ UNCHANGED <<out, sawPartial>>
+          /\ UNCHANGED <<out, sawPartial, adur, relied>>
        \/ /\ res.st = "none" /\ ~MarkerLive /\ Unoccupied
           /\ pc' = Set(pc, p, IF Control = "publish-without-exclusion"
                                  THEN "holdsX" ELSE "wantX")
           /\ path' = Set(path, p, "fresh")
-          /\ UNCHANGED <<out, sawPartial, seen>>
-    /\ UNCHANGED <<cx, root, ak, relied, everPub, counts>>
+          /\ UNCHANGED <<out, sawPartial, seen, adur, relied>>
+    /\ UNCHANGED <<cx, res, rdur, aliv, ainp, foreign, ak, everPub, counts>>
 
 \* The creation exclusion of the creator's own implementation, taken whenever
 \* it is free, so every service order is checked.
@@ -341,12 +361,18 @@ TakeOver(p) ==
     /\ seen' = Set(seen, p, res)
     /\ UNCHANGED <<cx, out, root, ak, ghost, counts>>
 
-\* The marker was put in place while the creator waited: the root is a store.
+\* The marker was put in place while the creator waited: the root is a store,
+\* the one it asked for when the reservation records its implementation and
+\* inputs.
 CreatedUnderExclusion(p) ==
     /\ pc[p] = "holdsX" /\ path[p] = "fresh" /\ MarkerLive
-    /\ EndAs(p, "exists")
+    /\ \/ FindsItsStore(p) /\ FindStore(p)
+       \/ /\ ~FindsItsStore(p)
+          /\ EndAs(p, "exists")
+          /\ UNCHANGED <<adur, relied>>
     /\ cx' = ReleaseX(p)
-    /\ UNCHANGED <<root, mine, ghost, counts>>
+    /\ UNCHANGED <<res, rdur, aliv, ainp, foreign, mine, sawPartial, everPub,
+                   counts>>
 
 \* The root was occupied when the creator read it again under the exclusion.
 OccupiedUnderExclusion(p) ==
@@ -356,25 +382,31 @@ OccupiedUnderExclusion(p) ==
     /\ UNCHANGED <<root, mine, ghost, counts>>
 
 \* A resumer reads the root again under the exclusion. The creation it read is
-\* gone if the marker is in place, cannot be resumed if the root holds
+\* finished if the marker is in place, cannot be resumed if the root holds
 \* something else, and is not the one it read if the reservation changed.
 Reconfirm(p) ==
     /\ pc[p] = "holdsX" /\ path[p] = "resume"
     /\ \/ /\ MarkerLive /\ Control # "resume-without-reread"
-          /\ EndAs(p, "exists")
+          /\ \/ FindsItsStore(p) /\ FindStore(p)
+             \/ /\ ~FindsItsStore(p)
+                /\ EndAs(p, "exists")
+                /\ UNCHANGED <<adur, relied>>
           /\ cx' = ReleaseX(p)
        \/ /\ ~MarkerLive /\ ~Unoccupied /\ Control # "resume-without-reread"
           /\ EndAs(p, "occupied")
           /\ cx' = ReleaseX(p)
+          /\ UNCHANGED <<adur, relied>>
        \/ /\ ~MarkerLive /\ Unoccupied /\ res # seen[p]
           /\ Control # "resume-without-reread"
           /\ EndAs(p, "changed")
           /\ cx' = ReleaseX(p)
+          /\ UNCHANGED <<adur, relied>>
        \/ /\ (Control = "resume-without-reread"
                \/ (~MarkerLive /\ res = seen[p] /\ Unoccupied))
           /\ pc' = Set(pc, p, "syncRes")
-          /\ UNCHANGED <<out, cx>>
-    /\ UNCHANGED <<root, mine, ghost, counts>>
+          /\ UNCHANGED <<out, cx, adur, relied>>
+    /\ UNCHANGED <<res, rdur, aliv, ainp, foreign, mine, sawPartial, everPub,
+                   counts>>
 
 \* The reservation, and with it its directory entry, is made durable before
 \* any other artifact exists.
@@ -597,6 +629,23 @@ AnOpenSucceedsOnlyThroughTheRecordedImplementation ==
           (out[p] # "opened" /\ out'[p] = "opened")
              => (MarkerLive /\ res.impl = ImplOf[p])]_vars
 
+\* Audience: client. A create of a store that already exists with its implementation and inputs
+\* succeeds with that store. Shows through: the outcome of a create that finds the store made.
+\* A creator stops at a finished store only when the reservation records another
+\* implementation or other inputs.
+ACreatorFindsItsOwnStore ==
+    [][\A p \in Procs :
+          (out[p] # "exists" /\ out'[p] = "exists") => ~Identical(p)]_vars
+
+\* Audience: client. A create reports an existing store only where the store it asked for is.
+\* Shows through: the outcome of a create that finds the store made.
+\* A creator ends with the store existing only at a marker whose reservation
+\* records its implementation and inputs.
+AStoreIsFoundOnlyWhereItIs ==
+    [][\A p \in Procs :
+          (out[p] # "existing" /\ out'[p] = "existing")
+             => (MarkerLive /\ Identical(p))]_vars
+
 \* Audience: client. A create or open that is refused changes nothing in the root. Shows through:
 \* the outcome of create and of open.
 \* An attempt that ends without creating or opening changes nothing in the
@@ -604,7 +653,7 @@ AnOpenSucceedsOnlyThroughTheRecordedImplementation ==
 ARefusalChangesNothing ==
     [][\A p \in Procs :
           (pc[p] # "done" /\ pc'[p] = "done"
-           /\ out'[p] \notin {"created", "resumed", "opened"})
+           /\ out'[p] \notin {"created", "resumed", "existing", "opened"})
              => UNCHANGED root]_vars
 
 \* Audience: client. A process dying changes nothing in the root, so its creation can be resumed.
@@ -682,10 +731,13 @@ Witness_AResumerFindsTheRootOccupiedUnderTheExclusion ==
                           /\ out'[p] = "occupied")]_vars
 
 Witness_ACreatorFindsTheStoreCreated ==
-    [][~(\E p \in Procs : pc[p] = "new" /\ out'[p] = "exists")]_vars
+    [][~(\E p \in Procs : pc[p] = "new" /\ out'[p] = "existing")]_vars
 
 Witness_AResumerFindsTheStoreCreatedWhileItWaited ==
-    [][~(\E p \in Procs : pc[p] = "holdsX" /\ out'[p] = "exists")]_vars
+    [][~(\E p \in Procs : pc[p] = "holdsX" /\ out'[p] = "existing")]_vars
+
+Witness_ACreatorStopsAtAnotherStore ==
+    [][~(\E p \in Procs : out[p] # "exists" /\ out'[p] = "exists")]_vars
 
 Witness_AnOpenOpens ==
     ~(\E p \in Procs : out[p] = "opened")

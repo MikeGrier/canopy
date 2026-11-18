@@ -171,8 +171,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Nonce::new(&format!("op-{next}")).expect("valid nonce")
     });
 
-    // Create the store once; afterwards reopen it with `Store::open(vfs, root, options)`, which
-    // returns what it found beside the handle -- call `resolve()` or `recover()` if it needs either.
+    // Create the store, or open it if a call with this identity already made it: `init` is
+    // idempotent, so any seeding that follows must be too. To reopen it, `Store::open(vfs, root,
+    // options)` also returns what it found beside the handle -- call `resolve()` or `recover()`
+    // if it needs either.
     let created_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as u64;

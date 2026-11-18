@@ -25,16 +25,16 @@ pub enum StoreError {
         /// The offending path.
         root: PathBuf,
     },
-    /// `init` refused a root that already holds a non-ignorable (non-dotfile)
-    /// entry, so creating a store there would risk clobbering existing data.
+    /// `init` refused a root holding an entry that no creation of the store makes, so creating a
+    /// store there would risk clobbering existing data.
     NotEmpty {
         /// The root that was not empty.
         root: PathBuf,
-        /// The first non-dotfile entry found.
+        /// The entry found.
         entry: OsString,
     },
-    /// `init` refused a root that already contains a [`.store`](MARKER_NAME)
-    /// marker -- it is already a store.
+    /// `init` refused a root that is already another store: its marker records another identity
+    /// or implementation, or is the marker of the format before migration.
     AlreadyInitialized {
         /// The root that already held a marker.
         root: PathBuf,

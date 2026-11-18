@@ -1754,6 +1754,11 @@ the listing may be incomplete, and no handle is reported live that is not.
 
 ## Creating a store root, modelled in `Creation.tla`, 2026-11-11
 
+> **SUPERSEDED in part, 2026-11-17, by "Store creation is idempotent".** A creator that finds
+> the marker under a reservation of its implementation and inputs has succeeded: the store exists
+> and it opens it, rather than being stopped. The creation's inputs are the store's identity, not
+> every input. Read that section before acting on the second bullet below.
+
 > **SUPERSEDED in part, 2026-11-15, by "The creation model describes the coordination's
 > decisions".** What a creator concludes when it reads the root again under the exclusion, in the
 > second bullet below, is the full decision of its first look: a creator that finds a reservation
@@ -4218,6 +4223,10 @@ Nothing in the code, the tests or the live documents calls it a Shire.
 
 ## A root is migrated to the coordination layer's format, 2026-11-13
 
+> **SUPERSEDED in part, 2026-11-17, by "Store creation is idempotent".** A creation's
+> reservation nonce is zero, not derived from its inputs, and the inputs are the store's identity
+> alone. A migration's reservation is unchanged.
+
 > **SUPERSEDED in part, 2026-11-14, by "Agent metadata is behind the genesis version-8 barrier".**
 > The supported migration targets and inputs below are qualified by that decision: both supported
 > source versions reach version 8, and the caller supplies the agent.
@@ -4442,6 +4451,11 @@ caller's, and recovery is a run of bounded, idempotent steps[^m7-4].
 
 ## Agent metadata is behind the genesis version-8 barrier, 2026-11-14
 
+> **SUPERSEDED in part, 2026-11-17, by "Store creation is idempotent".** Of the agent metadata,
+> only the version-independent identifier is part of a creation's reservation. The software
+> version, description and schemas are recorded by the creator that makes the marker and are not
+> compared, so a creator differing in them finds the store and opens it under the open rules.
+
 > **SUPERSEDED in part, 2026-11-14, by "Caller-driven migration units have durable intent".**
 > Newly created roots use marker format 9 so pre-upgrade binaries cannot clear body recovery state.
 > Offline migration of format 8 preserves its existing metadata rather than reconstructing it.
@@ -4599,6 +4613,11 @@ failure after a successful description change leaves that change successful.
 [^m8-4]: `M8-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m8-4) [completed 2026-11-14; `87a52e7`]
 
 ## Writer exclusion belongs to an operation, 2026-11-14
+
+> **SUPERSEDED in part, 2026-11-17, by "Store creation is idempotent".** Creation goes through
+> the creation contract, not a reservation followed by writer exclusion, and an identical
+> creator that finds the completed store succeeds and opens it rather than being refused with
+> `AlreadyInitialized`. The paragraph on creation below no longer describes `Store::init`.
 
 An attachment holds the shared reader tier, and for a writer the shared writer tier, until its
 last clone drops. Writer exclusion belongs to an outermost operation: acquire after those tiers,
@@ -5129,6 +5148,10 @@ The harness that replays `PointerPublication`'s traces against the store (its te
 
 ## The creation model describes the coordination's decisions, 2026-11-15
 
+> **SUPERSEDED in part, 2026-11-17, by "Store creation is idempotent".** A marker that stops a
+> creator stops only one whose implementation or inputs the reservation does not record; a
+> creator that finds the marker under its own reservation, at either look, has succeeded.
+
 Replaying `Creation`'s traces against acadia's two implementations of the creation contract found
 them deciding in two places otherwise than the model. The engineer asked first whether the model
 accepts the code's decisions: a copy of [Creation.tla](spec/Creation.tla) that made them held every
@@ -5217,7 +5240,7 @@ The harness that replays `Creation`'s traces against acadia's creation contract 
 
 [^m11-3]: `M11-3` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-3) [completed 2026-11-15; `dfcd5be`]
 
-[^m12-4]: `M12-4` in [CHECKLIST.md](CHECKLIST.md)
+[^m12-4]: `M12-4`, now `M15-4`, in [CHECKLIST.md](CHECKLIST.md)
 
 ## The contract is bridged before the documents above it, and the shared implementation announces its steps, 2026-11-15
 
@@ -5646,3 +5669,74 @@ and the cost comparison are recorded in
   service each have a negative control. The projection keeps the uncertainty state reachable,
   and mutation probes require the refinement or the service property to fail when a promise is
   altered.
+
+## Store creation is idempotent, 2026-11-17
+
+`Store::init(root, config)` succeeds when, on return, the root holds a finished store with the
+identity `config` describes, whichever creator built it, and it never rewrites that store. It is
+refused only for a root holding something else: a store of another identity, another
+implementation's reservation, or entries no creation makes. The outcome does not depend on how
+creators interleave. Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "Creation is
+idempotent, and a store's nonce is set by its first user", and the discussion in
+[DESIGN-SESSION-2026-11-17-idempotent-creation.md](design-sessions/DESIGN-SESSION-2026-11-17-idempotent-creation.md).
+The work is canopy's milestone M15 in [CHECKLIST.md](CHECKLIST.md).
+
+- **`Store::init` creates through `Creation::create`.** The blob tree, the namespace tree and the
+  marker are the creation's artifacts, the marker last, each made idempotently. Taking over an
+  interrupted creation and the ordering of creators are the contract's: a creator reads the root,
+  takes the creation exclusion, reads it again and decides from that second reading. No reading
+  made before the exclusion refuses a root that the creation it shares a reservation with could
+  have produced.
+- **Identity is compared; provenance is recorded.** A creation's inputs, which its reservation
+  records and every creator compares, are the store's identity: the store id, the genesis format
+  version, the replica counts and shard width, and the agent's version-independent identifier,
+  which an opener must also match. The creation time, the agent's software version and
+  description and the schemas are provenance: the creator that makes the marker writes its own,
+  and no other creator compares them.
+- **A creator that finds the store finished opens it.** Finding the marker under a reservation of
+  its implementation and identity, before or under the exclusion, is success. The store is then
+  opened by the ordinary open rules, with their refusals. `init` returns the store either way and
+  does not say whether this call made it: a caller that seeds a store does so idempotently, since a
+  creator can die between finishing the store and seeding it, and the next call cannot tell that
+  the seeding never happened.
+- **The root holds nothing but creation's own entries beforehand**, chosen with the engineer over
+  a caller-defined set of entries to ignore: dotfiles are not ignored. The marker is published with
+  `Vfs::publish_new`, whose staging sibling the contract reads as the marker's, so a crash during
+  its publication leaves a creation to finish (acadia's
+  [DESIGN-NOTES.md](../acadia/DESIGN-NOTES.md) "A creation's own publication leftovers are its
+  artifacts'").
+- **The reservation's nonce is zero.** Two creators with one identity make one creation, so the
+  nonce tells nothing apart, and a zero nonce keeps creation idempotent across processes.
+- **The store's nonce is set by its first user, under writer exclusion.** A canopy-owned record
+  in the root, `.store-nonce`, holds a per-store nonce, absent after creation, and
+  `Store::store_nonce` returns it to canopy and to a dependent alike: what tells this store apart
+  from another of its identity made later at the same path. A call holds writer exclusion, reads
+  it, and when it is unset draws one from its handle's nonce source
+  -- canopy has no random source of its own -- publishes it atomically and makes it durable before
+  using it, so a value is never used and then lost to a crash. The reservation, which creators of
+  every implementation read and compare, is never rewritten after it is published.
+
+### T33 -- an identical creator looks while the store is half built, and finds it
+
+Status: `[verified]` against the model, replayed by TLC from its scenario table in the constants of
+[Creation-TwoCreators.cfg](spec/Creation-TwoCreators.cfg) with two artifacts and neither death,
+crash nor intrusion. A and B are creators of one implementation with the same inputs; the marker is
+the second artifact. Step `LOOK2` is where `Store::init`'s check made before any exclusion refused
+the root as not empty: what it finds is an artifact of a creation it could resume, which is no
+reason to refuse.
+
+| step | actor | event | durable effect |
+|---|---|---|---|
+| 1 `LOOK1` | A | reads the root and finds nothing, and decides to create | -- |
+| 2 `LOCK1` | A | takes the creation exclusion | creation exclusion: A |
+| 3 `PUB` | A | publishes its reservation | reservation: A's, complete, not durable |
+| 4 `SYNR` | A | makes the reservation durable | reservation: durable |
+| 5 `WRA1` | A | makes the first artifact | artifact 1: exists |
+| 6 `LOOK2` | B | reads the root, finds A's reservation for its implementation and inputs, the first artifact and no marker, and decides to resume | -- |
+| 7 `SYA1` | A | makes the first artifact durable | artifact 1: durable |
+| 8 `WRM` | A | makes the marker | marker: exists |
+| 9 `SYM` | A | makes the marker durable and lets go of the exclusion | marker: durable; creation exclusion: none |
+| 10 `LOCK2` | B | takes the creation exclusion | creation exclusion: B |
+| 11 `FIND` | B | reads the root again, finds the marker under the reservation of its implementation and inputs, makes the marker durable, lets go of the exclusion and ends with the store existing | creation exclusion: none |
+
+Both creators succeed with one store, which A made: A's outcome is created and B's is existing.

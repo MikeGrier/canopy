@@ -42,15 +42,20 @@ pub trait ArtifactMaker {
 /// its marker is in place. Between implementations, whose creation exclusions need not exclude each
 /// other, the reservation arbitrates: whoever publishes it owns the creation.
 pub trait Creation {
-    /// Creates the store root, or resumes a creation of it that was interrupted.
+    /// Creates the store root, resumes a creation of it that was interrupted, or finds it made.
     ///
-    /// The root is read: a marker refuses with
+    /// The root is read: a marker under a reservation that names this implementation and records
+    /// `plan.inputs` is the store asked for, whose marker is made durable with its directory entry
+    /// before the call returns [`Created::Existing`]; any other marker refuses with
     /// [`AlreadyCreated`](super::CoordError::AlreadyCreated); anything beneath it that is neither an
     /// artifact of `plan` nor the coordination's own -- or an artifact with no reservation, which no
-    /// creation leaves -- refuses with [`Occupied`](super::CoordError::Occupied); a reservation that names another implementation or
+    /// creation leaves -- refuses with [`Occupied`](super::CoordError::Occupied). A sibling that
+    /// [`Vfs::publish_new`](crate::Vfs::publish_new) stages an artifact in
+    /// ([`is_publication_staging_of`](crate::is_publication_staging_of)) is read as that artifact,
+    /// so a crash during its publication leaves a creation to finish. A reservation that names another implementation or
     /// records other inputs refuses with [`Reserved`](super::CoordError::Reserved). Then this
     /// implementation's creation exclusion is taken, waiting for it, and the root read again under
-    /// it with the same refusals, so a creation that finished while this call waited is found.
+    /// it with the same decisions, so a creation that finished while this call waited is found.
     ///
     /// With no reservation, one is published -- this implementation, `plan.inputs` and
     /// `plan.nonce` -- complete or not at all even across a power loss, and made durable with its

@@ -185,17 +185,73 @@ fn creation_records_the_reservation_then_makes_every_artifact_in_order() {
 }
 
 #[test]
-fn a_created_root_is_not_created_again_by_any_implementation() {
+fn a_created_root_is_found_by_an_identical_creator_and_refused_to_any_other() {
     on_every_implementation("coord-create-again", &|implementation, backend| {
         let root = backend.root();
         create_through(implementation, backend.process(), &root, INPUTS, 1).expect("create");
+        let vfs = backend.process();
+        let before = store_names(&*vfs, &root);
+        assert_eq!(
+            create_through(implementation, backend.process(), &root, INPUTS, 2).expect("found"),
+            Created::Existing
+        );
+        assert!(matches!(
+            create_through(implementation, backend.process(), &root, OTHER_INPUTS, 3),
+            Err(CoordError::AlreadyCreated)
+        ));
         for again in implementations() {
-            assert!(matches!(
-                create_through(&again, backend.process(), &root, INPUTS, 2),
-                Err(CoordError::AlreadyCreated)
-            ));
+            if again.implementation() != implementation.implementation() {
+                assert!(matches!(
+                    create_through(&again, backend.process(), &root, INPUTS, 4),
+                    Err(CoordError::AlreadyCreated)
+                ));
+            }
         }
+        assert_eq!(store_names(&*vfs, &root), before, "nothing is made again");
+        assert_eq!(reservation(&*vfs, &root).expect("reserved").nonce, nonce(1));
+        assert_created(&*vfs, &root, INPUTS);
     });
+}
+
+#[test]
+fn of_identical_creators_at_once_one_creates_and_the_others_find_its_store() {
+    for round in 0..8 {
+        on_every_implementation("coord-identical-race", &|implementation, backend| {
+            let root = backend.root();
+            let start = Arc::new(Barrier::new(4));
+            let racers: Vec<_> = (1..=4u8)
+                .map(|n| {
+                    let (implementation, vfs, root, start) = (
+                        implementation.clone(),
+                        backend.process(),
+                        root.clone(),
+                        Arc::clone(&start),
+                    );
+                    thread::spawn(move || {
+                        start.wait();
+                        create_through(&implementation, vfs, &root, INPUTS, n)
+                    })
+                })
+                .collect();
+            let outcomes: Vec<_> = racers
+                .into_iter()
+                .map(|racer| racer.join().expect("a racer"))
+                .collect();
+            let created = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Ok(Created::Created)))
+                .count();
+            assert_eq!(created, 1, "{} round {round}: {outcomes:?}", backend.name());
+            assert!(
+                outcomes
+                    .iter()
+                    .all(|outcome| matches!(outcome, Ok(Created::Created | Created::Existing))),
+                "{} round {round}: {outcomes:?}",
+                backend.name()
+            );
+            assert_created(&*backend.process(), &root, INPUTS);
+        });
+    }
 }
 
 #[test]
@@ -306,6 +362,51 @@ fn a_root_holding_something_creation_does_not_make_is_refused_to_a_resumer() {
             Err(CoordError::Occupied { .. })
         ));
         assert_eq!(store_names(&*vfs, &root), ["files", "stray"]);
+    });
+}
+
+#[test]
+fn a_publication_left_beside_any_artifact_does_not_keep_its_creation_from_finishing() {
+    on_every_implementation("coord-publication-left", &|implementation, backend| {
+        let root = backend.root();
+        for (at, artifact) in ARTIFACTS.iter().enumerate() {
+            let vfs = backend.process();
+            let creator = implementation.open(Arc::clone(&vfs), &root).expect("open");
+            let mut interrupted = FileMaker::new(Arc::clone(&vfs), &root).failing_at(at);
+            assert!(create(&*creator, INPUTS, nonce(1), &mut interrupted).is_err());
+            creator.abandon();
+            let left = root.join(format!("{artifact}.publishing.9-9"));
+            vfs.write(&left, b"cut short")
+                .expect("a publication left behind");
+            assert_eq!(
+                create_through(implementation, backend.process(), &root, INPUTS, 2)
+                    .unwrap_or_else(|error| panic!("{} {artifact}: {error}", backend.name())),
+                Created::Resumed
+            );
+            assert_created(&*vfs, &root, INPUTS);
+            for name in ARTIFACTS.iter().chain([&".coord-reservation"]) {
+                let _ = vfs.remove_file(&root.join(name));
+            }
+            vfs.remove_file(&left).expect("remove the leftover");
+        }
+    });
+}
+
+#[test]
+fn a_publication_left_with_no_reservation_or_beside_no_artifact_occupies_the_root() {
+    on_every_implementation("coord-publication-foreign", &|implementation, backend| {
+        let vfs = backend.process();
+        let root = backend.root();
+        for left in ["marker.publishing.1-0", "stray.publishing.1-0"] {
+            vfs.write(&root.join(left), b"x").expect("a leftover");
+            match create_through(implementation, backend.process(), &root, INPUTS, 1) {
+                Err(CoordError::Occupied { name }) => assert_eq!(name, left),
+                other => panic!("{}: {left}: {other:?}", backend.name()),
+            }
+            assert!(reservation(&*vfs, &root).is_none(), "nothing is reserved");
+            vfs.remove_file(&root.join(left))
+                .expect("remove the leftover");
+        }
     });
 }
 
@@ -564,7 +665,8 @@ fn a_creator_suspended_before_publishing_holds_off_its_own_implementation() {
                     waiter_root.clone(),
                 );
                 let creator = still_waiting(move || {
-                    create_through(&f1, creator_vfs, &r1, INPUTS, 3).map(|_| ())
+                    create_through(&f1, creator_vfs, &r1, INPUTS, 3)
+                        .map(|created| assert_eq!(created, Created::Existing))
                 });
                 let opener = still_waiting(move || {
                     f2.open(opener_vfs, &r2)
@@ -585,10 +687,7 @@ fn a_creator_suspended_before_publishing_holds_off_its_own_implementation() {
         let mut handles = std::mem::take(&mut *waiters.lock().unwrap()).into_iter();
         let creator = handles.next().expect("the waiting creator");
         let opener = handles.next().expect("the waiting opener");
-        assert!(matches!(
-            creator.join().expect("joined"),
-            Err(CoordError::AlreadyCreated)
-        ));
+        assert!(matches!(creator.join().expect("joined"), Ok(())));
         opener
             .join()
             .expect("joined")
@@ -597,7 +696,7 @@ fn a_creator_suspended_before_publishing_holds_off_its_own_implementation() {
 }
 
 #[test]
-fn a_creator_suspended_after_publishing_refuses_every_other_creation() {
+fn a_creator_suspended_after_publishing_refuses_another_implementation_and_holds_off_its_own() {
     for implementation in implementations() {
         let mem = Backend::mem();
         let root = PathBuf::from(Backend::MEM_ROOT);
@@ -639,7 +738,7 @@ fn a_creator_suspended_after_publishing_refuses_every_other_creation() {
         let waiter = waiting.lock().unwrap().take().expect("the waiter");
         assert!(matches!(
             waiter.join().expect("joined"),
-            Err(CoordError::AlreadyCreated)
+            Ok(Created::Existing)
         ));
     }
 }
@@ -692,7 +791,7 @@ fn a_resumer_that_waited_while_its_creation_finished_creates_nothing() {
         let resumer = parked.lock().unwrap().take().expect("the resumer");
         assert!(matches!(
             resumer.join().expect("joined"),
-            Err(CoordError::AlreadyCreated)
+            Ok(Created::Existing)
         ));
     }
 }
@@ -735,6 +834,28 @@ fn an_open_makes_a_marker_its_creator_did_not_make_durable() {
             .expect("open")
             .confirm_created(OsStr::new(MARKER))
             .expect("the store survives the crash");
+    }
+}
+
+#[test]
+fn an_identical_creator_makes_a_marker_its_creator_did_not_make_durable() {
+    for implementation in implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        root_with_an_unsynced_marker(&implementation, &mem, &root);
+        assert_eq!(
+            create_through(
+                &implementation,
+                Arc::new(mem.another_process()),
+                &root,
+                INPUTS,
+                2
+            )
+            .expect("found"),
+            Created::Existing
+        );
+        mem.simulate_crash();
+        assert_created(&mem, &root, INPUTS);
     }
 }
 

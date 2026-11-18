@@ -39,11 +39,13 @@ fn opening_does_not_take_the_legacy_root_lock() {
     Store::open_unsourced(vfs, root).unwrap();
 }
 
+/// The legacy root lock lives in a store root, so it is held there: an `init` that finds the
+/// store goes on while it is held.
 #[test]
 fn creation_uses_coordination_rather_than_the_legacy_root_lock() {
-    let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("/held");
-    vfs.create_dir_all(&root).unwrap();
+    let (vfs, store) = fresh_store();
+    let root = store.root().to_path_buf();
+    drop(store);
     let _held = vfs.lock_exclusive(&root.join(LOCK_NAME)).unwrap();
 
     Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
@@ -72,15 +74,19 @@ fn init_over_an_occupied_root_leaves_no_lock_file() {
     );
 }
 
-/// A completed creation's marker refuses a second creation.
+/// A completed creation is found by a second one with its identity, and refuses any other.
 #[test]
-fn init_after_a_released_init_is_refused_as_already_initialized() {
+fn init_after_a_released_init_opens_the_store_and_refuses_another_identity() {
     let (vfs, store) = fresh_store();
     let root = store.root().to_path_buf();
     drop(store);
 
-    let refused = Store::init_unsourced(Arc::clone(&vfs), root, test_config())
-        .expect_err("an initialized root refuses a second init");
+    let again = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config())
+        .expect("an identical init opens the store");
+    drop(again);
+    let other = GenesisConfig::new(StoreId::new("another-store").unwrap(), 12_345);
+    let refused = Store::init_unsourced(Arc::clone(&vfs), root, other)
+        .expect_err("another identity is refused");
     assert!(
         matches!(refused, StoreError::AlreadyInitialized { .. }),
         "got {refused:?}"
@@ -351,57 +357,6 @@ fn independent_handles_alternate_logged_and_unlogged_writes() {
         assert_eq!(
             reader.read_body(name("turns"), &document).unwrap(),
             Some(content)
-        );
-    }
-}
-
-#[test]
-fn identical_concurrent_creators_never_replace_a_completed_store() {
-    for round in 0..12 {
-        let (vfs, root) = fresh_root();
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let creators: Vec<_> = (0..2)
-            .map(|_| {
-                let (vfs, root, barrier) = (Arc::clone(&vfs), root.clone(), Arc::clone(&barrier));
-                thread::spawn(move || {
-                    barrier.wait();
-                    Store::init_unsourced(vfs, root, test_config())
-                })
-            })
-            .collect();
-        let outcomes: Vec<_> = creators
-            .into_iter()
-            .map(|creator| creator.join().unwrap())
-            .collect();
-        assert_eq!(
-            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
-            1,
-            "round {round}"
-        );
-        assert!(
-            outcomes
-                .iter()
-                .any(|outcome| matches!(outcome, Err(StoreError::AlreadyInitialized { .. }))),
-            "round {round}: the losing creator reported {:?}",
-            outcomes
-                .iter()
-                .filter_map(|o| o.as_ref().err())
-                .collect::<Vec<_>>()
-        );
-        let store = outcomes.into_iter().find_map(Result::ok).unwrap();
-        store
-            .update_document_as(
-                Swap::new(name("created"), doc("one"), body(b"original")),
-                &nonce("created"),
-            )
-            .unwrap();
-        assert!(matches!(
-            Store::init_unsourced(vfs, root, test_config()),
-            Err(StoreError::AlreadyInitialized { .. })
-        ));
-        assert_eq!(
-            store.read_body(name("created"), &doc("one")).unwrap(),
-            Some(body(b"original"))
         );
     }
 }

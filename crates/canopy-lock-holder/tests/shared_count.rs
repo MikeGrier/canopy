@@ -30,6 +30,9 @@ mod upgrades;
 #[path = "shared_count/shared_backend.rs"]
 mod shared_backend;
 
+#[path = "shared_count/creation.rs"]
+mod creation;
+
 /// How long to wait for the writer to report a step.
 ///
 /// Generous on purpose: the assertion is that the step happens, not how soon.

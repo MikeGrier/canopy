@@ -70,3 +70,38 @@ store".
 - [x] **M18-3** -- An empty byte range overlaps no `MemFs` lock. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-3)
 - [x] **M18-4** -- A `MemFs` rename of a path onto itself resolves the source first. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-4)
 - [x] **M18-5** -- The file poller drops retired registrations after releasing its state. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m18-5)
+
+## M19 -- An identical creator finds the store it asked for
+
+Decision: canopy's [DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Store creation is idempotent".
+
+- [x] **M19-1** -- `Creation::create` returns `Created::Existing` when it finds the marker under its own implementation's reservation for its inputs. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m19-1)
+
+  > **CROSS-COMPONENT PREREQUISITE:** `crates/canopy` -> `M15` -> `M15-1` ([Creation.tla](../canopy/spec/Creation.tla)
+  > decides it first). See [CHECKLIST.md](../canopy/CHECKLIST.md).
+  >
+  > **-> CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M15` -> `M15-2`
+  > (the `Creation` replay). See [CHECKLIST.md](../canopy/CHECKLIST.md).
+
+## M20 -- A creation's own publication leftovers do not occupy its root
+
+Decision: canopy's [DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Store creation is idempotent"; the
+root holds only creation's own entries before creation, chosen with the engineer on 2026-11-17.
+
+> **CROSS-COMPONENT PREREQUISITE for:** `crates/canopy` -> `M15` -> `M15-4`, whose marker is
+> published with `Vfs::publish_new`. See [CHECKLIST.md](../canopy/CHECKLIST.md).
+
+- [x] **M20-1** -- `Creation::create` reads an artifact's `publish_new` staging sibling as that artifact. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m20-1)
+
+  > **-> CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M15` -> `M15-4`
+  > (`Store::init` creates through the contract). See [CHECKLIST.md](../canopy/CHECKLIST.md).
+
+## M21 -- A published file can be replaced at once on Windows
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "A publication is a move on Windows". Found by canopy's
+cross-process creation tests (canopy's [CHECKLIST.md](../canopy/CHECKLIST.md) -> `M15` -> `M15-6`).
+
+- [x] **M21-1** -- On Windows `publish_new` moves its staged file into place without replacing, so a rename can replace what it published at once. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m21-1)
+
+  > **-> CROSS-COMPONENT HANDOFF:** next work is in component `crates/canopy` -> `M15` -> `M15-6`
+  > (creation's tests at scale and across processes). See [CHECKLIST.md](../canopy/CHECKLIST.md).

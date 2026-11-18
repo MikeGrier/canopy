@@ -241,3 +241,41 @@ makes the marks describe the same tree the durable directory does at every step.
 A sync that keeps marks only beneath live directories was preferred over clearing marks when a
 path is overwritten, because every operation that can put a file where a directory stood would
 have to remember to clear them, while the sync that names the new entry already walks the children.
+
+## Finding the store is a success of create
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "An identical creator finds the store
+it asked for". Refusing an identical creator with `AlreadyCreated` made every caller that wants a
+store to exist treat that error as success, and made the answer depend on timing: a creator that
+looked while another was still building got a resume and then the refusal, one that looked a
+moment later got the refusal directly. A distinct success outcome lets the caller tell whether it
+made the store, which a caller that seeds a new store needs, without either of those costs.
+
+Returning `Existing` from the first reading without waiting for the creation exclusion was chosen
+over always waiting. Waiting would serialize every creator behind a slow creation that has already
+finished for all a reader of the root can tell, and the marker's being last, with each artifact
+durable before the next, is what makes the store complete; the sync of the marker is what protects
+a caller from a creator that died before making it durable.
+
+## Recognizing a publication's leftovers
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "A creation's own publication leftovers
+are its artifacts'". Canopy chose, with the engineer, a strict root for creation -- nothing but
+creation's own entries -- over letting the caller name entries to ignore, which would have added a
+predicate to `CreationPlan` and an exception to the model's notion of foreign content. The strict
+rule leaves one gap: the staging sibling a crash can leave beside an artifact. Removing leftovers
+before reading the root was rejected because the reading is what decides whether the root may be
+touched at all; recognizing them as the artifact's keeps the reading read-only.
+
+## Moving rather than linking a publication on Windows
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "A publication is a move on Windows".
+Canopy's cross-process creation tests failed in about half of runs once its marker was published
+with `publish_new`: the next agent stamp could not rename over it. The engineer's first suspicion
+was an open without `FILE_SHARE_DELETE`; none of ours lacks it, and a reproduction with `std::fs`
+alone showed the hard link, with its staging name removed, as the trigger. Retrying the replacing
+rename was rejected: it would put an unbounded wait into every replacement of a published file to
+paper over the publication's shape. The hard link stays on Unix, where the link and unlink are what a
+no-replace rename would be and nothing outside the process blocks them;
+`renameat2` with `RENAME_NOREPLACE` is the alternative if that changes, and is not portable to
+every filesystem a root may live on.

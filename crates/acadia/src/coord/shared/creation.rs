@@ -80,6 +80,8 @@ impl Reservation {
 enum Found {
     Empty,
     Reserved(CreationNonce),
+    /// The marker under a reservation of this implementation with the plan's inputs.
+    Existing,
     Marker,
     Occupied(OsString),
 }
@@ -192,14 +194,24 @@ impl SharedParticipant {
             .iter()
             .any(|name| name == plan.artifacts.last().expect("validated plan"))
         {
-            return Ok(Found::Marker);
+            return Ok(match self.reservation()? {
+                Some(reservation)
+                    if reservation.implementation == IMPLEMENTATION
+                        && reservation.inputs == plan.inputs =>
+                {
+                    Found::Existing
+                }
+                _ => Found::Marker,
+            });
         }
         let mut artifact = None;
         for name in names {
             if reserved(&name) {
                 continue;
             }
-            if !plan.artifacts.contains(&name.as_os_str()) {
+            if !plan.artifacts.iter().any(|artifact| {
+                *artifact == name.as_os_str() || crate::is_publication_staging_of(&name, artifact)
+            }) {
                 return Ok(Found::Occupied(name));
             }
             artifact.get_or_insert(name);
@@ -216,6 +228,15 @@ impl SharedParticipant {
             Found::Occupied(name) => Err(CoordError::Occupied { name }),
             course => Ok(course),
         }
+    }
+
+    /// Makes the marker of a store found made durable with its directory entry, as an open does:
+    /// its creator may have died between making the marker and making it durable.
+    fn found(&self, marker: &OsStr) -> CoordResult<Created> {
+        self.alive()?;
+        self.inner.vfs.fsync(&self.inner.root.join(marker))?;
+        self.inner.vfs.fsync(&self.inner.root)?;
+        Ok(Created::Existing)
     }
 
     fn settle(&self, course: Found, inputs: &[u8], nonce: CreationNonce) -> CoordResult<Created> {
@@ -267,10 +288,17 @@ impl Creation for SharedParticipant {
                 });
             }
         }
+        let marker = plan.artifacts.last().expect("validated plan");
         let first = Self::creation_course(self.read_root(plan)?)?;
+        if matches!(first, Found::Existing) {
+            return self.found(marker);
+        }
         let _creation = self.creation_hold(LockMode::Exclusive)?;
         self.alive()?;
         let course = Self::creation_course(self.read_root(plan)?)?;
+        if matches!(course, Found::Existing) {
+            return self.found(marker);
+        }
         if let (Found::Reserved(before), Found::Reserved(now)) = (&first, &course)
             && before != now
         {

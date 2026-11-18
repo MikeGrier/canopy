@@ -508,10 +508,39 @@ fn publish_staged(
     };
     let staged = file.write_all(contents).and_then(|()| file.sync_all());
     drop(file);
-    // A hard link fails where anything has the name, which a replacing rename would not.
-    let published = staged.and_then(|()| fs::hard_link(&staging, path));
-    let _ = fs::remove_file(&staging);
+    let published = staged.and_then(|()| place_without_replacing(&staging, path));
+    // On Unix the staging name is a second link; on Windows only a failed move leaves it.
+    if cfg!(not(windows)) || published.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
     published.map_err(|e| err("publish_new", path, &e))
+}
+
+/// Gives the staged file the name `path`, failing where anything has that name.
+///
+/// A hard link, which a replacing rename would not be.
+#[cfg(not(windows))]
+fn place_without_replacing(staging: &Path, path: &Path) -> io::Result<()> {
+    fs::hard_link(staging, path)
+}
+
+/// Gives the staged file the name `path`, failing where anything has that name.
+///
+/// A move without `MOVEFILE_REPLACE_EXISTING`, not a hard link: Windows refuses for a while to
+/// remove the last name of a file whose other name was removed while an outside opener (a scanner
+/// of new files) still held it, so a linked-then-unlinked file could not be replaced by a rename.
+#[cfg(windows)]
+fn place_without_replacing(staging: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
+    let (from, to) = (wide(staging), wide(path));
+    // SAFETY: both are NUL-terminated wide strings that outlive the call.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// A sibling of `path` to stage a publication in, unique to this process and call.
@@ -519,7 +548,8 @@ fn publishing_path(path: &Path) -> Option<PathBuf> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut name: OsString = path.file_name()?.to_os_string();
     name.push(format!(
-        ".publishing.{}-{}",
+        "{}{}-{}",
+        crate::PUBLISHING_INFIX,
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));

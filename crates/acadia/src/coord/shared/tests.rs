@@ -65,10 +65,67 @@ fn normal_creation_records_the_identity_and_marker_last() {
         );
         participant.confirm_created(OsStr::new("marker")).unwrap();
         assert_eq!(fs.read(Path::new("/factory/data")).unwrap(), inputs);
+        assert_eq!(
+            participant.create(&plan, &mut maker).unwrap(),
+            Created::Existing
+        );
+        let other = vec![value; value as usize + 1];
         assert!(matches!(
-            participant.create(&plan, &mut maker),
+            participant.create(
+                &CreationPlan {
+                    inputs: &other,
+                    ..plan
+                },
+                &mut maker
+            ),
             Err(CoordError::AlreadyCreated)
         ));
+        assert_eq!(fs.read(Path::new("/factory/data")).unwrap(), inputs);
+    }
+}
+
+#[test]
+fn identical_creators_at_once_make_one_store_and_the_others_find_it() {
+    for round in 0..8 {
+        let fs = filesystem();
+        let start = Arc::new(std::sync::Barrier::new(4));
+        let racers: Vec<_> = (0..4u8)
+            .map(|i| {
+                let (fs, start) = (fs.clone(), Arc::clone(&start));
+                std::thread::spawn(move || {
+                    let participant = SharedFactory::new()
+                        .open(fs.clone(), Path::new("/factory"))
+                        .unwrap();
+                    let names = [OsStr::new("data"), OsStr::new("marker")];
+                    let plan = CreationPlan {
+                        inputs: b"one identity",
+                        nonce: CreationNonce::from_bytes([i; 16]),
+                        artifacts: &names,
+                    };
+                    let mut maker = Maker {
+                        fs,
+                        root: PathBuf::from("/factory"),
+                    };
+                    start.wait();
+                    participant.create(&plan, &mut maker)
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = racers
+            .into_iter()
+            .map(|racer| racer.join().unwrap())
+            .collect();
+        let created = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Ok(Created::Created)))
+            .count();
+        assert_eq!(created, 1, "round {round}: {outcomes:?}");
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, Ok(Created::Created | Created::Existing))),
+            "round {round}: {outcomes:?}"
+        );
     }
 }
 
@@ -249,4 +306,101 @@ fn creation_abandonment_releases_exclusion_and_cannot_make_the_next_artifact() {
         .unwrap(),
         Created::Resumed
     );
+}
+
+/// Makes each artifact as a file holding the inputs, made durable, and opens `gate` before making
+/// the marker.
+struct OpensBeforeTheMarker {
+    fs: Arc<dyn Vfs>,
+    root: PathBuf,
+    gate: crate::FaultGate,
+}
+impl ArtifactMaker for OpensBeforeTheMarker {
+    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+        if name == "marker" {
+            self.gate.open();
+        }
+        let path = self.root.join(name);
+        self.fs.write(&path, inputs)?;
+        self.fs.fsync(&path)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn an_identical_creator_makes_a_marker_its_creator_did_not_make_durable() {
+    let fs = filesystem();
+    let root = Path::new("/factory");
+    fs.fsync(root).unwrap();
+    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let plan = CreationPlan {
+        inputs: b"one identity",
+        nonce: CreationNonce::from_bytes([1; 16]),
+        artifacts: &names,
+    };
+    // Every sync of the root fails once the marker is being made, as a creator that died between
+    // making the marker and making it durable leaves the root.
+    let gate = crate::FaultGate::closed();
+    let policy = crate::FaultPolicy::new().inject_gated(
+        crate::FaultOp::Fsync,
+        crate::PathMatcher::exact(root),
+        crate::Fault::error(crate::VfsErrorKind::Other),
+        crate::When::Always,
+        gate.clone(),
+    );
+    let faulty: Arc<dyn Vfs> = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    let creator = SharedFactory::new()
+        .open(Arc::clone(&faulty), root)
+        .unwrap();
+    let mut maker = OpensBeforeTheMarker {
+        fs: faulty,
+        root: root.to_path_buf(),
+        gate,
+    };
+    assert!(creator.create(&plan, &mut maker).is_err());
+    creator.abandon();
+
+    let finder = SharedFactory::new()
+        .open(Arc::new(fs.another_process()), root)
+        .unwrap();
+    let mut maker = Maker {
+        fs: Arc::new(fs.another_process()),
+        root: root.to_path_buf(),
+    };
+    assert_eq!(finder.create(&plan, &mut maker).unwrap(), Created::Existing);
+    fs.simulate_crash();
+    assert!(fs.exists(&root.join("marker")).unwrap());
+    assert_eq!(fs.read(&root.join("data")).unwrap(), b"one identity");
+}
+
+#[test]
+fn a_publication_left_beside_an_artifact_does_not_keep_its_creation_from_finishing() {
+    for at in ["data", "marker"] {
+        let fs = filesystem();
+        let root = Path::new("/factory");
+        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let plan = CreationPlan {
+            inputs: b"one identity",
+            nonce: CreationNonce::from_bytes([1; 16]),
+            artifacts: &names,
+        };
+        let creator = SharedFactory::new().open(fs.clone(), root).unwrap();
+        creator
+            .reserve(plan.inputs, plan.nonce)
+            .expect("the reservation alone");
+        creator.abandon();
+        fs.write(&root.join(format!("{at}.publishing.9-9")), b"cut short")
+            .unwrap();
+        let resumer = SharedFactory::new().open(fs.clone(), root).unwrap();
+        let mut maker = Maker {
+            fs: fs.clone(),
+            root: root.to_path_buf(),
+        };
+        assert_eq!(
+            resumer.create(&plan, &mut maker).unwrap(),
+            Created::Resumed,
+            "{at}"
+        );
+        assert_eq!(fs.read(&root.join("marker")).unwrap(), b"one identity");
+    }
 }

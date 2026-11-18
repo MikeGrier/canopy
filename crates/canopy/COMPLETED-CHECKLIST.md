@@ -2365,3 +2365,74 @@ that need that distinction carry an idempotency token or equivalent durable evid
 transaction. It also bounds the ready-pair fairness claim: round-robin prevents cross-pair skipping
 but makes no wall-clock or global coordination-order promise. The public session, completion and
 error rustdoc repeats these rules at the points a dependent consumes them.
+
+## Moved 2026-11-17 -- Idempotent store creation
+
+Decision for every item below: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store creation is idempotent".
+
+### <a id="m15-1"></a>M15-1 -- `Creation.tla` lets a creator that finds the marker under its own reservation succeed with the store. *(completed 2026-11-17 21:18:19 -05:00)*
+
+A creator that finds the marker under a reservation naming its implementation and inputs, at its
+first look or under the exclusion, makes the marker durable as an opener does and ends `existing`;
+any other marker still stops it. `ACreatorFindsItsOwnStore` and `AStoreIsFoundOnlyWhereItIs` state
+the two sides, and the control `stop-at-the-store`, which restores stopping at every marker, breaks
+the first. The two finished-store witnesses now reach `existing`, a new witness reaches a creator
+stopping at another implementation's store, and timeline T33 replays the race that motivated the
+decision. Re-exporting the trace corpus moved to M15-2, since the replay compares outcomes and the
+implementations report an existing store only once acadia's M19-1 lands.
+
+### <a id="m15-2"></a>M15-2 -- The `Creation` trace corpus is re-exported and both implementations follow it, an identical creator ending at an existing store. *(completed 2026-11-17 21:31:35 -05:00)*
+
+The corpus was re-exported from the model M15-1 changed, timeline T33 included; the replay maps
+acadia's `Created::Existing` to the model's `existing`. A revert-probe that reported it as the old
+refusal left exactly T33 and the two simulations in which an identical creator finds a finished
+store, so the corpus pins the outcome rather than only admitting it.
+
+### <a id="m15-3"></a>M15-3 -- A creation's reservation records the store's identity alone; provenance is the marker's. *(completed 2026-11-17 21:35:40 -05:00)*
+
+`Store::init` reserves with a canonical encoding of the store id, genesis format version, replica
+counts, shard width and the agent's identifier. An interrupted creation is refused to a creator of
+another identity and finished by one differing only in creation time or agent version, description
+or schema, whose provenance the marker then records. A migration still binds every agent input.
+A revert-probe that put the agent's version in place of its identifier failed both new tests, so
+each side of the split is pinned.
+
+### <a id="m15-4"></a>M15-4 -- `Store::init` creates through `Creation::create` and returns the store whether it made it or found it. *(completed 2026-11-17 22:03:06 -05:00)*
+
+The blob tree, the namespace tree and the marker are the creation's artifacts, made idempotently
+under a zero nonce; the marker is published with `Vfs::publish_new` after the coordination state is
+vouched for, before any handle can attach. The occupancy check made before any exclusion is gone,
+a root of the format before migration is still refused, and the root must hold nothing but
+creation's own entries. The vouching participant lives until the store attaches its own, which the
+shared implementation needs: dropping it first left every shared-implementation store requiring
+recovery, as the shared-publication conformance tests showed. The concurrent-creators test, which
+had failed intermittently, now requires every creator to succeed and passed 600 racing rounds.
+
+### <a id="m15-5"></a>M15-5 -- `Store::store_nonce` returns the store's nonce, set by its first user under writer exclusion and durable before it is returned. *(completed 2026-11-17 22:07:08 -05:00)*
+
+The record is `.store-nonce`, absent after creation; the value comes from the handle's nonce
+source, and a handle without one is refused with `NoNonceSource` while the nonce is unset. The item
+named a crate-level accessor; it is public, because the value tells a dependent this store apart
+from a later one of its identity at the same path, and a private accessor with no caller would have
+been dead code. Revert-probes: without the root sync, the three crash tests failed; without writer
+exclusion, the race between four handles failed.
+
+### <a id="m15-6"></a>M15-6 -- Creation is tested at scale, across processes, under the exclusion and through a crash at each step; the intermittent test is replaced and its entry resolved. *(completed 2026-11-17 22:33:07 -05:00)*
+
+In process, [creation.rs](src/tests/creation.rs): eight creators race over twelve rounds, all
+succeed and every one's write survives; a fault injected at each fsync, directory creation and
+marker publication of creation, then a crash, leaves a root the next identical `init` finishes; a
+stray entry or a store of another identity refuses a creator, both before it takes the creation
+exclusion and when either appears while it waits for it; creators differing only in agent version
+and creation time find the first store unchanged. A crash after the marker leaves a store whose
+writers recover first, as any crash does; before the marker, the resuming creator vouches for the
+root itself. Across processes, in canopy-lock-holder's `shared_count` suite, six creators under
+each implementation, released together and differing only in provenance, all succeed and none
+loses another's document, and a creator in another process finds a store made here and keeps its
+documents; the fixture's `create` mode drives them. Those tests exposed that on Windows a marker
+published through a hard link could not be replaced at once by the next agent stamp, fixed in
+acadia (`M21-1`). Revert-probes: making the identical-store path refuse failed the concurrent,
+provenance and crash tests and both cross-process tests; deciding under the exclusion from the
+reading taken before it failed the under-exclusion test. The replacement for the intermittent test
+passed 100 looped runs, and its observation moved to
+[RESOLVED-TEST-FAILURES.md](RESOLVED-TEST-FAILURES.md).

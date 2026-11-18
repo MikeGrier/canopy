@@ -67,6 +67,7 @@ All successful mutations check their independent agent stamp before reporting su
 | Mode | Checkpoint or operation |
 |---|---|
 | `write` | An unlogged document write. |
+| `create` | Report `ready`, wait for a line, then create the root with `Store::init` (one identity, this process's creation time) and write. |
 | `pause` | Wait before the first namespace rename of an unlogged publication. |
 | `pause-publication` | Wait after one namespace replica has moved in an unlogged publication. |
 | `pause-before` | Wait under exclusion before the operation's first effect. |

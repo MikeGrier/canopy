@@ -16,7 +16,10 @@ use super::{FileCoordination, HoldId};
 
 /// What a reading of the root found.
 enum Found {
-    /// The marker: the root is a store.
+    /// The marker under a reservation of this implementation with the plan's inputs: the store
+    /// asked for.
+    Existing,
+    /// Any other marker: the root is another store.
     Marker,
     /// Something creation does not make.
     Occupied(OsString),
@@ -29,6 +32,8 @@ enum Found {
 /// What a creator does about what it found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Course {
+    /// Find the store made.
+    Existing,
     Create,
     /// Resume the creation whose reservation has this nonce.
     Resume(CreationNonce),
@@ -77,13 +82,23 @@ impl FileCoordination {
             .collect();
         names.sort();
         if names.iter().any(|name| name == marker) {
-            return Ok(Found::Marker);
+            return Ok(match self.read_reservation()? {
+                Some(reservation)
+                    if reservation.implementation == self.id
+                        && reservation.inputs == plan.inputs =>
+                {
+                    Found::Existing
+                }
+                _ => Found::Marker,
+            });
         }
         for name in names {
             if is_reserved(&name) {
                 continue;
             }
-            if !plan.artifacts.iter().any(|artifact| *artifact == name) {
+            if !plan.artifacts.iter().any(|artifact| {
+                *artifact == name || crate::is_publication_staging_of(&name, artifact)
+            }) {
                 return Ok(Found::Occupied(name));
             }
             artifact_found.get_or_insert(name);
@@ -97,6 +112,7 @@ impl FileCoordination {
 
     fn decide(&self, found: Found, plan: &CreationPlan<'_>) -> CoordResult<Course> {
         match found {
+            Found::Existing => Ok(Course::Existing),
             Found::Marker => Err(CoordError::AlreadyCreated),
             Found::Occupied(name) => Err(CoordError::Occupied { name }),
             Found::Reserved(reservation) => self.decide_reserved(reservation, plan.inputs),
@@ -121,6 +137,15 @@ impl FileCoordination {
         }
     }
 
+    /// Makes the marker of a store found made durable with its directory entry, as an open does:
+    /// its creator may have died between making the marker and making it durable.
+    fn found(&self, marker: &OsStr) -> CoordResult<Created> {
+        self.alive()?;
+        self.vfs().fsync(&self.layout().root().join(marker))?;
+        self.vfs().fsync(self.layout().root())?;
+        Ok(Created::Existing)
+    }
+
     /// Publishes the reservation, or makes the one being resumed durable, and makes the root's
     /// directory entry for it durable.
     fn settle_reservation(
@@ -131,6 +156,7 @@ impl FileCoordination {
     ) -> CoordResult<Created> {
         let reservation = self.layout().reservation();
         let created = match course {
+            Course::Existing => return Ok(Created::Existing),
             Course::Create => {
                 let bytes = Reservation {
                     implementation: self.id.clone(),
@@ -164,9 +190,19 @@ impl Creation for FileCoordination {
     ) -> CoordResult<Created> {
         validate(plan)?;
         self.alive()?;
+        let marker = plan
+            .artifacts
+            .last()
+            .expect("a validated plan has artifacts");
         let first = self.decide(self.read_root(plan)?, plan)?;
+        if first == Course::Existing {
+            return self.found(marker);
+        }
         let _exclusion = self.keep(&self.layout().creation_lock(), LockMode::Exclusive)?;
         let course = self.decide(self.read_root(plan)?, plan)?;
+        if course == Course::Existing {
+            return self.found(marker);
+        }
         if let (Course::Resume(read), Course::Resume(now)) = (first, course)
             && read != now
         {

@@ -390,12 +390,15 @@ pub struct Listing {
     pub may_be_incomplete: bool,
 }
 
-/// Whether [`Creation::create`](super::Creation::create) made the root or finished one begun
-/// before.
+/// Whether [`Creation::create`](super::Creation::create) made the root, finished one begun
+/// before, or found it made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Created {
     /// This call published the reservation and made every artifact.
     Created,
     /// An interrupted creation with identical inputs was completed.
     Resumed,
+    /// The root was already a store this implementation made from identical inputs. Nothing was
+    /// made; the marker was made durable, as an open makes it.
+    Existing,
 }

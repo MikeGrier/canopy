@@ -370,6 +370,10 @@ may open one store").
 
 ## Publishing a file only where nothing is, 2026-11-12
 
+> **SUPERSEDED in part, 2026-11-17, by "A publication is a move on Windows".** On Windows `OsFs`
+> no longer hard-links the staged file: it moves it into place without replacing, and the sibling
+> is removed only when the move fails. The Unix bullet below still holds.
+
 `Vfs::publish_new` creates a file holding exactly the given bytes if nothing is at the path, and
 fails with `AlreadyExists` otherwise. The file is never visible incomplete, and a power loss
 leaves it complete or absent; its name is durable once the parent is synced. canopy's creation
@@ -1454,3 +1458,73 @@ announces each such step before it acts[^ac-5]:
 - **The file poller retires registrations outside its lock.** Retired registrations are taken out
   of the state under the lock and dropped, with their rings run, after it is released, because a
   registration's drop may withdraw another notice and take the same lock.
+
+## An identical creator finds the store it asked for, 2026-11-17
+
+`Creation::create`, in both implementations, ends with `Created::Existing` when it finds the marker
+under a reservation that names its implementation and records the plan's inputs, at its first
+reading or under the creation exclusion. This is canopy's decision ([canopy's
+DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Store creation is idempotent"), and
+[Creation.tla](../canopy/spec/Creation.tla) is the model it follows.
+
+- **The marker is made durable before `Existing` is returned**, with its directory entry, as
+  `confirm_created` makes it: the marker's creator may have died between making it and making it
+  durable, and a caller that goes on to use the store must not lose it to a crash.
+- **At the first reading it returns without taking the creation exclusion.** The marker is the
+  last artifact and every one before it is durable when it is made, so the store is complete;
+  syncing the marker is idempotent whoever holds the exclusion. The model finds no property that
+  needs the wait, as it found for an opener.
+- **Any other marker is still `AlreadyCreated`**: a reservation of another implementation or
+  other inputs, or none, means the root is another store.
+- **`reserve` is unchanged.** It reads no artifact and so no marker; a caller that makes its store
+  itself decides what a finished one means.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "Finding the store is a success of
+create".
+
+## A creation's own publication leftovers are its artifacts', 2026-11-17
+
+`Creation::create`, in both implementations, reads a sibling that `Vfs::publish_new` stages an
+artifact in -- the artifact's name, `PUBLISHING_INFIX` and a non-empty suffix,
+`is_publication_staging_of` -- as that artifact. A crash during an artifact's publication can leave
+one, and `publish_new` gives it no meaning, so it must not make the root read as holding something
+creation does not make: that would leave a reservation no later call could finish. Like an
+artifact, such a leftover with no reservation still occupies the root, since no creation leaves an
+artifact before its reservation.
+
+- **The convention is named once, in the `Vfs` contract**, and `OsFs` builds its staging names
+  from it; a test holds every name `OsFs` tries to the recognizer.
+- **The model is unchanged.** [Creation.tla](../canopy/spec/Creation.tla) makes an artifact in one
+  step that exists or does not; a staging sibling is how a publication reaches that step, which
+  the model abstracts away, not something under the root that creation does not make.
+- This is what lets canopy publish its marker with `publish_new` while requiring a root that holds
+  nothing but creation's own entries (canopy's [DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Store
+  creation is idempotent").
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "Recognizing a publication's
+leftovers".
+
+## A publication is a move on Windows, 2026-11-17
+
+On Windows `OsFs::publish_new` stages and syncs the bytes as before, then gives the staged file
+the target's name with `MoveFileExW` and no `MOVEFILE_REPLACE_EXISTING`. That move fails where
+anything has the name, a file or a directory, so the exclusivity of `publish_new` holds, and the
+file it publishes has one name. The staging sibling is removed only when the move fails. On Unix
+the staged file is still hard-linked and its staging name removed.
+
+- **Why not a hard link on Windows.** A file published as a link whose staging name is then removed
+  could not be replaced by a rename for up to about a second, refused with `Access is denied`. The
+  holder is outside the process -- reproduced with `std::fs` alone, with nothing of ours holding the
+  file -- and is taken to be a scanner of new files; a file made by a rename was never refused. The
+  `Vfs` contract therefore promises that a published file can be replaced by a `rename` as soon as
+  `publish_new` returns: canopy publishes its marker with `publish_new` and its agent stamps
+  replace it.
+- **Every open stays at `std`'s default share mode**, which includes `FILE_SHARE_DELETE`, so
+  unlink and rename behave as on Unix wherever the process alone holds a file. The exception is
+  deliberate: a lock file opened by `open_exclusive` shares nothing, because there the share mode
+  is the exclusion.
+- A test publishes and immediately replaces a file forty times; with the hard link it failed on
+  this host, with the move it has not.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "Moving rather than linking a
+publication on Windows".

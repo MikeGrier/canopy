@@ -119,8 +119,7 @@ pub const MIGRATION_RECORD_NAME: &str = ".migration";
 /// The legacy root-lock file used only by offline migration.
 ///
 /// A dotfile for the same reason [`MARKER_NAME`] is: a node name never begins
-/// with `.`, so it cannot collide with a shard directory, and `init`'s
-/// empty-root check already ignores dotfiles.
+/// with `.`, so it cannot collide with a shard directory.
 ///
 /// **Its presence means nothing.** The file is left behind when the lock is
 /// released and is never reaped; only a live holder excludes anyone. Anything

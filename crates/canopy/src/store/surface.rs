@@ -36,6 +36,12 @@ pub use stamp::WriteOutcome;
 /// using a different name would not see the claims of operations still in flight.
 pub(crate) const CLAIMS_DIR: &str = ".claims";
 
+/// The record at the store root holding the store's own nonce ([`Store::store_nonce`]).
+///
+/// Changing this value is a breaking change to the on-disk layout: a build using a different name
+/// would set a second nonce for a store that has one.
+pub(crate) const STORE_NONCE_NAME: &str = ".store-nonce";
+
 /// The default time [`Store::snapshot`] waits for a stable modification count.
 pub const DEFAULT_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -308,6 +314,42 @@ impl Store {
             .unwrap_or_else(PoisonError::into_inner);
         let source = nonces.as_mut().ok_or(StoreError::NoNonceSource)?;
         Ok(source())
+    }
+
+    /// This store's nonce: what tells it apart from another store of its identity, such as one
+    /// made again at the same path after this one was removed.
+    ///
+    /// Creation leaves it unset, which keeps creation idempotent. The first call sets it, holding
+    /// writer exclusion, from this handle's nonce source, and every call makes the record durable
+    /// before returning, so a value is never returned and then lost to a crash. Every later call
+    /// returns the same value, from any handle.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::ReadOnly`] for a read-only handle; [`StoreError::NoNonceSource`] when it is
+    /// unset and this handle has no nonce source; [`StoreError::MalformedMarker`] when the record
+    /// is not a nonce.
+    pub fn store_nonce(&self) -> Result<Nonce, StoreError> {
+        let _exclusion = self.enter_exclusion()?;
+        let path = self.root.join(STORE_NONCE_NAME);
+        let nonce = match self.vfs.read(&path) {
+            Ok(bytes) => std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| Nonce::new(text).ok())
+                .ok_or_else(|| StoreError::MalformedMarker {
+                    root: self.root.clone(),
+                    reason: "the store nonce record is not a nonce",
+                })?,
+            Err(error) if error.kind() == VfsErrorKind::NotFound => {
+                let nonce = self.mint_nonce()?;
+                self.vfs.publish_new(&path, nonce.as_str().as_bytes())?;
+                nonce
+            }
+            Err(error) => return Err(StoreError::Vfs(error)),
+        };
+        // A record a call published and could not make durable is found by the next call.
+        self.vfs.fsync(&self.root)?;
+        Ok(nonce)
     }
 
     fn claim_path(&self, nonce: &Nonce) -> PathBuf {

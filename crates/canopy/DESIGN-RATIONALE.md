@@ -606,3 +606,49 @@ A `started` field was rejected from the public projection because exposing it wo
 distinguish pre-start withdrawal from a running operation whose result was later lost. The client
 contract deliberately offers only the unavailable completion and an uncertainty rule. The toy
 model remains an unchanged instance of that contract; it does not gain Ring or Store variables.
+
+## Creation is idempotent, and a store's nonce is set by its first user
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store creation is idempotent". It
+came from an intermittent failure of the test that runs two identical creators at once
+([UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md), 2026-11-17 update). The loser's
+occupancy check, made before any exclusion, saw the winner's half-built trees and refused the root
+as not empty, although the store being built was exactly the one the loser asked for. The outcome a
+creator saw depended on when it looked.
+
+Two simple models remove that dependence. In the first, the root must be empty and one atomic claim
+picks the only creator; every other creator is refused, whenever it arrives. In the second, creation
+is idempotent: every creator with one identity ends with the same store. The engineer preferred the
+second. Every creator then waits for the outcome rather than guessing it from a listing, and a
+retry after a crash, a race between processes and a repeated call are the same case.
+
+Two refinements of the idempotent model were rejected. Returning `AlreadyInitialized` to an
+identical creator that waited, which the earlier decision promised, keeps the error for a store the
+caller asked for and can open, and forces every caller to treat the error as success. Comparing
+every creation input, as the reservation did, makes two processes creating one store disagree on
+their own creation time and agent version, so idempotency would hold only within one process. The
+identity a creator compares is therefore what an opener must also match, and the rest is the
+winner's provenance.
+
+Reporting whether a call made the store or found it made was also rejected. No caller in the
+repository branched on the difference, and the use it invites -- seed the store only when this call
+made it -- is unsafe under idempotent creation: a creator that dies after the marker and before
+seeding leaves a store every later call reports as found, so it is never seeded. Seeding must be
+idempotent regardless, and then the report adds nothing. What collapsing gives up is "fail if it
+already exists", and that is narrower than it looks: a store of another identity is still refused,
+and a caller that needs a fresh store can make its identity unique, so that the only identical
+store is its own retry's. The coordination contract keeps the distinction (acadia's
+`Created::Existing`), where the model and the replay hold it; canopy does not pass it on.
+
+`Store::init` creating through `Creation::create` settles how canopy's creation relates to the
+contract, which had been left open: the contract already resumes a creation with matching inputs and
+decides under its exclusion, which is what idempotent creation needs, and the existing replay of the
+contract then covers `init`.
+
+A nonce derived from the inputs was the reason creation could resume after a crash, and with
+identity-only inputs it would tell nothing apart that the inputs do not. A zero nonce says so.
+Distinguishing this store from another of the same identity -- one removed and created again at the
+same path -- is left to the first operation that needs it, which holds writer exclusion and the
+caller's nonce source, so setting the value cannot race and needs no new dependency. The value is
+kept in a record canopy owns rather than written into the reservation, because the reservation is
+what creators of every implementation read and compare, and is never rewritten once published.

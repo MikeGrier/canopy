@@ -8,17 +8,17 @@
   "departs": null,
   "initial": {"adur":[false,false,false],"ainp":[0,0,0],"ak":[0,0,0,0],"aliv":[false,false,false],"crashes":0,"cx":[0,0],"deaths":0,"everPub":false,"foreign":false,"out":["none","none","none","none"],"path":["none","none","none","none"],"pc":["new","new","new","new"],"rdur":false,"relied":false,"res":{"impl":0,"inp":0,"nonce":0,"st":"none"},"sawPartial":false,"seen":[{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"},{"impl":0,"inp":0,"nonce":0,"st":"none"}]},
   "steps": [
-    {"action":"Crash","args":[],"at":"Creation:468","changes":{"crashes":1},"name":"Crash","step":"#1"},
-    {"action":"Look(4)","args":[4],"at":"Creation:249","changes":{"path":["none","none","none","fresh"],"pc":["new","new","new","wantX"]},"name":"Look","step":"#2"},
-    {"action":"Look(1)","args":[1],"at":"Creation:249","changes":{"path":["fresh","none","none","fresh"],"pc":["wantX","new","new","wantX"]},"name":"Look","step":"#3"},
-    {"action":"Lock(4)","args":[4],"at":"Creation:287","changes":{"cx":[0,4],"pc":["wantX","new","new","holdsX"]},"name":"Lock","step":"#4"},
-    {"action":"Die(4)","args":[4],"at":"Creation:454","changes":{"cx":[0,0],"deaths":1,"path":["fresh","none","none","none"],"pc":["wantX","new","new","dead"]},"name":"Die","step":"#5"},
-    {"action":"Lock(1)","args":[1],"at":"Creation:287","changes":{"cx":[1,0],"pc":["holdsX","new","new","dead"]},"name":"Lock","step":"#6"},
-    {"action":"Die(1)","args":[1],"at":"Creation:454","changes":{"cx":[0,0],"deaths":2,"path":["none","none","none","none"],"pc":["dead","new","new","dead"]},"name":"Die","step":"#7"},
-    {"action":"Look(3)","args":[3],"at":"Creation:249","changes":{"path":["none","none","fresh","none"],"pc":["dead","new","wantX","dead"]},"name":"Look","step":"#8"},
-    {"action":"Lock(3)","args":[3],"at":"Creation:287","changes":{"cx":[3,0],"pc":["dead","new","holdsX","dead"]},"name":"Lock","step":"#9"},
-    {"action":"Intrude","args":[],"at":"Creation:486","changes":{"foreign":true},"name":"Intrude","step":"#10"},
-    {"action":"Look(2)","args":[2],"at":"Creation:249","changes":{"out":["none","occupied","none","none"],"pc":["dead","done","holdsX","dead"]},"name":"Look","step":"#11"},
-    {"action":"OccupiedUnderExclusion(3)","args":[3],"at":"Creation:353","changes":{"cx":[0,0],"out":["none","occupied","occupied","none"],"pc":["dead","done","done","dead"]},"name":"OccupiedUnderExclusion","step":"#12"}
+    {"action":"Crash","args":[],"at":"Creation:500","changes":{"crashes":1},"name":"Crash","step":"#1"},
+    {"action":"Look(4)","args":[4],"at":"Creation:266","changes":{"path":["none","none","none","fresh"],"pc":["new","new","new","wantX"]},"name":"Look","step":"#2"},
+    {"action":"Look(1)","args":[1],"at":"Creation:266","changes":{"path":["fresh","none","none","fresh"],"pc":["wantX","new","new","wantX"]},"name":"Look","step":"#3"},
+    {"action":"Lock(4)","args":[4],"at":"Creation:307","changes":{"cx":[0,4],"pc":["wantX","new","new","holdsX"]},"name":"Lock","step":"#4"},
+    {"action":"Die(4)","args":[4],"at":"Creation:486","changes":{"cx":[0,0],"deaths":1,"path":["fresh","none","none","none"],"pc":["wantX","new","new","dead"]},"name":"Die","step":"#5"},
+    {"action":"Lock(1)","args":[1],"at":"Creation:307","changes":{"cx":[1,0],"pc":["holdsX","new","new","dead"]},"name":"Lock","step":"#6"},
+    {"action":"Die(1)","args":[1],"at":"Creation:486","changes":{"cx":[0,0],"deaths":2,"path":["none","none","none","none"],"pc":["dead","new","new","dead"]},"name":"Die","step":"#7"},
+    {"action":"Look(3)","args":[3],"at":"Creation:266","changes":{"path":["none","none","fresh","none"],"pc":["dead","new","wantX","dead"]},"name":"Look","step":"#8"},
+    {"action":"Lock(3)","args":[3],"at":"Creation:307","changes":{"cx":[3,0],"pc":["dead","new","holdsX","dead"]},"name":"Lock","step":"#9"},
+    {"action":"Intrude","args":[],"at":"Creation:518","changes":{"foreign":true},"name":"Intrude","step":"#10"},
+    {"action":"Look(2)","args":[2],"at":"Creation:266","changes":{"out":["none","occupied","none","none"],"pc":["dead","done","holdsX","dead"]},"name":"Look","step":"#11"},
+    {"action":"OccupiedUnderExclusion(3)","args":[3],"at":"Creation:379","changes":{"cx":[0,0],"out":["none","occupied","occupied","none"],"pc":["dead","done","done","dead"]},"name":"OccupiedUnderExclusion","step":"#12"}
   ]
 }

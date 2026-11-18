@@ -165,3 +165,33 @@ fn a_publication_can_be_made_to_fail_and_publishes_nothing() {
     faulty.publish_new(path, b"y").unwrap();
     assert_eq!(faulty.read(path).unwrap(), b"y");
 }
+
+#[test]
+fn a_publications_staging_name_is_recognised_and_nothing_else_is() {
+    let marker = std::ffi::OsStr::new("marker");
+    for name in [
+        "marker.publishing.1-0",
+        "marker.publishing.x",
+        "marker.publishing.publishing.1",
+    ] {
+        assert!(
+            crate::is_publication_staging_of(std::ffi::OsStr::new(name), marker),
+            "{name}"
+        );
+    }
+    for name in [
+        "marker",
+        "marker.publishing.",
+        "marker.publishing",
+        "markers.publishing.1",
+        ".marker.publishing.1",
+        "other.publishing.1",
+        "marker.published.1",
+        "",
+    ] {
+        assert!(
+            !crate::is_publication_staging_of(std::ffi::OsStr::new(name), marker),
+            "{name}"
+        );
+    }
+}

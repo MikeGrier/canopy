@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, OsFs, PathMatcher, Vfs, When};
 use canopy::{
-    DocumentBody, DocumentName, NodePath, Nonce, Recovery, Store, StoreError, StoreOptions, Swap,
-    SwapSet, WriteOutcome,
+    DocumentBody, DocumentName, GenesisConfig, NodePath, Nonce, Recovery, Store, StoreError,
+    StoreId, StoreOptions, Swap, SwapSet, WriteOutcome,
 };
 
 /// The directory of the root that holds the namespace's replicas.
@@ -185,6 +185,7 @@ fn main() -> ExitCode {
         || !matches!(
             mode,
             "write"
+                | "create"
                 | "pause"
                 | "pause-publication"
                 | "pause-before"
@@ -334,7 +335,17 @@ fn main() -> ExitCode {
     ) {
         say("opening");
     }
-    let opened = if matches!(mode, "reader" | "reader-wait") {
+    let opened = if mode == "create" {
+        // Creators started together are released together, so their creations overlap; the
+        // creation time is this process's, provenance no other creator compares.
+        say("ready");
+        wait_for_go();
+        let config = GenesisConfig::new(
+            StoreId::new("cross-process-creation").expect("a valid store id"),
+            u64::from(std::process::id()),
+        );
+        Store::init(vfs, root, config, options).map(|store| (store, None))
+    } else if matches!(mode, "reader" | "reader-wait") {
         Store::open_read_only(vfs, root, options).map(|store| (store, None))
     } else {
         Store::open(vfs, root, options).map(|(store, found)| (store, Some(found)))

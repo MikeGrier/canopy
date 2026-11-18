@@ -285,6 +285,7 @@ fn attempt(part: &Part, vfs: Arc<dyn Vfs>, artifacts: usize) -> String {
             .map(|created| match created {
                 Created::Created => "created",
                 Created::Resumed => "resumed",
+                Created::Existing => "existing",
             }),
     )
 }

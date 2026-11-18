@@ -89,6 +89,20 @@ pub use win_sync_sys::SealedWaitOnlyEvent;
 #[cfg(windows)]
 pub use win_sync_sys::WaitOnlyEvent;
 
+/// What separates a file's name from the suffix of the sibling [`Vfs::publish_new`] stages it in.
+/// Changing it changes which leftovers of a publication are recognised as the publication's.
+pub const PUBLISHING_INFIX: &str = ".publishing.";
+
+/// Whether `name` is a sibling that a publication of a file named `target` stages its bytes in:
+/// `target`, [`PUBLISHING_INFIX`] and a non-empty suffix. A crash can leave one behind, and it
+/// carries no meaning ([`Vfs::publish_new`]).
+pub fn is_publication_staging_of(name: &std::ffi::OsStr, target: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes()
+        .strip_prefix(target.as_encoded_bytes())
+        .and_then(|rest| rest.strip_prefix(PUBLISHING_INFIX.as_bytes()))
+        .is_some_and(|suffix| !suffix.is_empty())
+}
+
 /// The result of a [`Vfs`] operation: success, or a [`VfsError`] value.
 pub type VfsResult<T> = Result<T, VfsError>;
 
@@ -582,9 +596,12 @@ pub trait Vfs: Send + Sync {
     /// then a crash may lose it, but never leaves it holding less than `contents`.
     ///
     /// The bytes are staged in a sibling whose name is the file's name followed by
-    /// `.publishing.` and a suffix, removed whether the publication succeeds or fails. A crash
-    /// can leave one behind; it carries no meaning, may be removed, and does not keep a later
-    /// publication from succeeding.
+    /// [`PUBLISHING_INFIX`] and a suffix ([`is_publication_staging_of`]), removed whether the
+    /// publication succeeds or fails. A crash can leave one behind; it carries no meaning, may be
+    /// removed, and does not keep a later publication from succeeding.
+    ///
+    /// The published file has one name, so a [`rename`](Vfs::rename) may replace it as soon as
+    /// this returns.
     ///
     /// The default implementation reports [`VfsErrorKind::Unsupported`], and **a decorator must
     /// forward this explicitly**, for the reason given at [`lock_exclusive`](Vfs::lock_exclusive).

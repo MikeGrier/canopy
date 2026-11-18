@@ -102,17 +102,62 @@ fn a_different_agent_is_refused_by_both_open_modes_and_current_migration() {
     assert!(Store::open(vfs, root, options()).is_ok());
 }
 
-fn different_creation_agents() -> [Agent; 4] {
-    [
-        Agent::new("other", "test", "Canopy test fixture", 1),
-        Agent::new("canopy-tests", "other", "Canopy test fixture", 1),
-        Agent::new("canopy-tests", "test", "other", 1),
-        Agent::new("canopy-tests", "test", "Canopy test fixture", 2),
+/// Creations that differ from the test agent's with `test_config` in what the store is.
+fn other_identities() -> Vec<(Agent, GenesisConfig)> {
+    vec![
+        (
+            Agent::new("other", "test", "Canopy test fixture", 1),
+            test_config(),
+        ),
+        (
+            test_agent(),
+            GenesisConfig::new(StoreId::new("other-store").unwrap(), 12_345),
+        ),
+        (
+            test_agent(),
+            test_config()
+                .with_blob_replica_count(crate::DEFAULT_BLOB_REPLICA_COUNT + 2)
+                .unwrap(),
+        ),
+        (
+            test_agent(),
+            test_config()
+                .with_pointer_replica_count(crate::DEFAULT_POINTER_REPLICA_COUNT + 2)
+                .unwrap(),
+        ),
+        (
+            test_agent(),
+            test_config()
+                .with_shard_width(crate::DEFAULT_SHARD_WIDTH + 1)
+                .unwrap(),
+        ),
     ]
 }
 
-#[test]
-fn every_agent_creation_input_is_bound_by_the_reservation() {
+/// Creations that differ from the test agent's with `test_config` only in provenance.
+fn other_provenances() -> Vec<(Agent, GenesisConfig)> {
+    vec![
+        (
+            Agent::new("canopy-tests", "other", "Canopy test fixture", 1),
+            test_config(),
+        ),
+        (
+            Agent::new("canopy-tests", "test", "other", 1),
+            test_config(),
+        ),
+        (
+            Agent::new("canopy-tests", "test", "Canopy test fixture", 2),
+            test_config(),
+        ),
+        (
+            test_agent(),
+            GenesisConfig::new(test_config().store_id().clone(), 98_765),
+        ),
+    ]
+}
+
+/// A root whose creation by the test agent with `test_config` stopped after its reservation.
+fn interrupted_creation() -> (Arc<dyn Vfs>, PathBuf) {
     let gate = FaultGate::closed();
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(
         MemFs::new(),
@@ -128,15 +173,18 @@ fn every_agent_creation_input_is_bound_by_the_reservation() {
     vfs.create_dir_all(&root).unwrap();
     gate.open();
     assert!(Store::init(Arc::clone(&vfs), root.clone(), test_config(), options()).is_err());
+    assert!(exists(&vfs, &root, RESERVATION));
+    assert!(!exists(&vfs, &root, MARKER_NAME));
+    (vfs, root)
+}
+
+#[test]
+fn every_identity_creation_input_is_bound_by_the_reservation() {
+    let (vfs, root) = interrupted_creation();
     let reserved = vfs.read(&root.join(RESERVATION)).unwrap();
-    for other in different_creation_agents() {
+    for (agent, config) in other_identities() {
         assert!(matches!(
-            Store::init(
-                Arc::clone(&vfs),
-                root.clone(),
-                test_config(),
-                agent_options(other)
-            ),
+            Store::init(Arc::clone(&vfs), root.clone(), config, agent_options(agent)),
             Err(StoreError::RootReserved { .. })
         ));
         assert_eq!(vfs.read(&root.join(RESERVATION)).unwrap(), reserved);
@@ -144,6 +192,25 @@ fn every_agent_creation_input_is_bound_by_the_reservation() {
     }
     drop(Store::init(Arc::clone(&vfs), root.clone(), test_config(), options()).unwrap());
     assert_metadata(&vfs, &root, &test_agent());
+}
+
+#[test]
+fn no_provenance_creation_input_is_bound_by_the_reservation() {
+    for (agent, config) in other_provenances() {
+        let (vfs, root) = interrupted_creation();
+        let reserved = vfs.read(&root.join(RESERVATION)).unwrap();
+        let created_at = config.created_at_unix_ms();
+        let store = Store::init(
+            Arc::clone(&vfs),
+            root.clone(),
+            config,
+            agent_options(agent.clone()),
+        )
+        .unwrap();
+        assert_metadata(&vfs, &root, &agent);
+        assert_eq!(store.created_at_unix_ms(), created_at);
+        assert_eq!(vfs.read(&root.join(RESERVATION)).unwrap(), reserved);
+    }
 }
 
 #[test]
@@ -218,6 +285,16 @@ fn a_v7_version_gate_refuses_a_v8_marker() {
     assert!(!exists(&vfs, &root, LEGACY_MARKER_NAME));
 }
 
+/// Agents that differ from the test agent in one input each, every one of which a migration binds.
+fn agents_differing_in_one_input() -> [Agent; 4] {
+    [
+        Agent::new("other", "test", "Canopy test fixture", 1),
+        Agent::new("canopy-tests", "other", "Canopy test fixture", 1),
+        Agent::new("canopy-tests", "test", "other", 1),
+        Agent::new("canopy-tests", "test", "Canopy test fixture", 2),
+    ]
+}
+
 #[test]
 fn interrupted_migrations_reject_every_changed_agent_input() {
     for version in [MIGRATABLE_FORMAT_VERSION, COORDINATED_FORMAT_VERSION] {
@@ -233,7 +310,7 @@ fn interrupted_migrations_reject_every_changed_agent_input() {
         gate.open();
         assert!(Store::migrate(Arc::clone(&vfs), root.clone(), &options()).is_err());
         let record = vfs.read(&root.join(MIGRATION_RECORD_NAME)).unwrap();
-        for other in different_creation_agents() {
+        for other in agents_differing_in_one_input() {
             assert!(matches!(
                 Store::migrate(Arc::clone(&vfs), root.clone(), &agent_options(other)),
                 Err(StoreError::MigrationInputsDiffer { .. })

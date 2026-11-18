@@ -29,7 +29,7 @@ $allInvariants = @(
 $allProperties = @(
     'ReservationIsPublishedOnlyIfAbsent', 'ThePublisherHoldsItsExclusion',
     'AnOpenSucceedsOnlyThroughTheRecordedImplementation', 'ARefusalChangesNothing',
-    'CreationBeginsOnlyInAnUnoccupiedRoot',
+    'CreationBeginsOnlyInAnUnoccupiedRoot', 'ACreatorFindsItsOwnStore', 'AStoreIsFoundOnlyWhereItIs',
     'DeathLeavesTheRootAsItWas', 'ACrashKeepsEverythingDurable')
 
 function Write-Config([string]$name, [string[]]$header, [string]$scenario, [int]$art,
@@ -94,7 +94,8 @@ $controls = @(
     @('ResumeIgnoresInputsArtifacts', 'resume-ignores-inputs', 'DifferentInputs', 2, 1, 0, 'ArtifactsCarryTheReservedInputs', 'inv', 'A resumer does not compare its inputs with the reservation''s, and makes the marker from different inputs.'),
     @('OpenIgnoresImplementation', 'open-ignores-implementation', 'CreatorAndOpeners', 2, 0, 0, 'AnOpenSucceedsOnlyThroughTheRecordedImplementation', 'prop', 'An open succeeds through an implementation the reservation does not name.'),
     @('OpenTrustsALiveMarker', 'open-trusts-a-live-marker', 'CreatorAndOpeners', 2, 1, 0, 'AnOpenedStoreKeepsItsMarker', 'inv', 'An open relies on a marker its creator died before making durable, which a host crash can then take away.'),
-    @('CreationIgnoresForeignContent', 'creation-ignores-foreign-content', 'OneCreator', 2, 0, 0, 'CreationBeginsOnlyInAnUnoccupiedRoot', 'prop', 'A creator does not refuse a root that holds something creation does not make.')
+    @('CreationIgnoresForeignContent', 'creation-ignores-foreign-content', 'OneCreator', 2, 0, 0, 'CreationBeginsOnlyInAnUnoccupiedRoot', 'prop', 'A creator does not refuse a root that holds something creation does not make.'),
+    @('StopAtTheStore', 'stop-at-the-store', 'TwoCreators', 2, 0, 0, 'ACreatorFindsItsOwnStore', 'prop', 'A creator that finds the marker stops, even under a reservation of its own implementation and inputs.')
 )
 foreach ($c in $controls) {
     $script:intrusion = ($c[0] -eq 'CreationIgnoresForeignContent')
@@ -116,8 +117,9 @@ $witnesses = @(
     @('ACreatorStopsAtAnotherImplementationsReservation', 'TwoImplementations', 2, 0, 0, 'inv', 'A creator finds a reservation that names another implementation and stops.'),
     @('ACreatorStopsAtDifferentInputs', 'DifferentInputs', 2, 0, 0, 'inv', 'A creator finds a reservation made from different inputs and stops.'),
     @('ACreatorLosesTheRace', 'TwoImplementations', 2, 0, 0, 'inv', 'A creator finds, under its exclusion, a reservation of another implementation published since it looked, and stops.'),
-    @('ACreatorFindsTheStoreCreated', 'TwoCreators', 2, 0, 0, 'prop', 'A creator that starts after the marker is in place stops.'),
-    @('AResumerFindsTheStoreCreatedWhileItWaited', 'TwoCreators', 2, 0, 0, 'prop', 'A resumer waits for the exclusion while the creation finishes, and then stops.'),
+    @('ACreatorFindsTheStoreCreated', 'TwoCreators', 2, 0, 0, 'prop', 'A creator that starts after the marker is in place finds the store it asked for.'),
+    @('AResumerFindsTheStoreCreatedWhileItWaited', 'TwoCreators', 2, 0, 0, 'prop', 'A creator waits for the exclusion while the creation finishes, and then finds the store it asked for.'),
+    @('ACreatorStopsAtAnotherStore', 'TwoImplementations', 2, 0, 0, 'prop', 'A creator finds the marker under a reservation of another implementation and stops.'),
     @('AnOpenOpens', 'CreatorAndOpeners', 2, 0, 0, 'inv', 'An opener opens the store.'),
     @('AnOpenIsRefusedForAnotherImplementation', 'CreatorAndOpeners', 2, 0, 0, 'inv', 'An opener of another implementation is refused.'),
     @('AnOpenFindsNoStore', 'CreatorAndOpeners', 2, 0, 0, 'inv', 'An opener that reads the root before any creation finds no store.'),

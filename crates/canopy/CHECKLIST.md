@@ -18,16 +18,6 @@ Each item here names the event it waits on; it joins a milestone once that event
   the engineer whether the runner stays hosted or becomes self-hosted, recorded in the same
   decision. Waits on the workflow reaching `main`.
 
-- [ ] **G-2** -- Settle what an identical creator that arrives while another creation is still in
-  progress reports, and make the code and
-  `tests::lock::identical_concurrent_creators_never_replace_a_completed_store` agree on it. The
-  test requires `AlreadyInitialized`; [DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion
-  belongs to an operation" promises it only to a creator that finds the completed marker, and `init_through`'s
-  first occupancy check, taken before exclusion, refuses a partly built root as `NotEmpty`. See
-  [UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md), 2026-11-17 update. Either waiting for
-  exclusion and rechecking, or narrowing the test to the documented contract, settles it. Waits on
-  the engineer choosing between them.
-
 ## M9+ -- Concrete Canopy schema migrations
 
 - [ ] **CANOPY-MIGRATION** -- Specify a concrete Canopy source/target schema change and supply its
@@ -106,15 +96,6 @@ Each item here names the event it waits on; it joins a milestone once that event
 - [ ] **M12-3** (was `FM-4.3`) -- Repair and scrub, including the modification count a repair holds odd
   while it runs.
 
-- [ ] **M12-4** -- Decide with the engineer how `Store::init` relates to the creation contract, and
-  carry it out. `Store::init` reserves the root with `Creation::reserve`, then works under writer
-  exclusion rather than the creation exclusion, and does not take over an interrupted creation, so
-  the `Creation` replay holds acadia's `create` and `confirm_created` to
-  [Creation.tla](spec/Creation.tla) and not `Store::init` ([DESIGN-NOTES.md](DESIGN-NOTES.md) "The
-  Creation replay"). Either `Store::init` creates through the contract, its partitions and marker
-  being `create`'s artifacts, or the model gains canopy's creation as a client of the contract and
-  a bridge drives `Store::init` through it.
-
 ## M13 -- Filesystem reference model
 
 - [x] **M13-1** (was `FM-5.1`) -- `MemFs` has an independent durability reference model and replay bridge in Acadia. -> [completed 2026-11-17](../acadia/COMPLETED-CHECKLIST.md#m13-1)
@@ -165,6 +146,31 @@ end served, withdrawn or dead. The rest of M14 follows its dependencies as writt
 - [x] **M14-8** (was `FM-3.4`) -- Store sessions are checked against the opaque client projection at the API. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-8)
 
 - [x] **M14-9** (was `CM-4`) -- Dependents have a complete outcome and retry guide for the client contract. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-9)
+
+## M15 -- Idempotent store creation
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store creation is idempotent". Discussion:
+[DESIGN-SESSION-2026-11-17-idempotent-creation.md](design-sessions/DESIGN-SESSION-2026-11-17-idempotent-creation.md).
+The intermittent failure it removes is in [RESOLVED-TEST-FAILURES.md](RESOLVED-TEST-FAILURES.md).
+
+- [x] **M15-1** -- `Creation.tla` lets a creator that finds the marker under its own reservation succeed with the store. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-1)
+
+  > **-> CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> `M19` -> `M19-1`
+  > (an identical creator finds the store it asked for). See
+  > [CHECKLIST.md](../acadia/CHECKLIST.md).
+
+- [x] **M15-2** -- The `Creation` trace corpus is re-exported and both implementations follow it, an identical creator ending at an existing store. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-2)
+
+- [x] **M15-3** -- A creation's reservation records the store's identity alone; provenance is the marker's. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-3)
+
+- [x] **M15-4** (was `M12-4`) -- `Store::init` creates through `Creation::create` and returns the store whether it made it or found it. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-4)
+
+- [x] **M15-5** -- `Store::store_nonce` returns the store's nonce, set by its first user under writer exclusion and durable before it is returned. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-5)
+
+  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> `M21` -> `M21-1` (`publish_new` moves
+  > rather than links on Windows). See [CHECKLIST.md](../acadia/CHECKLIST.md).
+
+- [x] **M15-6** -- Creation is tested at scale, across processes, under the exclusion and through a crash at each step; the intermittent test is replaced and its entry resolved. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-6)
 
 ## M14+ -- TLA futures
 

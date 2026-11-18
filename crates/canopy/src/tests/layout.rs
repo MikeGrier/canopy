@@ -210,11 +210,32 @@ fn the_layout_parameters_default_without_being_asked_for() {
 }
 
 #[test]
-fn init_refuses_a_root_that_is_already_a_store() {
+fn init_finds_a_store_of_its_identity_and_refuses_one_of_another() {
     let (vfs, root) = fresh_root();
-    Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("first init");
-    let err = Store::init_unsourced(vfs, root, test_config()).expect_err("second init");
-    assert!(matches!(err, StoreError::AlreadyInitialized { .. }));
+    let first =
+        Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("first init");
+    let marker = vfs.read(&root.join(MARKER_NAME)).unwrap();
+    let second =
+        Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("second init");
+    assert_eq!(second.store_id(), first.store_id());
+    assert_eq!(
+        vfs.read(&root.join(MARKER_NAME)).unwrap(),
+        marker,
+        "not made again"
+    );
+    for other in [
+        GenesisConfig::new(StoreId::new("other").unwrap(), 12_345),
+        test_config()
+            .with_shard_width(DEFAULT_SHARD_WIDTH + 1)
+            .unwrap(),
+    ] {
+        let err = Store::init_unsourced(vfs.clone(), root.clone(), other).expect_err("refused");
+        assert!(
+            matches!(err, StoreError::AlreadyInitialized { .. }),
+            "{err:?}"
+        );
+    }
+    assert_eq!(vfs.read(&root.join(MARKER_NAME)).unwrap(), marker);
 }
 
 #[test]
@@ -226,10 +247,41 @@ fn init_refuses_a_root_holding_a_non_dotfile_entry() {
 }
 
 #[test]
-fn init_tolerates_ignorable_dotfiles_in_the_root() {
+fn init_refuses_a_root_holding_a_dotfile_creation_does_not_make() {
     let (vfs, root) = fresh_root();
     vfs.write(&root.join(".hidden"), b"x").unwrap();
-    Store::init_unsourced(vfs, root, test_config()).expect("dotfiles are ignorable");
+    let err = Store::init_unsourced(vfs.clone(), root.clone(), test_config())
+        .expect_err("a dotfile occupies the root");
+    assert!(
+        matches!(&err, StoreError::NotEmpty { entry, .. } if entry == ".hidden"),
+        "{err:?}"
+    );
+    assert!(!vfs.exists(&root.join(MARKER_NAME)).unwrap());
+}
+
+#[test]
+fn a_marker_publication_cut_short_leaves_a_creation_the_next_init_finishes() {
+    let mem = MemFs::new();
+    let root = PathBuf::from("store");
+    mem.create_dir_all(&root).unwrap();
+    let vfs: Arc<dyn Vfs> = Arc::new(mem.another_process());
+    let faulty: Arc<dyn Vfs> = Arc::new(acadia::FaultyFs::new(
+        mem.another_process(),
+        acadia::FaultPolicy::new().inject(
+            acadia::FaultOp::PublishNew,
+            root.join(MARKER_NAME),
+            acadia::Fault::io_error(),
+            acadia::When::Once,
+        ),
+    ));
+    Store::init_unsourced(Arc::clone(&faulty), root.clone(), test_config())
+        .expect_err("the marker is not published");
+    let left = root.join(format!("{MARKER_NAME}{}9-9", acadia::PUBLISHING_INFIX));
+    vfs.write(&left, b"cut short").unwrap();
+    let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config())
+        .expect("the creation is finished");
+    assert_eq!(store.store_id(), "test-store");
+    assert!(vfs.exists(&root.join(MARKER_NAME)).unwrap());
 }
 
 #[test]
