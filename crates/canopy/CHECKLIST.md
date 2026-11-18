@@ -18,6 +18,16 @@ Each item here names the event it waits on; it joins a milestone once that event
   the engineer whether the runner stays hosted or becomes self-hosted, recorded in the same
   decision. Waits on the workflow reaching `main`.
 
+- [ ] **G-2** -- Settle what an identical creator that arrives while another creation is still in
+  progress reports, and make the code and
+  `tests::lock::identical_concurrent_creators_never_replace_a_completed_store` agree on it. The
+  test requires `AlreadyInitialized`; [DESIGN-NOTES.md](DESIGN-NOTES.md) "Writer exclusion
+  belongs to an operation" promises it only to a creator that finds the completed marker, and `init_through`'s
+  first occupancy check, taken before exclusion, refuses a partly built root as `NotEmpty`. See
+  [UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md), 2026-11-17 update. Either waiting for
+  exclusion and rechecking, or narrowing the test to the documented contract, settles it. Waits on
+  the engineer choosing between them.
+
 ## M9+ -- Concrete Canopy schema migrations
 
 - [ ] **CANOPY-MIGRATION** -- Specify a concrete Canopy source/target schema change and supply its

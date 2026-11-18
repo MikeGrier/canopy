@@ -381,7 +381,12 @@ fn identical_concurrent_creators_never_replace_a_completed_store() {
         assert!(
             outcomes
                 .iter()
-                .any(|outcome| matches!(outcome, Err(StoreError::AlreadyInitialized { .. })))
+                .any(|outcome| matches!(outcome, Err(StoreError::AlreadyInitialized { .. }))),
+            "round {round}: the losing creator reported {:?}",
+            outcomes
+                .iter()
+                .filter_map(|o| o.as_ref().err())
+                .collect::<Vec<_>>()
         );
         let store = outcomes.into_iter().find_map(Result::ok).unwrap();
         store
