@@ -82,6 +82,8 @@ struct ParticipantInner {
     root: PathBuf,
     state: OnceLock<Arc<SharedState>>,
     initializing: Mutex<()>,
+    /// Held by an opening from the end of its setup wait; see `state::OpenGate`.
+    opening: Mutex<()>,
     abandoned: AtomicBool,
     creation: Mutex<HashMap<u64, Box<dyn VfsLock>>>,
     next_creation: AtomicU64,
@@ -114,6 +116,7 @@ impl SharedParticipant {
                 root: root.to_path_buf(),
                 state: OnceLock::new(),
                 initializing: Mutex::new(()),
+                opening: Mutex::new(()),
                 abandoned: AtomicBool::new(false),
                 creation: Mutex::new(HashMap::new()),
                 next_creation: AtomicU64::new(1),
@@ -144,7 +147,15 @@ impl SharedParticipant {
         self.alive()?;
         if self.inner.state.get().is_none() {
             self.check_implementation()?;
-            let state = SharedState::open(Arc::clone(&self.inner.vfs), &self.inner.root)?;
+            let gate = state::OpenGate {
+                lock: &self.inner.opening,
+                abandoned: &self.inner.abandoned,
+            };
+            let state = SharedState::open_gated(
+                Arc::clone(&self.inner.vfs),
+                &self.inner.root,
+                Some(&gate),
+            )?;
             #[cfg(any(test, feature = "test-support"))]
             let state = state.with_hook(self.inner.hook.clone());
             if self.inner.abandoned.load(Ordering::Acquire) {
@@ -186,6 +197,12 @@ impl Coordination for SharedParticipant {
     }
     fn abandon(&self) {
         self.inner.abandoned.store(true, Ordering::Release);
+        drop(
+            self.inner
+                .opening
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
         self.inner
             .creation
             .lock()

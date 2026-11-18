@@ -14,11 +14,16 @@ const LAST_INTERVAL: Duration = Duration::from_millis(32);
 impl ModificationCount for SharedState {
     fn sample(&self) -> CoordResult<ModCount> {
         self.alive()?;
-        Ok(ModCount::new(
-            self.words
-                .word(Word::Count)
-                .fetch_or(format::FALSE, Ordering::AcqRel),
-        ))
+        let count = self
+            .words
+            .word(Word::Count)
+            .fetch_or(format::FALSE, Ordering::AcqRel);
+        // A participant that cannot identify its boot can vouch for nothing, so it samples odd.
+        Ok(ModCount::new(if self.boot.is_none() {
+            count | 1
+        } else {
+            count
+        }))
     }
 }
 
@@ -69,8 +74,12 @@ impl Poller {
         deadline: Instant,
         ring: Box<dyn FnOnce() + Send>,
     ) -> CoordResult<u64> {
-        let mut state = self.state();
+        // The full check may call into the filesystem, which must not happen under the mutex.
         participant.alive()?;
+        let mut state = self.state();
+        if participant.abandoned.load(Ordering::Acquire) {
+            return Err(CoordError::Abandoned);
+        }
         if !state.running {
             std::thread::Builder::new()
                 .name("acadia-shared-notify".into())

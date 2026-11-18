@@ -445,6 +445,35 @@ fn a_live_entry_whose_record_cannot_be_read_is_unknown() {
 }
 
 #[test]
+fn a_live_entry_whose_record_read_fails_is_unknown_and_the_others_are_listed() {
+    for implementation in super::implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let first = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let mut unreadable = attach(&first, Access::Read);
+        registered(&mut *unreadable, b"unreadable");
+        let second = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let mut readable = attach(&second, Access::Read);
+        let token = registered(&mut *readable, b"readable");
+        let policy = FaultPolicy::new().inject(
+            FaultOp::Read,
+            first.layout().registry_entry(0),
+            Fault::error(crate::VfsErrorKind::PermissionDenied),
+            When::Always,
+        );
+        let observer = participant_on(
+            &implementation,
+            Arc::new(FaultyFs::new(mem.another_process(), policy)),
+            &root,
+        );
+        let listing = list(&observer);
+        assert_eq!(live_tokens(&listing), HashSet::from([token]));
+        assert_eq!(listing.unknown, 1);
+        assert!(listing.may_be_incomplete);
+    }
+}
+
+#[test]
 fn every_entry_held_attaches_unregistered_and_listings_say_so_until_a_restart() {
     on_every_implementation("coord-reg-overflow", &|implementation, backend| {
         let observer = participant(implementation, backend);

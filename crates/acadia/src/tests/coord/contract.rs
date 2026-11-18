@@ -220,6 +220,78 @@ fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
 }
 
 #[test]
+fn a_shared_participant_abandoned_while_its_first_use_waits_changes_nothing_after() {
+    let mem = MemFs::new();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let directory = root.join(".coord-shared");
+    mem.create_dir_all(&directory).unwrap();
+    let setup = mem
+        .another_process()
+        .lock(
+            &directory.join("setup.lock"),
+            crate::LockMode::Exclusive,
+            crate::LockSpan::File,
+        )
+        .unwrap();
+    let participant: Arc<dyn Coordination> = Arc::from(
+        crate::coord::shared::SharedFactory::new()
+            .open(Arc::new(mem.another_process()), &root)
+            .unwrap(),
+    );
+    let sampler = Arc::clone(&participant);
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(sampler.sample());
+    });
+    assert!(
+        recv_timeout(&finished, Duration::from_millis(100)).is_err(),
+        "the first use waits for setup"
+    );
+    let (abandoned_tx, abandoned) = std::sync::mpsc::channel();
+    let target = Arc::clone(&participant);
+    std::thread::spawn(move || {
+        target.abandon();
+        let _ = abandoned_tx.send(());
+    });
+    recv_timeout(&abandoned, Duration::from_secs(5)).expect("abandon does not wait for setup");
+    drop(setup);
+    let sampled = recv_timeout(&finished, Duration::from_secs(5)).expect("the first use returns");
+    assert!(matches!(sampled, Err(CoordError::Abandoned)));
+    assert!(
+        !mem.exists(&directory.join("epoch")).unwrap(),
+        "an abandoned first use began an epoch"
+    );
+}
+
+#[test]
+fn a_discovery_in_progress_does_not_hide_a_dead_holder_from_another() {
+    on_every_contract("coord-contract-two-observers", &|factory, backend| {
+        let first = opened(factory, backend);
+        let mut recovering = first.acquire(crate::coord::Waiting::Never).unwrap();
+        recovering.complete_recovery().unwrap();
+        recovering.release().unwrap();
+        let dying = opened(factory, backend);
+        let held = dying.acquire(crate::coord::Waiting::Never).unwrap();
+        dying.abandon();
+        drop(held);
+        let second = opened(factory, backend);
+        let mut seen_by_second = None;
+        let seen_by_first = first
+            .discover_recovery_with(&mut || {
+                seen_by_second = Some(second.discover_recovery().unwrap());
+            })
+            .unwrap();
+        assert!(seen_by_first.holder_died(), "{}", factory.implementation());
+        let seen_by_second = seen_by_second.expect("the inspection ran");
+        assert!(
+            seen_by_second.holder_died(),
+            "{}: a concurrent discovery hid the dead holder",
+            factory.implementation()
+        );
+    });
+}
+
+#[test]
 fn a_holder_that_dies_mid_modification_is_reported_dead_and_not_fenced() {
     on_every_contract("coord-contract-dead-unfenced", &|factory, backend| {
         let observer = opened(factory, backend);

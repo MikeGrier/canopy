@@ -1002,6 +1002,11 @@ them; the first needed the case where a reserver that waited resumes the reserva
 
 ## Whether recovery is required is observed with the writer lock tried, 2026-11-14
 
+> **SUPERSEDED in part, 2026-11-18, by "Seventh review fixes: shared discovery probes, the fence as
+> reported, opening under abandonment, the notification poller" below.** The probe takes the writer
+> lock shared, which excludes every writer and no other probe, so one discovery never reads another's
+> probe as a live holder. The rest of this decision stands.
+
 `RecoveryDiscovery::discover_recovery` reports whether recovery is required and why, for any
 participant, as canopy's recovery design states it ([canopy's
 DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "Recovery and its discovery, modelled in
@@ -1830,3 +1835,52 @@ The backends:
   the join with any initializer, so the joiner continues the epoch rather than finding a gap in it.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The sixth review, 2026-11-18".
+
+## Seventh review fixes: shared discovery probes, the fence as reported, opening under abandonment, the notification poller, 2026-11-18
+
+A seventh review of the crate, made on 2026-11-18, raised seven findings and one suspicion. Each
+one that held was shown by a failing test before it was fixed, except where noted; the work is
+milestones M36 to M39 in [CHECKLIST.md](CHECKLIST.md).
+
+Discovery and trust:
+
+- **A discovery probe takes the writer lock shared.** Writers take it exclusively, so a probe that
+  gets it still shows no writer is alive and still keeps one from acquiring while the observation
+  and its inspection run; two probes no longer exclude each other, so one discovery in progress never
+  makes another report a dead holder as a live one. In both implementations.
+- **The fence reported is the fence word.** `RecoveryNeed::fenced` and `Acquired::fenced` in the
+  shared implementation read the fence word itself; `StateSnapshot::fenced` stays the diagnostic
+  that also counts untrusted state, and it is what refuses ordinary work.
+- **A shared participant that cannot identify its boot samples odd.** It can vouch for nothing, so
+  its sample is the count with its low bit set; the sample is still one atomic read-modify-write.
+
+Opening the shared state:
+
+- **A joiner that cannot find a live epoch's words fails.** Over `MemFs` the words are found by the
+  boot and instance; a joiner whose lookup misses probes the liveness lock again, under the setup
+  lock it still holds, and opens again only if no participant remains. A live epoch whose words it
+  cannot find is an error, never a reason to retry or to initialize over it.
+- **An abandonment waits for an opening's durable work, never for its wait.** An opening takes a
+  participant mutex once it holds the setup lock, checks there that its participant is not
+  abandoned, and keeps the mutex until it returns; `abandon` sets its flag and then takes the
+  mutex. So an abandonment does not wait behind an opening blocked on another participant's setup,
+  and once it returns that opening changes nothing on disk.
+- **Registering a shared notification makes no filesystem call under the poller's mutex.** The full
+  liveness check, which on a backend other than the operating system's reads the boot identity, is
+  made before the mutex is taken; under it, only the abandonment flag is read. A filesystem whose
+  operation drops a notice therefore cannot stop the poller.
+
+`MemFs` and the file registry:
+
+- **A rename never carries a file as a moved directory's snapshot.** A directory made where a moved
+  ancestor's snapshot still holds a file is a new directory; moving it on carries nothing from that
+  snapshot.
+- **A live registry entry whose record cannot be read is unknown.** Once an entry's liveness lock is
+  refused, any failure to read its record counts it unknown, as a record that does not decode does;
+  failures to take or probe the locks still fail the listing.
+- **A Windows oplock break whose acknowledgement cannot be issued rings and releases its lock.**
+  Closing the handle answers the break as acknowledging it does, so the renaming writer is not held
+  until the caller drops its notice. No test provokes the failure, which needs the system to refuse a
+  control on a handle it has just completed.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The seventh review, 2026-11-18".

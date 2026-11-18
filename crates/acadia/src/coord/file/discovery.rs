@@ -12,7 +12,6 @@
 
 use crate::coord::{
     CoordError, CoordResult, RecoveryDiscovery, RecoveryNeed, RestartRecognition, Trust, Untrusted,
-    Waiting,
 };
 
 use super::FileCoordination;
@@ -30,7 +29,7 @@ impl RecoveryDiscovery for FileCoordination {
             };
             return Ok(RecoveryNeed::new(false, Some(why), false));
         }
-        let (probe, holder_alive) = match self.acquire_exclusion(Waiting::Never) {
+        let (probe, holder_alive) = match self.probe_exclusion() {
             Ok(probe) => (Some(probe), false),
             Err(CoordError::WouldWait) => (None, true),
             Err(error) => return Err(error),

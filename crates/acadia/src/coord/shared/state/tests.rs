@@ -3,8 +3,8 @@
 use super::*;
 use crate::MemFs;
 use crate::coord::{
-    Access, Admission, ModificationEnd, Purpose, ReaderSafety, RecoveryDiscovery, Registry,
-    Waiting, WriterExclusion,
+    Access, Admission, ModificationCount, ModificationEnd, Purpose, ReaderSafety,
+    RecoveryDiscovery, Registry, RestartRecognition, Waiting, WriterExclusion,
 };
 
 fn filesystem() -> Arc<MemFs> {
@@ -177,6 +177,31 @@ fn a_participant_joining_as_the_last_one_leaves_opens_the_state_it_found() {
 }
 
 #[test]
+fn a_joiner_that_cannot_find_a_live_epochs_words_fails_rather_than_retrying() {
+    let fs = filesystem();
+    let root = Path::new("/state");
+    let live = SharedState::open(fs.clone(), root).unwrap();
+    let policy = crate::FaultPolicy::new().inject_matching(
+        crate::FaultOp::BootIdentity,
+        crate::PathMatcher::Predicate(Arc::new(|_| true)),
+        crate::Fault::error(VfsErrorKind::Unsupported),
+        crate::When::Always,
+    );
+    let blind: Arc<dyn Vfs> = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(SharedState::open(blind, Path::new("/state")).is_err());
+    });
+    let refused = test_timers::mpsc::recv_timeout(&finished, std::time::Duration::from_secs(10))
+        .expect("the open returns");
+    assert!(
+        refused,
+        "a joiner that cannot find the live words is refused"
+    );
+    drop(live);
+}
+
+#[test]
 fn a_first_registration_abandoned_part_way_records_no_incomplete_membership() {
     let fs = filesystem();
     let root = Path::new("/state");
@@ -274,6 +299,41 @@ fn participant_abandonment_preserves_the_surviving_epoch() {
     let third = SharedState::open(fs, Path::new("/state")).unwrap();
     assert_eq!(third.snapshot().unwrap().trust, Trust::Vouched);
     assert_eq!(second.snapshot().unwrap().trust, Trust::Vouched);
+}
+
+#[test]
+fn a_native_participant_that_cannot_identify_its_boot_samples_odd_and_reports_no_fence() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.scratch")
+        .join(format!("shared-blind-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let fs = Arc::new(crate::OsFs::new());
+    fs.create_dir_all(&root).unwrap();
+    let live = SharedState::open(fs.clone(), &root).unwrap();
+    vouch(&live);
+    assert!(live.sample().unwrap().is_settled());
+    let policy = crate::FaultPolicy::new().inject_matching(
+        crate::FaultOp::BootIdentity,
+        crate::PathMatcher::Predicate(Arc::new(|_| true)),
+        crate::Fault::error(VfsErrorKind::Unsupported),
+        crate::When::Always,
+    );
+    let blind = SharedState::open(
+        Arc::new(crate::FaultyFs::new(crate::OsFs::new(), policy)),
+        &root,
+    )
+    .unwrap();
+    assert_eq!(
+        blind.trust().unwrap(),
+        Trust::Untrusted(Untrusted::CannotTell)
+    );
+    assert!(!blind.sample().unwrap().is_settled());
+    let need = blind.discover_recovery().unwrap();
+    assert!(!need.fenced(), "no fence is set");
+    assert!(need.required());
+    drop(blind);
+    drop(live);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

@@ -205,3 +205,28 @@ failing test before it is fixed; a finding that does not hold is recorded in
 ## M35 -- Sixth review: records
 
 - [x] **M35-1** -- The sixth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m35-1)
+
+## M36 -- Seventh review: discovery and trust
+
+Review report: findings of the seventh acadia review (GPT-6.2 Astra, 2026-11-18), each confirmed by
+a failing test before it is fixed; a finding that does not hold is recorded in
+[DESIGN-NOTES.md](DESIGN-NOTES.md) instead of being changed.
+
+- [x] **M36-1** -- One observer's discovery never hides a dead writer from another's. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m36-1)
+- [x] **M36-2** -- A shared participant that cannot identify its boot reports the fence as it is and never samples a settled count. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m36-2)
+
+## M37 -- Seventh review: shared opening and notification
+
+- [x] **M37-1** -- A shared joiner that cannot find a live epoch's words fails rather than retrying for ever. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m37-1)
+- [x] **M37-2** -- A shared participant abandoned during its first use changes no durable state once `abandon` returns. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m37-2)
+- [x] **M37-3** -- A shared notification's registration makes no filesystem call under the poller's mutex. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m37-3)
+
+## M38 -- Seventh review: MemFs and the file registry
+
+- [x] **M38-1** -- A `MemFs` directory rename never carries a file as the moved directory's snapshot. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m38-1)
+- [x] **M38-2** -- A live file-registry entry whose record cannot be read is listed as unknown, not an error. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m38-2)
+- [x] **M38-3** -- A Windows oplock break whose acknowledgement cannot be issued releases the lock rather than holding the writer. -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m38-3)
+
+## M39 -- Seventh review: records
+
+- [x] **M39-1** -- The seventh review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). -> [completed 2026-11-18](COMPLETED-CHECKLIST.md#m39-1)

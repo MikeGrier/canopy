@@ -302,11 +302,13 @@ impl FileCoordination {
             Err(CoordError::WouldWait) => {}
             Err(error) => return Err(error),
         }
-        match self.vfs().read(&self.layout().registry_entry(index)) {
-            Ok(bytes) => Ok(decode(&bytes).map_or(Inspected::Unreadable, Inspected::Live)),
-            Err(error) if error.kind() == VfsErrorKind::NotFound => Ok(Inspected::Unreadable),
-            Err(error) => Err(error.into()),
-        }
+        // The entry is live, so a record that cannot be read makes it unknown, not the listing.
+        Ok(
+            match self.vfs().read(&self.layout().registry_entry(index)) {
+                Ok(bytes) => decode(&bytes).map_or(Inspected::Unreadable, Inspected::Live),
+                Err(_) => Inspected::Unreadable,
+            },
+        )
     }
 }
 

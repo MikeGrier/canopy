@@ -106,6 +106,28 @@ impl Words {
     }
 }
 
+/// What lets a participant be abandoned while it opens its state: `abandon` sets `abandoned` and
+/// then takes `lock`, which an opening holds from the end of its wait for the setup lock until it
+/// returns. An abandonment therefore never waits for an opening blocked on another participant,
+/// and once it returns the opening changes nothing more.
+pub(crate) struct OpenGate<'a> {
+    pub(crate) lock: &'a Mutex<()>,
+    pub(crate) abandoned: &'a AtomicBool,
+}
+
+impl OpenGate<'_> {
+    fn enter(&self) -> CoordResult<std::sync::MutexGuard<'_, ()>> {
+        let guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(CoordError::Abandoned);
+        }
+        Ok(guard)
+    }
+}
+
 /// A diagnostic view of a shared-state epoch. It grants no document access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateSnapshot {
@@ -227,9 +249,19 @@ impl SharedState {
     /// A last-participant exit, host restart or interrupted initialization requires recovery.
     /// Reached only through a participant, which first refuses a root another implementation
     /// reserved.
+    #[cfg(test)]
     pub(crate) fn open(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Self> {
+        Self::open_gated(vfs, root, None)
+    }
+
+    /// As [`open`](Self::open), for a participant that `gate` can abandon while it waits.
+    pub(crate) fn open_gated(
+        vfs: Arc<dyn Vfs>,
+        root: &Path,
+        gate: Option<&OpenGate<'_>>,
+    ) -> CoordResult<Self> {
         loop {
-            if let Some(state) = Self::open_once(Arc::clone(&vfs), root)? {
+            if let Some(state) = Self::open_once(Arc::clone(&vfs), root, gate)? {
                 return Ok(state);
             }
         }
@@ -237,7 +269,11 @@ impl SharedState {
 
     /// One attempt at [`open`](Self::open), or `None` when the epoch it would join ended between
     /// finding a live participant and joining it, so the attempt must decide again.
-    fn open_once(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Option<Self>> {
+    fn open_once(
+        vfs: Arc<dyn Vfs>,
+        root: &Path,
+        gate: Option<&OpenGate<'_>>,
+    ) -> CoordResult<Option<Self>> {
         vfs.read_dir(root)?;
         let directory = root.join(DIRECTORY);
         match vfs.metadata(&directory) {
@@ -255,6 +291,7 @@ impl SharedState {
             LockMode::Exclusive,
             LockSpan::File,
         )?;
+        let _opening = gate.map(OpenGate::enter).transpose()?;
         let last = match vfs.try_lock(
             &directory.join("live.lock"),
             LockMode::Exclusive,
@@ -404,8 +441,20 @@ impl SharedState {
             if let Some(words) = models.get(&key).and_then(Weak::upgrade) {
                 words
             } else if !first {
-                // The model's words live only as long as a participant does, so the last one left.
-                return Ok(None);
+                // The model's words live only as long as a participant does: decide again only if
+                // the liveness lock, probed under the setup lock still held, shows none remains.
+                drop(models);
+                return match vfs.try_lock(
+                    &directory.join("live.lock"),
+                    LockMode::Exclusive,
+                    LockSpan::File,
+                ) {
+                    Ok(_) => Ok(None),
+                    Err(error) if error.kind() == VfsErrorKind::Locked => {
+                        Err(failure("the live epoch's state cannot be found"))
+                    }
+                    Err(error) => Err(error.into()),
+                };
             } else {
                 let words = Arc::new(Words::Model(
                     (0..WORD_COUNT).map(|_| AtomicU64::new(0)).collect(),
@@ -475,6 +524,12 @@ impl SharedState {
     pub(super) fn with_hook(mut self, hook: Option<Arc<dyn StepHook>>) -> Self {
         self.hook = hook;
         self
+    }
+
+    /// Whether the fence word is set, which is what `RecoveryNeed::fenced` and
+    /// `Acquired::fenced` report; [`snapshot`](Self::snapshot) also counts untrusted state.
+    pub(crate) fn fence_set(&self) -> bool {
+        self.words.word(Word::Fence).load(Ordering::Acquire) != format::FALSE
     }
 
     /// Returns the epoch's current diagnostic state. Untrusted epochs are always fenced.

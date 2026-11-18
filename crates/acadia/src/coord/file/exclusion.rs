@@ -38,15 +38,20 @@ impl FileCoordination {
     /// Acquires writer exclusion, waiting as `waiting` allows. Exclusion is not re-entrant: a
     /// participant that holds it and waits for it again waits for itself.
     pub(crate) fn acquire_exclusion(&self, waiting: Waiting) -> CoordResult<Exclusion> {
+        self.lock_exclusion(LockMode::Exclusive, waiting)
+    }
+
+    /// Takes the exclusion lock shared without waiting, which excludes every writer and no other
+    /// prober, so one discovery never reads another's probe as a live writer.
+    pub(crate) fn probe_exclusion(&self) -> CoordResult<Exclusion> {
+        self.lock_exclusion(LockMode::Shared, Waiting::Never)
+    }
+
+    fn lock_exclusion(&self, mode: LockMode, waiting: Waiting) -> CoordResult<Exclusion> {
         self.alive()?;
         let layout = self.layout();
         self.vfs().create_dir_all(&layout.state_dir())?;
-        let hold = self.take_lock(
-            &layout.exclusion_lock(),
-            LockMode::Exclusive,
-            LockSpan::File,
-            waiting,
-        )?;
+        let hold = self.take_lock(&layout.exclusion_lock(), mode, LockSpan::File, waiting)?;
         Ok(Exclusion {
             participant: self.same_participant(),
             hold,

@@ -497,6 +497,10 @@ fn extract_carried(
             _ => return None,
         }
     }
+    // A file there is a predecessor of the directory being moved, not a snapshot of it.
+    if !matches!(cur.get(name), Some(Node::Dir(_))) {
+        return None;
+    }
     let node = cur.remove(name)?;
     // The marks beneath the extracted directory go with it; its own name is its new parent's.
     let mut marks = Vec::new();

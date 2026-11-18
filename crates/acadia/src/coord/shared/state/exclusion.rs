@@ -189,7 +189,7 @@ impl WriterExclusion for SharedState {
                 Generation::new(found),
                 Generation::new(next),
                 holder_died,
-                snapshot.fenced,
+                self.fence_set(),
                 snapshot.trust,
             )
         };
@@ -393,9 +393,10 @@ impl RestartRecognition for SharedState {
 
 impl RecoveryDiscovery for SharedState {
     fn discover_recovery_with(&self, inspect: &mut dyn FnMut()) -> CoordResult<RecoveryNeed> {
+        // Shared, so it excludes every writer and no other prober.
         match self.take_lock(
             &self.directory.join("exclusion.lock"),
-            LockMode::Exclusive,
+            LockMode::Shared,
             Waiting::Never,
         ) {
             Ok(_probe) => {
@@ -412,7 +413,7 @@ impl RecoveryDiscovery for SharedState {
                     inspect();
                 }
                 Ok(RecoveryNeed::new(
-                    snapshot.fenced,
+                    self.fence_set(),
                     match snapshot.trust {
                         Trust::Vouched => None,
                         Trust::Untrusted(reason) => Some(reason),
@@ -423,7 +424,7 @@ impl RecoveryDiscovery for SharedState {
             Err(CoordError::WouldWait) => {
                 let snapshot = self.snapshot()?;
                 Ok(RecoveryNeed::new(
-                    snapshot.fenced,
+                    self.fence_set(),
                     match snapshot.trust {
                         Trust::Vouched => None,
                         Trust::Untrusted(reason) => Some(reason),

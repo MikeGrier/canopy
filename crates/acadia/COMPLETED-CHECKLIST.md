@@ -435,3 +435,30 @@ Reproduced on a 64-bit target under WSL with a sparse 8 TiB file, which aborted 
 ### <a id="m34-3"></a>M34-3 -- `OsFs::remove_file` on a directory fails as `IsADirectory` on Windows. *(completed 2026-11-18 03:34:53 -05:00)*
 
 ### <a id="m35-1"></a>M35-1 -- The sixth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 03:34:53 -05:00)*
+
+## Moved 2026-11-18 -- Fixes from the seventh acadia review
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Seventh review fixes: shared discovery probes, the
+fence as reported, opening under abandonment, the notification poller". Each fix was shown by a
+failing test before it was made, except the oplock acknowledgement's.
+
+### <a id="m36-1"></a>M36-1 -- One observer's discovery never hides a dead writer from another's. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m36-2"></a>M36-2 -- A shared participant that cannot identify its boot reports the fence as it is and never samples a settled count. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m37-1"></a>M37-1 -- A shared joiner that cannot find a live epoch's words fails rather than retrying for ever. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m37-2"></a>M37-2 -- A shared participant abandoned during its first use changes no durable state once `abandon` returns. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m37-3"></a>M37-3 -- A shared notification's registration makes no filesystem call under the poller's mutex. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m38-1"></a>M38-1 -- A `MemFs` directory rename never carries a file as the moved directory's snapshot. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m38-2"></a>M38-2 -- A live file-registry entry whose record cannot be read is listed as unknown, not an error. *(completed 2026-11-18 06:30:09 -05:00)*
+
+### <a id="m38-3"></a>M38-3 -- A Windows oplock break whose acknowledgement cannot be issued releases the lock rather than holding the writer. *(completed 2026-11-18 06:30:09 -05:00)*
+
+No test provokes the failure; the fix rings the notice and closes the handle, which answers the
+break.
+
+### <a id="m39-1"></a>M39-1 -- The seventh review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 06:30:09 -05:00)*

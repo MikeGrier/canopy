@@ -117,3 +117,53 @@ fn abandonment_causes_sampling_failure_and_rings_outstanding_notices() {
     assert!(matches!(state.sample(), Err(CoordError::Abandoned)));
     drop(notice);
 }
+
+/// Registration makes no filesystem call while it holds the poller's mutex, so a filesystem
+/// callback that drops a notice -- which takes that mutex -- cannot stop the poller.
+#[test]
+fn a_registration_whose_filesystem_drops_another_notice_does_not_stop_the_poller() {
+    let other = state();
+    let outstanding: Arc<Mutex<Option<Box<dyn Notice>>>> = Arc::new(Mutex::new(Some(
+        other
+            .notify(
+                other.sample().unwrap(),
+                Instant::now() + Duration::from_secs(60),
+                Box::new(|| {}),
+            )
+            .unwrap(),
+    )));
+    let dropping = Arc::clone(&outstanding);
+    let gate = crate::FaultGate::closed();
+    let policy = crate::FaultPolicy::new().inject_gated(
+        crate::FaultOp::BootIdentity,
+        crate::PathMatcher::Predicate(Arc::new(|_| true)),
+        crate::Fault::observe_with(move |_, _| {
+            drop(dropping.lock().unwrap().take());
+        }),
+        // `notify` checks liveness, then registration does; the second is the one that matters.
+        crate::When::OnCall(2),
+        gate.clone(),
+    );
+    let fs = Arc::new(crate::MemFs::new());
+    fs.create_dir_all(Path::new("/observed")).unwrap();
+    let observed = SharedState::open(
+        Arc::new(crate::FaultyFs::new(fs.another_process(), policy)),
+        Path::new("/observed"),
+    )
+    .unwrap();
+    let sampled = observed.sample().unwrap();
+    gate.open();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let notice = observed.notify(
+            sampled,
+            Instant::now() + Duration::from_secs(60),
+            Box::new(|| {}),
+        );
+        let _ = done.send(notice.is_ok());
+    });
+    let registered =
+        test_timers::mpsc::recv_timeout(&finished, Duration::from_secs(10)).expect("registered");
+    assert!(registered);
+    assert!(outstanding.lock().unwrap().is_none(), "the callback ran");
+}

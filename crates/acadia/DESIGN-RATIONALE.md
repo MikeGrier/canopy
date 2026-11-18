@@ -359,3 +359,17 @@ boot, inspection under abandonment, the reported fence, joining an ending epoch"
   last participant left, after which the next attempt finds none.
 - **A vouched count without a boot is refused at its publication** rather than at recovery's
   start, so every path that would publish one meets the same refusal.
+
+## The seventh review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Seventh review fixes: shared discovery
+probes, the fence as reported, opening under abandonment, the notification poller".
+
+- **A shared probe** was preferred over making a contended probe read the record anyway: a writer
+  holding the lock and another discovery holding it are only told apart by a lock that one of them
+  takes in another mode, and the writer's exclusive lock already is that mode.
+- **The fence word was split from the snapshot's `fenced`** rather than changing the snapshot,
+  because the snapshot's meaning -- untrusted state counts as fenced -- is what refuses ordinary
+  work, and changing it would have moved that refusal.
+- **An opening mutex taken after the setup wait** keeps the design's rule that abandonment never
+  waits behind a blocked initializer, which a mutex held across the wait would have broken.

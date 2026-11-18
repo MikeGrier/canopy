@@ -215,8 +215,16 @@ impl Shared {
             NO_ERROR | ERROR_OPLOCK_BREAK_IN_PROGRESS => {
                 self.phase.store(1, Ordering::Release);
                 // The renaming writer waits for this, so it comes before anything else.
-                if let Some(io) = &*lock(&self.io) {
-                    let _ = issue(io, Kind::Acknowledgement);
+                let acknowledged = match &*lock(&self.io) {
+                    Some(io) => issue(io, Kind::Acknowledgement).is_ok(),
+                    None => true,
+                };
+                if !acknowledged {
+                    // Closing the handle is the other answer to a break; ring first, since a
+                    // stopped registration rings nothing.
+                    self.fire();
+                    stop(self);
+                    return;
                 }
                 self.settle(1);
             }

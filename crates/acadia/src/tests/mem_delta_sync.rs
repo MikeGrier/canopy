@@ -293,3 +293,25 @@ fn removed_names_in_a_carried_directory_leave_no_marks_once_synced_away() {
         assert_eq!(fs.replaced_marks(), 0);
     }
 }
+
+/// A directory made where a moved directory's snapshot still holds a file is new: moving it on
+/// carries nothing from that file, so syncing it and its parent succeeds and a crash leaves it a
+/// directory.
+#[test]
+fn a_directory_made_over_a_carried_file_and_moved_carries_no_file() {
+    let fs = MemFs::new();
+    fs.create_dir_all(p("/r/a")).unwrap();
+    fs.write(p("/r/a/x"), b"durable").unwrap();
+    fs.fsync(p("/r/a/x")).unwrap();
+    fs.fsync(p("/r/a")).unwrap();
+    fs.fsync(p("/r")).unwrap();
+    fs.rename(p("/r/a"), p("/r/b")).unwrap();
+    fs.remove_file(p("/r/b/x")).unwrap();
+    fs.create_dir(p("/r/b/x")).unwrap();
+    fs.rename(p("/r/b/x"), p("/r/c")).unwrap();
+    fs.fsync(p("/r/c")).expect("the moved directory syncs");
+    fs.fsync(p("/r")).unwrap();
+    fs.simulate_crash();
+    assert!(fs.metadata(p("/r/c")).unwrap().is_dir());
+    assert!(fs.read_dir(p("/r/c")).unwrap().is_empty());
+}
