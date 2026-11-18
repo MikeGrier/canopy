@@ -435,7 +435,6 @@ impl<'trace> Replay<'trace> {
                 }
                 self.observer.abandon();
                 self.observer_process.abandon();
-                self.mem.abandon();
                 if self.implementation == Implementation::File {
                     let after = &self.trace.states[index + 1];
                     contract::settle_crash(

@@ -23,6 +23,7 @@ use std::os::windows::io::AsRawHandle;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,34 @@ use crate::coord::{ModCount, ModificationCount, Notice};
 use super::{FileCoordination, Watcher};
 
 type Ring = Box<dyn FnOnce() + Send>;
+type Cleanup = (Option<ThreadpoolTimer>, Option<ThreadpoolIo>, Option<Ring>);
+
+fn start_cleanup_worker() -> io::Result<Sender<Cleanup>> {
+    let (sender, receiver) = mpsc::channel::<Cleanup>();
+    std::thread::Builder::new()
+        .name("acadia-oplock-release".into())
+        .spawn(move || {
+            while let Ok((timer, io, ring)) = receiver.recv() {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    drop(timer);
+                    drop(io);
+                }));
+                if let Some(ring) = ring {
+                    let _ = catch_unwind(AssertUnwindSafe(ring));
+                }
+            }
+        })?;
+    Ok(sender)
+}
+
+fn cleanup_worker() -> io::Result<Sender<Cleanup>> {
+    static WORKER: std::sync::OnceLock<Mutex<Option<Sender<Cleanup>>>> = std::sync::OnceLock::new();
+    let worker = WORKER.get_or_init(|| Mutex::new(start_cleanup_worker().ok()));
+    lock(worker)
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| io::Error::other("the oplock cleanup worker could not start"))
+}
 
 /// The oplock level requested: read and handle caching, the level the rename breaks.
 const REQUESTED_LEVEL: u32 = OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE;
@@ -62,6 +91,7 @@ const SETTLE_FIRST: Duration = Duration::from_micros(250);
 const SETTLE_STEPS: u32 = 6;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // This registration can still be withdrawn safely after one of its callbacks panics.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -169,19 +199,25 @@ fn identity(handle: HANDLE) -> io::Result<(u32, u64)> {
     Ok((info.dwVolumeSerialNumber, index))
 }
 
+struct Registration {
+    ring: Option<Ring>,
+    io: Option<ThreadpoolIo>,
+    timer: Option<ThreadpoolTimer>,
+    cleanup: Option<Sender<Cleanup>>,
+}
+
 /// One registration's state, shared by its notice and the callbacks of its lock and its timer.
 ///
-/// The callbacks hold it weakly, so the lock and the timer it owns do not keep it alive.
+/// The callbacks hold it weakly, so the lock and the timer it owns do not keep it alive. Every
+/// resource and the ring move through one owner when the registration stops.
 struct Shared {
     participant: FileCoordination,
     sampled: ModCount,
     deadline: Instant,
-    ring: Mutex<Option<Ring>>,
+    registration: Mutex<Registration>,
     stopped: AtomicBool,
     /// [`WAITING`] until the lock breaks, then the number of the settling sample due next.
     phase: AtomicU32,
-    io: Mutex<Option<ThreadpoolIo>>,
-    timer: Mutex<Option<ThreadpoolTimer>>,
 }
 
 impl Shared {
@@ -189,7 +225,7 @@ impl Shared {
         if self.stopped.load(Ordering::Acquire) {
             return;
         }
-        let ring = lock(&self.ring).take();
+        let ring = lock(&self.registration).ring.take();
         if let Some(ring) = ring {
             let _ = catch_unwind(AssertUnwindSafe(ring));
         }
@@ -198,12 +234,7 @@ impl Shared {
     /// Answers a break whose acknowledgement failed by closing the handle, the other answer, and
     /// rings once it is closed, so a ring that waits for the renaming writer cannot hold it.
     fn release_and_ring(&self) {
-        let ring = if self.stopped.load(Ordering::Acquire) {
-            None
-        } else {
-            lock(&self.ring).take()
-        };
-        stop_then(self, ring);
+        stop_then(self, StopRing::Ring);
     }
 
     fn on_timer(&self) {
@@ -231,10 +262,12 @@ impl Shared {
             NO_ERROR | ERROR_OPLOCK_BREAK_IN_PROGRESS => {
                 self.phase.store(1, Ordering::Release);
                 // The renaming writer waits for this, so it comes before anything else.
-                let acknowledged = match &*lock(&self.io) {
+                let registration = lock(&self.registration);
+                let acknowledged = match &registration.io {
                     Some(io) => issue(io, Kind::Acknowledgement).is_ok(),
                     None => true,
                 };
+                drop(registration);
                 if !acknowledged {
                     self.release_and_ring();
                     return;
@@ -258,7 +291,7 @@ impl Shared {
             return;
         }
         self.phase.store(step + 1, Ordering::Release);
-        if let Some(timer) = &*lock(&self.timer) {
+        if let Some(timer) = &lock(&self.registration).timer {
             timer.set_after(SETTLE_FIRST * (1 << (step - 1)));
         }
     }
@@ -266,7 +299,8 @@ impl Shared {
     /// Whether the file the lock is held on is still the one published at the count's path, so
     /// that a later rename over it breaks the lock.
     fn lock_is_on_the_published_file(&self) -> bool {
-        let Some(io) = &*lock(&self.io) else {
+        let registration = lock(&self.registration);
+        let Some(io) = &registration.io else {
             return false;
         };
         let current = std::fs::OpenOptions::new()
@@ -284,7 +318,7 @@ impl Watcher for Shared {
     /// their callers meet the refusal.
     fn abandoned(&self) {
         self.phase.store(1, Ordering::Release);
-        if let Some(timer) = &*lock(&self.timer) {
+        if let Some(timer) = &lock(&self.registration).timer {
             timer.set_after(Duration::ZERO);
         }
     }
@@ -318,11 +352,14 @@ pub(super) fn register(
         participant: participant.same_participant(),
         sampled,
         deadline,
-        ring: Mutex::new(Some(ring)),
+        registration: Mutex::new(Registration {
+            ring: Some(ring),
+            io: None,
+            timer: None,
+            cleanup: None,
+        }),
         stopped: AtomicBool::new(false),
         phase: AtomicU32::new(WAITING),
-        io: Mutex::new(None),
-        timer: Mutex::new(None),
     });
     let notice = OplockNotice {
         shared: Arc::clone(&shared),
@@ -334,9 +371,9 @@ pub(super) fn register(
     if hold_lock(&shared, endpoint, delay).is_ok() {
         return Ok(Box::new(notice));
     }
-    stop(&shared);
+    stop_then(&shared, StopRing::Preserve);
     // A ring that already ran is not run again, and the registration stands as rung.
-    match lock(&shared.ring).take() {
+    match lock(&shared.registration).ring.take() {
         Some(ring) => Err(ring),
         None => Ok(Box::new(notice)),
     }
@@ -349,6 +386,7 @@ fn hold_lock(
     endpoint: UnassociatedEndpoint,
     delay: Duration,
 ) -> io::Result<()> {
+    let cleanup = cleanup_worker()?;
     let weak: Weak<Shared> = Arc::downgrade(shared);
     let timer = {
         let weak = weak.clone();
@@ -361,8 +399,6 @@ fn hold_lock(
             None,
         )?
     };
-    timer.set_after(delay);
-    *lock(&shared.timer) = Some(timer);
     let io = ThreadpoolIo::new(
         endpoint,
         move |completion| {
@@ -372,11 +408,21 @@ fn hold_lock(
         },
         None,
     )?;
-    // Held before the request is made, so a break cannot arrive to a registration with no lock.
-    let mut slot = lock(&shared.io);
-    let io = slot.insert(io);
-    issue(io, Kind::Request)?;
-    drop(slot);
+    // Held before the request is made, so a break cannot arrive without its cleanup owner.
+    let mut registration = lock(&shared.registration);
+    registration.cleanup = Some(cleanup);
+    registration.timer = Some(timer);
+    registration.io = Some(io);
+    registration
+        .timer
+        .as_ref()
+        .expect("installed timer")
+        .set_after(delay);
+    issue(
+        registration.io.as_ref().expect("installed I/O"),
+        Kind::Request,
+    )?;
+    drop(registration);
     // The lock was granted on the file that was open, which a rename may already have replaced,
     // after which nothing would break it.
     let unmoved = shared
@@ -391,46 +437,62 @@ fn hold_lock(
 }
 
 /// Stops a registration: its callbacks no longer ring, and its lock and timer are released.
-fn stop(shared: &Shared) {
-    stop_then(shared, None);
+#[derive(Clone, Copy)]
+enum StopRing {
+    Preserve,
+    Withdraw,
+    Ring,
 }
 
-/// As [`stop`], then runs `ring` once the lock and timer are released.
-fn stop_then(shared: &Shared, ring: Option<Ring>) {
+fn stop(shared: &Shared) {
+    stop_then(shared, StopRing::Withdraw);
+}
+
+/// Stops and owns or preserves the pending ring with the native resources as one operation.
+fn stop_then(shared: &Shared, ring_action: StopRing) {
     let run = |ring: Option<Ring>| {
         if let Some(ring) = ring {
             let _ = catch_unwind(AssertUnwindSafe(ring));
         }
     };
     shared.stopped.store(true, Ordering::Release);
-    let timer = lock(&shared.timer).take();
-    let io = lock(&shared.io).take();
+    let (timer, io, cleanup, ring) = {
+        let mut registration = lock(&shared.registration);
+        let timer = registration.timer.take();
+        let io = registration.io.take();
+        let cleanup = registration.cleanup.take();
+        let ring = match ring_action {
+            StopRing::Preserve => None,
+            StopRing::Withdraw => {
+                drop(registration.ring.take());
+                None
+            }
+            StopRing::Ring => registration.ring.take(),
+        };
+        (timer, io, cleanup, ring)
+    };
     if !IN_CALLBACK.get() {
         drop(timer);
         drop(io);
         run(ring);
+        drop(cleanup);
         return;
     }
-    // Releasing them waits for their callbacks, and this is one; they are released on a thread of
-    // their own, and left held if there is none to release them on.
-    let slot = Arc::new(Mutex::new(Some((timer, io, ring))));
-    let releaser = Arc::clone(&slot);
-    let started = std::thread::Builder::new()
-        .name("acadia-oplock-release".into())
-        .spawn(move || {
-            let taken = lock(&releaser).take();
-            if let Some((timer, io, ring)) = taken {
-                drop(timer);
-                drop(io);
-                run(ring);
+    let Some(cleanup) = cleanup else {
+        drop(timer);
+        drop(io);
+        run(ring);
+        return;
+    };
+    if let Err(unsent) = cleanup.send((timer, io, ring)) {
+        let (timer, io, ring) = unsent.0;
+        std::thread::spawn(move || {
+            drop(timer);
+            drop(io);
+            if let Some(ring) = ring {
+                let _ = catch_unwind(AssertUnwindSafe(ring));
             }
         });
-    if started.is_err() {
-        let taken = lock(&slot).take();
-        if let Some((timer, io, ring)) = taken {
-            std::mem::forget((timer, io));
-            run(ring);
-        }
     }
 }
 

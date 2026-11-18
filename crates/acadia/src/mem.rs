@@ -37,6 +37,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Component, Path};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::{
@@ -132,13 +133,12 @@ pub struct MemFs {
     /// The locks held in this filesystem, by every process over it.
     ///
     /// Held outside [`Inner`] deliberately: a lock is a property of its *holder*,
-    /// not of the stored tree, so [`simulate_crash`](MemFs::simulate_crash) --
-    /// which models losing unfsync'd storage, not losing the process -- must not
-    /// disturb it. `Arc` so a guard can release without borrowing the filesystem.
+    /// not of the stored tree. A crash clears every hold while resetting the tree,
+    /// and `Arc` lets a released guard observe that without borrowing this view.
     locks: Arc<LockShared>,
     /// The simulated process this view belongs to, whose locks [`abandon`](MemFs::abandon)
-    /// releases.
-    process: u64,
+    /// releases. A crash gives the controller that invoked it a fresh identity.
+    process: AtomicU64,
 }
 
 impl MemFs {
@@ -168,6 +168,12 @@ impl MemFs {
         self.tree().replaced.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn ended_process_bookkeeping(&self) -> (Option<u64>, usize) {
+        let table = self.table();
+        (table.ended_through, table.ended.len())
+    }
+
     /// An independent filesystem starting from this one's whole state, what is durable and
     /// what is not yet alike, so an expensive fixture can be built once and copied per test.
     ///
@@ -177,19 +183,30 @@ impl MemFs {
         Self {
             inner: Arc::new(Mutex::new(self.tree().clone())),
             locks: Arc::default(),
-            process: 0,
+            process: AtomicU64::new(0),
         }
     }
 
     /// Discards every change that has not been made durable by an
     /// [`fsync`](Vfs::fsync), reverting the live tree to the durable tree.
     ///
-    /// This is the crash / power-loss simulation the recovery-stress harness
-    /// drives: after it returns, reads observe exactly what a store recovering
-    /// from a crash at this instant would find -- fsync'd names, with each
-    /// surviving file's last fsync'd bytes (or empty, if its data was never
-    /// fsync'd).
+    /// This is the crash / power-loss simulation the recovery-stress harness drives. Every
+    /// process view ends: its locks are released, its waits fail, and its later operations are
+    /// refused. The view that calls this method is the test controller and receives a fresh
+    /// process identity before returning; every other value keeps its ended identity. Reads then
+    /// observe exactly what a store recovering from a crash would find -- fsync'd names, with each
+    /// surviving file's last fsync'd bytes (or empty, if its data was never fsync'd).
     pub fn simulate_crash(&self) {
+        let mut table = self.table();
+        let last_process = table.last_process;
+        let next_process = last_process
+            .checked_add(1)
+            .expect("simulated process identity exhausted");
+        table.ended_through = Some(last_process);
+        table.ended.clear();
+        table.holds.clear();
+        table.last_process = next_process;
+        self.process.store(next_process, Ordering::Release);
         let mut guard = self.tree();
         let inner = &mut *guard;
         let mut unnamed: Vec<Vec<OsString>> = inner.unnamed.drain().collect();
@@ -216,6 +233,9 @@ impl MemFs {
         }
         inner.live_data = rebuilt;
         recount(inner);
+        drop(guard);
+        drop(table);
+        self.locks.released.notify_all();
     }
 
     /// The live and durable inode identities at a file path, for crash-model replay.

@@ -40,8 +40,6 @@ pub(crate) struct FileHold {
     recovered: bool,
     /// Whether this hold has set the fence, which refuses its own ordinary modifications too.
     fenced: bool,
-    /// The boot the hold was taken in; see [`FileCoordination::alive_in`].
-    boot: Option<Vec<u8>>,
     /// Taken by a release; dropped last, so the record is cleared while the lock is held.
     exclusion: Option<Exclusion>,
 }
@@ -76,17 +74,6 @@ impl FileCoordination {
             }
             Err(error) => Err(error.into()),
         }
-    }
-
-    /// Refuses with [`CoordError::Abandoned`] once the participant is abandoned, or once a restart
-    /// has ended `boot`, the boot a hold was taken in: over a filesystem that is not the operating
-    /// system's, the restart is simulated and does not end the process that held it.
-    fn alive_in(&self, boot: &Option<Vec<u8>>) -> CoordResult<()> {
-        self.alive()?;
-        if !self.vfs().is_os_filesystem() && self.current_boot()? != *boot {
-            return Err(CoordError::Abandoned);
-        }
-        Ok(())
     }
 
     fn write_generation(&self, generation: Generation) -> CoordResult<()> {
@@ -124,7 +111,6 @@ impl FileCoordination {
 
     fn acquire_hold(&self, waiting: Waiting) -> CoordResult<FileHold> {
         let exclusion = self.acquire_exclusion(waiting)?;
-        let boot = self.current_boot()?;
         let holder_died = self.vfs().exists(&self.layout().owner())?;
         if holder_died {
             self.set_fence()?;
@@ -151,7 +137,6 @@ impl FileCoordination {
             modifications: Modifications::default(),
             recovered: false,
             fenced: false,
-            boot,
             exclusion: Some(exclusion),
         })
     }
@@ -170,19 +155,19 @@ impl FileHold {
     }
 
     /// Clears ownership only after required recovery evidence is present, then drops the lock.
-    /// An abandoned participant, or a hold from an ended boot, performs no bookkeeping.
+    /// An abandoned participant performs no bookkeeping.
     fn release_cleanly(&mut self) -> CoordResult<()> {
         let Some(exclusion) = self.exclusion.take() else {
             return Ok(());
         };
         let participant = exclusion.participant();
-        let cleared = participant.alive_in(&self.boot).and_then(|()| {
+        let cleared = participant.alive().and_then(|()| {
             if (self.fenced || self.modifications.is_open()) && !participant.fence_is_set()? {
                 participant.set_fence()?;
             }
             participant.clear_owner()
         });
-        // An abandonment or a restart racing the bookkeeping leaves it undone, as a death would.
+        // An abandonment racing the bookkeeping leaves it undone, as a process end would.
         let cleared = match cleared {
             Err(CoordError::Abandoned) => Ok(()),
             cleared => cleared,
@@ -202,15 +187,13 @@ impl ExclusionHold for FileHold {
             return Err(CoordError::RecoveryRequired);
         }
         let participant = self.participant().same_participant();
-        participant.alive_in(&self.boot)?;
+        participant.alive()?;
         participant.begin_modification(&mut self.modifications)
     }
 
     fn end_modification(&mut self, end: ModificationEnd) -> CoordResult<()> {
         let participant = self.participant().same_participant();
-        let ended = participant
-            .alive_in(&self.boot)
-            .and_then(|()| participant.end_modification(&mut self.modifications, end));
+        let ended = participant.end_modification(&mut self.modifications, end);
         if matches!(ended, Err(CoordError::NoModificationOpen)) {
             return ended;
         }
@@ -225,7 +208,7 @@ impl ExclusionHold for FileHold {
             return Err(CoordError::ModificationOpen);
         }
         let participant = self.participant();
-        participant.alive_in(&self.boot)?;
+        participant.alive()?;
         // Rounded from what a sampler sees, so the result is above every sample taken before it.
         let visible = participant.read_count()?.sample().get();
         let even = if visible.is_multiple_of(2) {
@@ -256,6 +239,12 @@ impl ExclusionHold for FileHold {
 
 impl Drop for FileHold {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            if let Some(exclusion) = self.exclusion.as_ref() {
+                exclusion.participant().abandon_participant();
+            }
+            return;
+        }
         let _ = self.release_cleanly();
     }
 }

@@ -600,7 +600,6 @@ fn directory_debt_recovery_uses_sync_and_clear_units() {
         let (mem, keeper) = initialized_with(&world, implementation);
         world.seed_directory_debt(&mem);
         keeper.abandon_for_replay();
-        mem.abandon();
         mem.simulate_crash();
         let process = Process::start(&mem, world.clone(), implementation, 1);
         process.command(Command::Open, None).unwrap();

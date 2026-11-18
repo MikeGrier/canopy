@@ -68,6 +68,10 @@ impl Exclusion {
 
 impl Drop for Exclusion {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.participant.abandon_participant();
+            return;
+        }
         drop(self.participant.release_lock(self.hold));
     }
 }

@@ -269,27 +269,36 @@ fn the_writer_gate_nests_on_one_thread_and_excludes_others() {
     waiter.join().expect("waiter thread");
 }
 
-/// A thread that panics while holding the gate releases it as it unwinds, so one failed
-/// writer cannot wedge every other handle to the store.
+/// A writer that panics ends its participant, and a reopened store recovers the record it leaves.
 #[test]
-fn a_writer_that_panics_releases_the_gate() {
-    let (_vfs, store) = fresh_store();
+fn a_writer_that_panics_releases_the_gate_after_recovery() {
+    let (vfs, store) = fresh_store();
     let holder = store.clone();
-    let panicked = thread::spawn(move || {
-        let _held = holder.exclusive();
-        panic!("a writer failing while it holds the gate");
-    })
-    .join();
-    assert!(panicked.is_err());
+    assert!(
+        thread::spawn(move || {
+            let _held = holder.exclusive();
+            panic!("a writer failing while it holds the gate");
+        })
+        .join()
+        .is_err()
+    );
+    let root = store.root().to_path_buf();
+    drop(store);
+    let reopened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
+    reopened
+        .resolve()
+        .unwrap()
+        .agent_stamp
+        .expect("agent version stamp");
 
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-    let other = store.clone();
+    let other = reopened.clone();
     let waiter = thread::spawn(move || {
         let _held = other.exclusive();
         entered_tx.send(()).expect("report entry");
     });
     test_timers::mpsc::recv_timeout(&entered_rx, std::time::Duration::from_secs(10))
-        .expect("the gate was released by the unwinding writer");
+        .expect("the gate was released by recovery after the unwinding writer");
     waiter.join().expect("waiter thread");
 }
 

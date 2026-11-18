@@ -298,7 +298,7 @@ fn another_process_shares_the_tree_and_contends_for_its_locks() {
 }
 
 #[test]
-fn abandoning_a_process_releases_its_locks_without_its_guards() {
+fn abandoning_a_process_releases_its_locks_and_refuses_later_operations() {
     let survivor = MemFs::new();
     survivor.create_dir_all(Path::new("/d")).unwrap();
     let dying = survivor.another_process();
@@ -315,9 +315,9 @@ fn abandoning_a_process_releases_its_locks_without_its_guards() {
     drop((guard, root_guard));
     assert_kind(
         dying.try_lock(lock, SHARED, range(0, 4)),
-        VfsErrorKind::Locked,
+        VfsErrorKind::ProcessEnded,
     );
-    assert_kind(dying.lock_exclusive(root_lock), VfsErrorKind::Locked);
+    assert_kind(dying.lock_exclusive(root_lock), VfsErrorKind::ProcessEnded);
     drop((taken, root_taken));
 }
 
@@ -343,7 +343,7 @@ fn abandoning_one_process_leaves_every_other_process_its_locks() {
 }
 
 #[test]
-fn a_crash_loses_storage_and_leaves_the_locks_held() {
+fn a_crash_loses_storage_and_releases_every_lock() {
     let fs = MemFs::new();
     fs.create_dir_all(Path::new("/d")).unwrap();
     let kept = fs
@@ -355,9 +355,9 @@ fn a_crash_loses_storage_and_leaves_the_locks_held() {
         .try_lock(Path::new("/d/lost.lock"), EXCLUSIVE, LockSpan::File)
         .unwrap();
     fs.simulate_crash();
-    assert_kind(
-        fs.try_lock(Path::new("/d/kept.lock"), EXCLUSIVE, LockSpan::File),
-        VfsErrorKind::Locked,
+    drop(
+        fs.try_lock(Path::new("/d/kept.lock"), EXCLUSIVE, LockSpan::File)
+            .expect("the old lock was released"),
     );
     // The crash lost the file the lock was on; the name's new file is another one.
     drop(
@@ -411,7 +411,10 @@ fn a_lock_can_be_made_to_fail_and_is_otherwise_forwarded() {
         VfsErrorKind::Locked,
     );
     faulty.inner().abandon();
-    drop(faulty.try_lock(lock, SHARED, LockSpan::File).unwrap());
+    assert_kind(
+        faulty.try_lock(lock, SHARED, LockSpan::File),
+        VfsErrorKind::ProcessEnded,
+    );
     drop(held);
 }
 

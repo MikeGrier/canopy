@@ -3,7 +3,7 @@
 use super::*;
 use crate::coord::{
     Access, ArtifactMaker, CoordError, Coordination, Created, CreationNonce, CreationPlan,
-    ModificationEnd, Purpose, ReaderSafety, Registration,
+    ModificationEnd, Purpose, ReaderSafety, Registration, WriterExclusion,
 };
 use std::ffi::OsStr;
 use std::time::Instant;
@@ -47,6 +47,139 @@ fn public_count_and_generation_contract_on_every_implementation_and_backend() {
             assert_eq!(second.sample().unwrap().get(), before.get() + 2);
             hold.release().unwrap();
         }
+    });
+}
+
+#[test]
+fn a_poisoned_file_participant_mutex_ends_the_participant() {
+    on_every_implementation("coord-contract-poison-file", &|implementation, backend| {
+        let participant = participant(implementation, backend);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = participant.publishing(|_| -> crate::VfsResult<()> {
+                    panic!("the publication panics while its mutex is held");
+                });
+            }))
+            .is_err()
+        );
+        assert!(matches!(
+            participant.acquire(crate::coord::Waiting::Never),
+            Err(CoordError::Abandoned)
+        ));
+    });
+}
+
+#[test]
+fn a_writer_hold_dropped_while_unwinding_ends_its_participant() {
+    on_every_contract("coord-contract-panic-writer", &|factory, backend| {
+        let participant = opened(factory, backend);
+        let hold = participant.acquire(crate::coord::Waiting::Never).unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _hold = hold;
+                panic!("the caller unwinds while it holds exclusion");
+            }))
+            .is_err()
+        );
+        assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+        let reopened = opened(factory, backend);
+        let mut hold = reopened.acquire(crate::coord::Waiting::Wait).unwrap();
+        hold.complete_recovery().unwrap();
+        hold.release().unwrap();
+    });
+}
+
+#[test]
+fn an_attachment_dropped_while_unwinding_ends_its_participant() {
+    on_every_contract("coord-contract-panic-attachment", &|factory, backend| {
+        let participant = opened(factory, backend);
+        let mut attachment = participant
+            .attach(Access::Read, crate::coord::Waiting::Never)
+            .unwrap();
+        attachment.register(b"registered").unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _attachment = attachment;
+                panic!("the caller unwinds while attached");
+            }))
+            .is_err()
+        );
+        assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+        let _ = opened(factory, backend)
+            .attach(Access::Read, crate::coord::Waiting::Never)
+            .unwrap();
+    });
+}
+
+#[test]
+fn an_upgrade_dropped_while_unwinding_ends_its_participant() {
+    on_every_contract("coord-contract-panic-upgrade", &|factory, backend| {
+        let participant = opened(factory, backend);
+        let attachment = participant
+            .attach(Access::Read, crate::coord::Waiting::Never)
+            .unwrap();
+        let upgrade = attachment
+            .upgrade(ReaderSafety::Safe, crate::coord::Waiting::Never)
+            .unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _upgrade = upgrade;
+                panic!("the caller unwinds while upgrading");
+            }))
+            .is_err()
+        );
+        assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+        let _ = opened(factory, backend)
+            .attach(Access::Read, crate::coord::Waiting::Never)
+            .unwrap();
+    });
+}
+
+#[test]
+fn a_discovery_inspection_that_unwinds_ends_its_participant() {
+    on_every_contract("coord-contract-panic-discovery", &|factory, backend| {
+        let participant = opened(factory, backend);
+        let mut recovered = participant.acquire(crate::coord::Waiting::Never).unwrap();
+        recovered.complete_recovery().unwrap();
+        recovered.release().unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = participant.discover_recovery_with(&mut || panic!("inspection unwinds"));
+            }))
+            .is_err()
+        );
+        assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+        let _ = opened(factory, backend).discover_recovery().unwrap();
+    });
+}
+
+#[test]
+fn creation_dropped_while_unwinding_ends_its_participant() {
+    struct PanicMaker;
+    impl ArtifactMaker for PanicMaker {
+        fn make(&mut self, _: &OsStr, _: &[u8]) -> crate::coord::CoordResult<()> {
+            panic!("artifact creation unwinds");
+        }
+
+        fn marker(&mut self, _: &OsStr, _: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
+            unreachable!("creation stops in the first artifact")
+        }
+    }
+    on_every_contract("coord-contract-panic-creation", &|factory, backend| {
+        let participant = opened(factory, backend);
+        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let plan = CreationPlan {
+            inputs: b"inputs",
+            nonce: CreationNonce::from_bytes([1; 16]),
+            artifacts: &names,
+        };
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = participant.create(&plan, &mut PanicMaker);
+            }))
+            .is_err()
+        );
+        assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
     });
 }
 
@@ -164,27 +297,28 @@ fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
         mem.create_dir_all(&root).unwrap();
         let marker = root.join("marker");
         let participant: Arc<std::sync::OnceLock<Arc<dyn Coordination>>> = Arc::default();
-        let returned_during_pause = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (reached, returned, pausing) = (
+        let observed: Arc<std::sync::Mutex<Option<bool>>> = Arc::default();
+        let abandoning: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+        let (reached, seen, spawned) = (
             Arc::clone(&participant),
-            Arc::clone(&returned_during_pause),
-            Arc::clone(&paused),
+            Arc::clone(&observed),
+            Arc::clone(&abandoning),
         );
         let policy = FaultPolicy::new().inject(
             crate::FaultOp::PublishNew,
             marker.clone(),
             crate::Fault::observe_with(move |_, _| {
-                pausing.store(true, std::sync::atomic::Ordering::Release);
                 let target = Arc::clone(reached.get().expect("installed"));
+                let (started, starting) = std::sync::mpsc::channel();
                 let (done, finished) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
+                *spawned.lock().unwrap() = Some(std::thread::spawn(move || {
+                    let _ = started.send(());
                     target.abandon();
                     let _ = done.send(());
-                });
-                if recv_timeout(&finished, Duration::from_millis(200)).is_ok() {
-                    returned.store(true, std::sync::atomic::Ordering::Release);
-                }
+                }));
+                starting.recv().expect("the abandonment starts");
+                let returned_during = recv_timeout(&finished, Duration::from_millis(200)).is_ok();
+                *seen.lock().unwrap() = Some(returned_during);
             }),
             crate::When::Once,
         );
@@ -197,25 +331,39 @@ fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
             nonce: CreationNonce::from_bytes([1; 16]),
             artifacts: &names,
         };
-        let _ = opened.create(
+        let created = opened.create(
             &plan,
             &mut Maker {
                 fs: Arc::new(mem.another_process()),
                 root: root.clone(),
             },
         );
+        let returned_during = observed
+            .lock()
+            .unwrap()
+            .expect("the marker's publication was reached");
+        abandoning
+            .lock()
+            .unwrap()
+            .take()
+            .expect("spawned")
+            .join()
+            .unwrap();
         assert!(
-            paused.load(std::sync::atomic::Ordering::Acquire),
-            "{}: the marker's publication was reached",
+            !returned_during,
+            "{}: abandon returned while the marker was being published",
             factory.implementation()
         );
-        if returned_during_pause.load(std::sync::atomic::Ordering::Acquire) {
-            assert!(
-                !mem.exists(&marker).unwrap(),
-                "{}: a marker was published after abandon returned",
-                factory.implementation()
-            );
-        }
+        assert!(
+            matches!(created, Ok(Created::Created) | Err(CoordError::Abandoned)),
+            "{}: {created:?}",
+            factory.implementation()
+        );
+        assert!(
+            mem.exists(&marker).unwrap(),
+            "{}: the publication completed before abandon returned",
+            factory.implementation()
+        );
     }
 }
 

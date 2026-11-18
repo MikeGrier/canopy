@@ -1354,8 +1354,9 @@ rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#coordination-cost-comp
 ## Sealed native wait capabilities on both platforms, 2026-11-15
 
 The signal owner can lend a native wait capability that safe code cannot use to change its level.
-Windows lends the published family's `SealedWaitOnlyEvent`; Linux lends acadia's owned
-`SealedWaitOnlyFd`, a duplicate eventfd retained through clones. Neither sealed value offers safe
+Windows lends acadia's owned `SealedWaitOnlyEvent`, whose only safe constructor is
+`EventSignal::sealed_wait_only` and therefore records manual-reset provenance; Linux lends
+acadia's owned `SealedWaitOnlyFd`, a duplicate eventfd retained through clones. Neither sealed value offers safe
 borrowed/raw-handle or descriptor extraction, ownership conversion, or an I/O interface. Debug
 output exposes no numeric target identity. Opaque mixed-wait objects retain that same boundary.
 The owner and any previously retained unsealed alias remain able to control the signal.
@@ -1916,6 +1917,12 @@ Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The seventh review,
 
 ## Eighth review fixes: a hold from an ended boot, the recovered count, a missing generation, mutexes free of filesystem calls, 2026-11-18
 
+> **SUPERSEDED in part, 2026-11-18, by "Ninth review fixes: restart as process end, handoff,
+> reservations, carried sync, event and oplock capabilities" below.** `wait_native` takes only a
+> manual-reset `EventSignal` capability, not arbitrary event handles, and oplock cleanup has a
+> process-wide worker before native registration; if that worker cannot start, registration uses the
+> poller rather than granting a lock it cannot close safely.
+
 > **SUPERSEDED in part, 2026-11-18, by "Three failures, two events: a panic, a process ending, a
 > host restart" below.** Every filesystem ends the processes a restart ends, so a hold from before
 > a restart cannot act after it; the boot check bound to a file hold, and the shared participant's
@@ -1975,6 +1982,11 @@ Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The eighth review, 
 
 ## Three failures, two events: a panic, a process ending, a host restart, 2026-11-18
 
+> **SUPERSEDED in part, 2026-11-18, by "Tenth review fixes: abort-strategy notification callbacks"
+> below.** `catch_unwind` isolates a callback only in an unwinding binary. The workspace release
+> profile uses `panic = "abort"`, so a callback panic in a release binary ends the process and no
+> later notification is promised there.
+
 Three failures are told apart, and each is mapped onto one of the two events every formal model
 already has: `Terminate(p)`, one process ending, and `Crash`, the host restarting, which ends every
 process and releases every lock ([CoordinationBehavior.tla](../canopy/spec/CoordinationBehavior.tla)
@@ -2010,3 +2022,90 @@ to behave as the models already say. The decision was reached in
 
 The storage model, [MemFsDurability.tla](spec/MemFsDurability.tla), models no processes or locks,
 and its `Crash` is unchanged. The work is milestones M44 and M45 in [CHECKLIST.md](CHECKLIST.md).
+
+## Ninth review fixes: restart as process end, handoff, reservations, carried sync, event and oplock capabilities, 2026-11-18
+
+A ninth review of the crate, made on 2026-11-18, raised ten findings. All ten held. They are split
+across three implementation milestones because the first two exposed the shared crash/process
+contract, the next five concern coordination and platform boundaries, and the last three concern
+creation, fault injection and a regression test. The crash and panic decision is
+"Three failures, two events: a panic, a process ending, a host restart" above.
+
+Restart and stale capabilities (M44):
+
+- **A restart ends every `MemFs` process view.** `simulate_crash` releases every lock, wakes every
+  wait with `ProcessEnded`, ends every pre-restart view and gives the controller a fresh process
+  identity. A view that has ended refuses every later operation. A wait across a crash therefore
+  cannot take exclusion on an inode whose name was lost, and an old registry attachment cannot
+  update or remove a successor's entry. The fix is at the filesystem contract, not a boot check in
+  each coordination path.
+- **The boot comparisons in coordination are gone.** File holds no longer carry the boot they were
+  taken in, and shared liveness no longer compares a modeled boot to the epoch. A backend liveness
+  observation still reaches the VFS, but the VFS is what ends its process views.
+
+Shared state and boundaries (M46):
+
+- **Opening publishes the `SharedState` before the final opening guard leaves.** `abandon` cannot
+  return after liveness was acquired but before the participant knows about the state. It still
+  never waits for an opening blocked on another participant's setup lock.
+- **A generation renewal requires the reservation it is renewing.** A missing record or one whose
+  limit differs from the mapped limit is malformed. Only a first reservation may use zero for an
+  absent record, so renewal cannot issue an old generation.
+- **A sync follows a carried ancestor even when the durable ancestor is absent.** The carried
+  directory is the anchor, so syncing a directory below it cannot materialize a stale file it
+  replaced and then fail halfway.
+- **`wait_native` takes only a manual-reset `EventSignal` capability.** An auto-reset event or a
+  borrowed wait-only handle cannot enter its safe API, because waiting on one can consume the
+  level. A `compile_fail` example pins that bound.
+- **Oplock teardown has a process-wide worker before native registration.** If the worker cannot
+  start, registration falls back to polling. A failed acknowledgement submits handle and ring
+  teardown to that worker, which closes the thread-pool I/O object before it invokes the ring; no
+  callback-time thread spawn can fail after the oplock is granted.
+
+Creation and fault injection (M47):
+
+- **A NUL in an artifact name is an invalid plan.** It is refused before reservation, publication or
+  any native pathname call.
+- **A replacement corruption of `read_at` is bounded to the undecorated read's length.** A
+  zero-length or past-EOF read remains empty, and a one-byte read remains one byte; whole-file
+  `read` corruption keeps its existing unrestricted replacement rule.
+- **The marker-abandonment test is synchronized unconditionally.** It joins the abandonment
+  worker, requires the publication hook to run, asserts that `abandon` could not return while the
+  publication was under its guard, and checks the permitted creation outcome and final marker.
+
+All ten findings held. No finding is recorded as "did not hold". Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The ninth review, 2026-11-18".
+
+## Tenth review fixes: interrupted renewal, participant boundaries and platform capabilities, 2026-11-18
+
+A tenth review of the crate, made on 2026-11-18, raised seven findings. All seven held and are
+addressed by M49 in [CHECKLIST.md](CHECKLIST.md).
+
+- **An interrupted generation renewal resumes an exact one-block-ahead reservation.** If the
+  durable reservation is the mapped limit plus one block, renewal first syncs the directory and
+  adopts that limit. Missing, behind and all other mismatched reservations remain malformed, so
+  the recovery path cannot reissue a generation.
+- **Participant poison recovery never recursively takes a participant mutex already held.** A
+  shared acquisition reads boot identity and snapshots liveness before taking the hold table;
+  after poison ends the participant, the abandoned result returns without a second `holds` lock.
+- **A shared participant owns abandonment once.** The public participant and every clone of its
+  shared state use one atomic flag, so a panic unwinding through a writer, registry, admission or
+  creation guard refuses both shared-state and creation operations afterward.
+- **A Windows oplock registration has one teardown owner.** Its timer, I/O, ring and cleanup
+  sender move under one registration mutex. Notice withdrawal, callback teardown and channel
+  failure cannot divide those resources between two callers; native registration failure preserves
+  the ring for the poller.
+- **A sealed Windows wait capability carries manual-reset provenance.** acadia's public sealed
+  event wrapper can be constructed only from `EventSignal`, whose backing event is manual reset;
+  reset-mode-blind capabilities from the Windows dependency are refused.
+- **A notification callback is contained only when its binary unwinds.** acadia runs callback and
+  sample closures through `catch_unwind`, so an unwind-strategy binary survives the panic and may
+  deliver later notifications. The workspace release profile uses `panic = "abort"`; there the
+  same panic ends the process before containment can run, and the public contract promises no
+  later delivery. A library does not override or reinterpret its consumer's panic strategy.
+- **`MemFs` crash invalidation is a process-identity prefix.** One cutoff ends every identity from
+  every earlier boot without retaining one entry per historical process. Only explicitly
+  abandoned identities from the current boot occupy the per-view ended set, and the next crash
+  subsumes and clears that set.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The tenth review, 2026-11-18".

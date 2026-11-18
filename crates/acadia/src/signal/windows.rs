@@ -10,7 +10,8 @@ use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use win_sync_sys::{
-    Event, ResetMode, SealedWaitOnlyEvent, WaitOnlyEvent, WaitOutcome, wait_for_single_object,
+    Event, ResetMode, SealedWaitOnlyEvent as RawSealedWaitOnlyEvent, WaitOnlyEvent, WaitOutcome,
+    wait_for_single_object,
 };
 use windows_threadpool_sys::wait::ThreadpoolWait;
 
@@ -18,6 +19,31 @@ use super::{Callback, Registration, Signal, Watch, run_callback, sealed, wait_un
 
 #[cfg(test)]
 mod sealed_tests;
+
+/// A sealed wait capability whose reset mode is known to be manual.
+#[derive(Clone)]
+pub struct SealedWaitOnlyEvent {
+    event: RawSealedWaitOnlyEvent,
+}
+
+impl std::fmt::Debug for SealedWaitOnlyEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SealedWaitOnlyEvent")
+            .finish_non_exhaustive()
+    }
+}
+
+impl SealedWaitOnlyEvent {
+    pub fn wait_object(&self) -> win_sync_sys::WaitObject<'_> {
+        self.event.wait_object()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_raw(self) -> RawSealedWaitOnlyEvent {
+        self.event
+    }
+}
 
 /// A [`Signal`] that is a Windows manual-reset event, a `win-sync-sys` [`Event`]: raised by
 /// setting it, lowered by resetting it, and signalled to every wait while it is raised.
@@ -83,7 +109,9 @@ impl EventSignal {
     /// fn extract(wait: SealedThreadpoolWait) { let handle = wait.into_handle(); }
     /// ```
     pub fn sealed_wait_only(&self) -> io::Result<SealedWaitOnlyEvent> {
-        self.event.duplicate_sealed_wait_only()
+        Ok(SealedWaitOnlyEvent {
+            event: self.event.duplicate_sealed_wait_only()?,
+        })
     }
 }
 
@@ -103,7 +131,7 @@ impl Signal for EventSignal {
     }
 
     fn wait(&self, timeout: Duration) -> io::Result<bool> {
-        wait_native(&self.event, timeout)
+        wait_native(self, timeout)
     }
 
     fn watch<F>(&self, callback: F) -> io::Result<Watch>
@@ -200,26 +228,22 @@ impl Drop for PoolWatch {
 /// longer wait is made of several.
 const LONGEST_PLATFORM_WAIT: Duration = Duration::from_millis(u32::MAX as u64 - 1);
 
-/// An event [`wait_native`] waits on. Sealed to events, which a wait observes and does not
-/// change: a wait on a mutex or a semaphore would take it.
+/// A manual-reset event [`wait_native`] observes without changing it. Sealed to capabilities
+/// known to come from a manual-reset event; a wait on an auto-reset event consumes its level.
 pub trait NativeEvent: sealed::Sealed + AsHandle {}
 
-impl sealed::Sealed for Event {}
-impl NativeEvent for Event {}
-impl sealed::Sealed for WaitOnlyEvent {}
-impl NativeEvent for WaitOnlyEvent {}
 impl NativeEvent for EventSignal {}
 
 /// Waits with `WaitForSingleObject` until `event` is signalled or `timeout` has passed, and
 /// reports whether it was signalled: the platform's own wait, for a caller that holds an event a
 /// signal lends. Like [`Signal::wait`], it never reports `false` before `timeout` has passed.
 ///
-/// A handle that is not an event is refused, since a wait on a mutex would take it:
+/// An auto-reset event is refused, since waiting consumes its level:
 ///
 /// ```compile_fail,E0277
-/// use std::os::windows::io::AsHandle;
-/// let file = std::fs::File::open("Cargo.toml").unwrap();
-/// let _ = acadia::wait_native(&file.as_handle(), std::time::Duration::ZERO);
+/// use win_sync_sys::{Event, ResetMode};
+/// let event = Event::new(ResetMode::Auto, true).unwrap();
+/// let _ = acadia::wait_native(&event, std::time::Duration::ZERO);
 /// ```
 pub fn wait_native(event: &impl NativeEvent, timeout: Duration) -> io::Result<bool> {
     let handle = event.as_handle();
@@ -234,11 +258,22 @@ pub fn wait_native(event: &impl NativeEvent, timeout: Duration) -> io::Result<bo
     })
 }
 
-/// Waits on a sealed event without extracting its handle or changing its level.
-/// As with [`Signal::wait`], a timeout is never reported before its bound passes.
+/// Waits on a capability made from an [`EventSignal`]'s manual-reset event, without extracting
+/// its handle or changing its level. As with [`Signal::wait`], a timeout is never reported before
+/// its bound passes.
+///
+/// A reset-mode-blind capability from `win_sync_sys` is refused, because a wait on an auto-reset
+/// event consumes its level:
+///
+/// ```compile_fail,E0308
+/// use win_sync_sys::{Event, ResetMode};
+/// let event = Event::new(ResetMode::Auto, true).unwrap();
+/// let wait = event.duplicate_sealed_wait_only().unwrap();
+/// let _ = acadia::wait_sealed(&wait, std::time::Duration::ZERO);
+/// ```
 pub fn wait_sealed(event: &SealedWaitOnlyEvent, timeout: Duration) -> io::Result<bool> {
     wait_until_deadline(timeout, |remaining| {
-        match wait_for_single_object(event, Some(remaining.min(LONGEST_PLATFORM_WAIT)))? {
+        match wait_for_single_object(&event.event, Some(remaining.min(LONGEST_PLATFORM_WAIT)))? {
             WaitOutcome::Signalled => Ok(true),
             WaitOutcome::TimedOut => Ok(false),
             other => Err(io::Error::other(format!(

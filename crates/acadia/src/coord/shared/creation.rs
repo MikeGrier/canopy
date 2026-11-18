@@ -93,11 +93,14 @@ struct CreationHold {
 
 impl Drop for CreationHold {
     fn drop(&mut self) {
-        self.inner
-            .creation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.id);
+        if std::thread::panicking() {
+            self.inner.abandon();
+            return;
+        }
+        let _ = self
+            .inner
+            .lock(&self.inner.creation)
+            .map(|mut owned| owned.remove(&self.id));
     }
 }
 
@@ -113,11 +116,7 @@ impl SharedParticipant {
             self.inner
                 .vfs
                 .lock(&self.inner.root.join(format::LOCK), mode, LockSpan::File)?;
-        let mut owned = self
-            .inner
-            .creation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut owned = self.inner.lock(&self.inner.creation)?;
         self.alive()?;
         let id = self
             .inner
@@ -230,11 +229,7 @@ impl SharedParticipant {
     /// Publishes `bytes` at `path` under the table `abandon` clears, with `hold` still in it, so
     /// nothing is published once `abandon` has returned.
     fn publish_held(&self, hold: &CreationHold, path: &Path, bytes: &[u8]) -> CoordResult<()> {
-        let owned = self
-            .inner
-            .creation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let owned = self.inner.lock(&self.inner.creation)?;
         if !owned.contains_key(&hold.id) {
             return Err(CoordError::Abandoned);
         }

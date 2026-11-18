@@ -64,6 +64,7 @@ fn poller() -> &'static Poller {
 
 impl Poller {
     fn state(&self) -> MutexGuard<'_, Pending> {
+        // Scheduling state belongs to the process-wide poller, so a panicking sample cannot end it.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 

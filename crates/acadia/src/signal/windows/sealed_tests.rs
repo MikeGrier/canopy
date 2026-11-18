@@ -40,7 +40,7 @@ fn sealed_threadpool_callbacks_rearm_without_a_handle_accessor() {
     let owner = Arc::clone(&signal);
     let (sender, receiver) = std::sync::mpsc::channel();
     let wait = SealedThreadpoolWait::new(
-        SealedWaitableHandle::from(sealed),
+        SealedWaitableHandle::from(sealed.into_raw()),
         move |activation| {
             owner.lower().unwrap();
             activation.rearm(None);

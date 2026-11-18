@@ -384,6 +384,26 @@ fn mem_a_file_replaced_inside_a_carried_directory_does_not_lose_what_was_carried
 }
 
 #[test]
+fn mem_syncing_inside_a_carried_directory_does_not_materialize_a_file_it_replaced() {
+    let fs = MemFs::new();
+    fs.create_dir_all(p("/d/a")).unwrap();
+    fs.write(p("/d/a/item"), b"old file").unwrap();
+    for path in ["/d/a/item", "/d/a", "/d"] {
+        fs.fsync(p(path)).unwrap();
+    }
+    fs.rename(p("/d/a"), p("/d/b")).unwrap();
+    fs.remove_file(p("/d/b/item")).unwrap();
+    fs.create_dir(p("/d/b/item")).unwrap();
+    fs.fsync(p("/d/b/item"))
+        .expect("the directory over the carried file syncs");
+    fs.audit_refs();
+    fs.fsync(p("/d/b")).unwrap();
+    fs.fsync(p("/d")).unwrap();
+    fs.simulate_crash();
+    assert!(fs.read_dir(p("/d/b/item")).unwrap().is_empty());
+}
+
+#[test]
 fn mem_a_directory_under_a_carried_one_is_lost_if_its_own_parent_was_never_synced() {
     // `y`'s name lives in `x`; syncing `y` and `d` but never `x` leaves it unnamed.
     let fs = durable_file_and_tree();

@@ -8,8 +8,9 @@
 //! [`FIRST_INTERVAL`], doubling to [`LAST_INTERVAL`] -- so a new registration does not make the
 //! others sample faster, and the poller waits without sampling while none is outstanding.
 //! Registrations through one participant that are due together are sampled once. A ring runs on
-//! the poller's thread, outside its lock; one that panics is contained, so the poller survives it,
-//! as it survives a sample that panics, which is a sample that failed.
+//! the poller's thread, outside its lock. Under `panic = "unwind"`, a panicking ring is contained
+//! and the poller survives it, as it survives a sample that panics. An abort-strategy binary ends
+//! on the panic before containment can run.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -76,6 +77,7 @@ struct Due {
 
 impl Poller {
     fn state(&self) -> MutexGuard<'_, State> {
+        // Scheduling state belongs to the process-wide poller, so a panicking sample cannot end it.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 

@@ -117,7 +117,8 @@ described in [README.md](../canopy-lock-holder/README.md#coordination-implementa
 `EventSignal::sealed_wait_only` on Windows and `EventFdSignal::sealed_wait_only` on Linux lend
 owned wait capabilities whose raw targets cannot be extracted by safe code. Clones retain the
 same kernel object, waits preserve its level, and Debug hides its identity. Windows uses
-`SealedWaitOnlyEvent`; Linux uses `SealedWaitOnlyFd`, with `wait`, `watch` and opaque `wait_object`
+acadia's `SealedWaitOnlyEvent`, constructible only from `EventSignal`, so its manual-reset mode is
+part of the type's provenance; Linux uses `SealedWaitOnlyFd`, with `wait`, `watch` and opaque `wait_object`
 targets for `wait_native_any`. Custom Linux integration requires unsafe `as_waitable_fd` and must
 never read, write or otherwise mutate the signal through that descriptor or a duplicate.
 The existing unsealed owner APIs remain available as separate lower-layer capabilities.

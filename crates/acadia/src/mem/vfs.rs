@@ -6,7 +6,7 @@ use super::*;
 impl Vfs for MemFs {
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
         let parts = split_path(path, "read")?;
-        let holds = self.holds();
+        let holds = self.holds("read", path)?;
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read", path)? {
             Node::File(id) => {
@@ -29,7 +29,7 @@ impl Vfs for MemFs {
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
         let parts = split_path(path, "read_at")?;
-        let holds = self.holds();
+        let holds = self.holds("read_at", path)?;
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read_at", path)? {
             Node::File(id) => {
@@ -60,7 +60,7 @@ impl Vfs for MemFs {
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, "write", path, "empty path"));
         };
-        let holds = self.holds();
+        let holds = self.holds("write", path)?;
         let mut guard = self.tree();
         let Inner {
             live,
@@ -109,7 +109,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let holds = self.holds();
+        let holds = self.holds("append", path)?;
         let mut guard = self.tree();
         let Inner {
             live,
@@ -167,7 +167,7 @@ impl Vfs for MemFs {
                 "empty path",
             ));
         };
-        let holds = self.holds();
+        let holds = self.holds("truncate", path)?;
         let mut guard = self.tree();
         let Inner {
             live, live_data, ..
@@ -208,10 +208,12 @@ impl Vfs for MemFs {
     }
 
     fn fsync(&self, path: &Path) -> VfsResult<()> {
+        let _process = self.holds("fsync", path)?;
         self.sync_path(path)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> VfsResult<()> {
+        let _process = self.holds("rename", from)?;
         let from_parts = split_path(from, "rename")?;
         let to_parts = split_path(to, "rename")?;
         if from_parts == to_parts {
@@ -421,6 +423,7 @@ impl Vfs for MemFs {
     }
 
     fn remove_file(&self, path: &Path) -> VfsResult<()> {
+        let _process = self.holds("remove_file", path)?;
         let parts = split_path(path, "remove_file")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(
@@ -470,6 +473,7 @@ impl Vfs for MemFs {
     }
 
     fn create_dir(&self, path: &Path) -> VfsResult<()> {
+        let _process = self.holds("create_dir", path)?;
         let parts = split_path(path, "create_dir")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(
@@ -496,6 +500,7 @@ impl Vfs for MemFs {
     }
 
     fn create_dir_all(&self, path: &Path) -> VfsResult<()> {
+        let _process = self.holds("create_dir_all", path)?;
         let parts = split_path(path, "create_dir_all")?;
         let mut guard = self.tree();
         let Inner { live, dirty, .. } = &mut *guard;
@@ -516,6 +521,7 @@ impl Vfs for MemFs {
     }
 
     fn remove_dir(&self, path: &Path) -> VfsResult<()> {
+        let _process = self.holds("remove_dir", path)?;
         let parts = split_path(path, "remove_dir")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(
@@ -575,6 +581,7 @@ impl Vfs for MemFs {
     }
 
     fn remove_dir_all(&self, path: &Path) -> VfsResult<()> {
+        let _process = self.holds("remove_dir_all", path)?;
         let parts = split_path(path, "remove_dir_all")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(
@@ -640,6 +647,7 @@ impl Vfs for MemFs {
     }
 
     fn read_dir(&self, path: &Path) -> VfsResult<Vec<DirEntry>> {
+        let _process = self.holds("read_dir", path)?;
         let parts = split_path(path, "read_dir")?;
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read_dir", path)? {
@@ -663,6 +671,7 @@ impl Vfs for MemFs {
     }
 
     fn metadata(&self, path: &Path) -> VfsResult<Metadata> {
+        let _process = self.holds("metadata", path)?;
         let parts = split_path(path, "metadata")?;
         let guard = self.tree();
         match node_at(&guard.live, &parts, "metadata", path)? {
@@ -698,6 +707,7 @@ impl Vfs for MemFs {
     }
 
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        let _process = self.holds("publish_new", path)?;
         let parts = split_path(path, "publish_new")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(
@@ -740,6 +750,7 @@ impl Vfs for MemFs {
     }
 
     fn boot_identity(&self) -> VfsResult<Vec<u8>> {
+        let _process = self.holds("boot_identity", Path::new(""))?;
         Ok(self.tree().boots.to_le_bytes().to_vec())
     }
 }

@@ -144,8 +144,14 @@ impl Coordination for FileCoordination {
     }
 
     fn abandon(&self) {
+        self.abandon_participant();
+    }
+}
+
+impl FileCoordination {
+    pub(crate) fn abandon_participant(&self) {
         let (released, watchers) = {
-            let mut table = self.holds.table();
+            let mut table = self.holds.table_recovering();
             self.holds.abandoned.store(true, Ordering::Release);
             (
                 std::mem::take(&mut table.locks),
@@ -197,7 +203,17 @@ trait Watcher: Send + Sync {
 }
 
 impl Holds {
-    fn table(&self) -> MutexGuard<'_, HoldTable> {
+    fn table(&self) -> CoordResult<MutexGuard<'_, HoldTable>> {
+        match self.table.lock() {
+            Ok(table) => Ok(table),
+            Err(_) => {
+                self.abandoned.store(true, Ordering::Release);
+                Err(CoordError::Abandoned)
+            }
+        }
+    }
+
+    fn table_recovering(&self) -> MutexGuard<'_, HoldTable> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -208,10 +224,14 @@ impl Holds {
     /// Has `watcher` told when the participant is abandoned; reports whether it already is.
     #[cfg(windows)]
     fn watch(&self, watcher: Weak<dyn Watcher>) -> bool {
-        let mut table = self.table();
-        table.watchers.retain(|held| held.strong_count() > 0);
-        table.watchers.push(watcher);
-        self.is_abandoned()
+        match self.table() {
+            Ok(mut table) => {
+                table.watchers.retain(|held| held.strong_count() > 0);
+                table.watchers.push(watcher);
+                self.is_abandoned()
+            }
+            Err(_) => true,
+        }
     }
 }
 
@@ -250,11 +270,12 @@ impl FileCoordination {
                     .try_lock(path, mode, span)
                     .map_err(|error| match error.kind() {
                         VfsErrorKind::Locked => CoordError::WouldWait,
+                        VfsErrorKind::ProcessEnded => CoordError::Abandoned,
                         _ => CoordError::Vfs(error),
                     })?
             }
         };
-        let mut table = self.holds.table();
+        let mut table = self.holds.table()?;
         if self.holds.is_abandoned() {
             drop(table);
             drop(lock);
@@ -269,7 +290,13 @@ impl FileCoordination {
     /// Takes the lock `id` names out of the table, for the caller to drop once its bookkeeping
     /// is done, or `None` if the participant was abandoned, which released it already.
     pub(crate) fn release_lock(&self, id: HoldId) -> Option<Box<dyn VfsLock>> {
-        self.holds.table().locks.remove(&id.0)
+        match self.holds.table() {
+            Ok(mut table) => table.locks.remove(&id.0),
+            Err(_) => {
+                self.abandon_participant();
+                None
+            }
+        }
     }
 
     /// Runs `publish`, one change to the state on disk, unless the participant is abandoned. The
@@ -280,7 +307,7 @@ impl FileCoordination {
         &self,
         publish: impl FnOnce(&dyn Vfs) -> VfsResult<T>,
     ) -> CoordResult<T> {
-        let table = self.holds.table();
+        let table = self.holds.table()?;
         if self.holds.is_abandoned() {
             return Err(CoordError::Abandoned);
         }

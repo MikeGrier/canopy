@@ -124,6 +124,87 @@ fn an_invalid_span_is_refused_before_any_wait() {
 }
 
 #[test]
+fn a_crash_ends_old_waiters_and_a_new_process_locks_the_recreated_file() {
+    let before = MemFs::new();
+    before.create_dir_all(Path::new("/d")).unwrap();
+    before.fsync(Path::new("/d")).unwrap();
+    let holder = before.another_process();
+    let waiter = before.another_process();
+    let path = Path::new("/d/crash.lock");
+    let held = holder.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap();
+    std::thread::scope(|scope| {
+        let (done, finished) = mpsc::channel();
+        let waiter_view = &waiter;
+        scope.spawn(move || {
+            let _ = done.send(waiter_view.lock(path, EXCLUSIVE, LockSpan::File));
+        });
+        assert_still_waiting_result(&finished);
+        before.simulate_crash();
+        let result = test_timers::mpsc::recv_timeout(&finished, GRANTED).expect("wait ends");
+        assert_kind(result, VfsErrorKind::ProcessEnded);
+        let successor = before.another_process();
+        let taken = successor
+            .try_lock(path, EXCLUSIVE, LockSpan::File)
+            .expect("new lock file");
+        drop(taken);
+    });
+    drop(held);
+}
+
+#[test]
+fn an_abandoned_process_refuses_later_operations_and_a_wait_in_progress() {
+    let survivor = MemFs::new();
+    survivor.create_dir_all(Path::new("/d")).unwrap();
+    let ended = survivor.another_process();
+    let path = Path::new("/d/writer.lock");
+    let held = survivor.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap();
+    std::thread::scope(|scope| {
+        let (done, finished) = mpsc::channel();
+        let waiting = &ended;
+        scope.spawn(move || {
+            let _ = done.send(waiting.lock(path, EXCLUSIVE, LockSpan::File));
+        });
+        assert_still_waiting_result(&finished);
+        ended.abandon();
+        let result = test_timers::mpsc::recv_timeout(&finished, GRANTED).expect("wait ends");
+        assert_kind(result, VfsErrorKind::ProcessEnded);
+    });
+    assert_kind(
+        ended.read(Path::new("/d/writer.lock")),
+        VfsErrorKind::ProcessEnded,
+    );
+    drop(held);
+}
+
+fn assert_still_waiting_result(waiting: &mpsc::Receiver<VfsResult<Box<dyn VfsLock>>>) {
+    assert!(
+        test_timers::mpsc::recv_timeout(waiting, STILL_WAITING).is_err(),
+        "the waiter returned"
+    );
+}
+
+#[test]
+fn repeated_crashes_keep_one_ended_prefix_and_bound_individual_abandons() {
+    let fs = MemFs::new();
+    let oldest = fs.another_process();
+    let mut previous_prefix = 0;
+    for _ in 0..32 {
+        let abandoned = fs.another_process();
+        abandoned.abandon();
+        assert_eq!(fs.ended_process_bookkeeping().1, 1);
+        fs.simulate_crash();
+        let (prefix, individual) = fs.ended_process_bookkeeping();
+        assert!(prefix.is_some_and(|prefix| prefix > previous_prefix));
+        previous_prefix = prefix.expect("a crash records the ended prefix");
+        assert_eq!(individual, 0);
+        assert_kind(
+            oldest.read(Path::new("/lost-process.lock")),
+            VfsErrorKind::ProcessEnded,
+        );
+    }
+}
+
+#[test]
 fn a_dead_holder_lets_a_waiter_in_another_process_in() {
     let survivor = MemFs::new();
     survivor.create_dir_all(Path::new("/d")).unwrap();
@@ -138,7 +219,7 @@ fn a_dead_holder_lets_a_waiter_in_another_process_in() {
         drop(held);
         assert_kind(
             dying.try_lock(path, SHARED, LockSpan::File),
-            VfsErrorKind::Locked,
+            VfsErrorKind::ProcessEnded,
         );
         drop(taken);
     });

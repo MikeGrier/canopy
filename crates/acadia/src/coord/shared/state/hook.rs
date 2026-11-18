@@ -87,7 +87,11 @@ pub fn inspect(vfs: &dyn Vfs, root: &Path) -> CoordResult<Option<SharedWords>> {
             current_boot.clone().unwrap_or_default(),
             model_root(&directory),
         );
-        let models = MODELS.get_or_init(Default::default).lock().unwrap();
+        // Test support's weak model cache is process-wide; a failed inspector cannot end a model.
+        let models = MODELS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(words) = models.get(&key).and_then(Weak::upgrade) else {
             return Ok(None);
         };

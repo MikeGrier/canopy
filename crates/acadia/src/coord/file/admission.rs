@@ -70,6 +70,10 @@ impl Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.participant.abandon_participant();
+            return;
+        }
         self.release_all();
     }
 }

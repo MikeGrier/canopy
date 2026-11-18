@@ -91,6 +91,11 @@ pub(crate) fn make_artifacts(
 /// Refuses a name that is not one plain name directly beneath the root, or that begins with the
 /// reserved prefix in any case.
 pub(crate) fn validate_artifact_name(name: &OsStr) -> CoordResult<()> {
+    if name.as_encoded_bytes().contains(&0) {
+        return Err(CoordError::InvalidPlan {
+            why: "an artifact's name contains NUL",
+        });
+    }
     let mut components = Path::new(name).components();
     if !matches!(
         (components.next(), components.next()),

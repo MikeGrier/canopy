@@ -78,10 +78,7 @@ pub use signal::{CondvarSignal, PlatformSignal, Signal, Watch};
 #[cfg(target_os = "linux")]
 pub use signal::{EventFdSignal, SealedWaitObject, SealedWaitOnlyFd, wait_native, wait_native_any};
 #[cfg(windows)]
-pub use signal::{EventSignal, NativeEvent, wait_native, wait_sealed};
-/// The sealed Windows wait capability lent without exposing its handle to safe code.
-#[cfg(windows)]
-pub use win_sync_sys::SealedWaitOnlyEvent;
+pub use signal::{EventSignal, NativeEvent, SealedWaitOnlyEvent, wait_native, wait_sealed};
 /// The handle [`EventSignal::wait_only`] lends, named here so that a crate lending it on does not
 /// depend on `win-sync-sys` for the name.
 #[cfg(windows)]
@@ -145,6 +142,8 @@ pub enum VfsErrorKind {
     /// because the caller acts on it differently: nothing is misconfigured, and
     /// retrying later may well succeed.
     Locked,
+    /// The process view that issued the operation has ended and issues nothing more.
+    ProcessEnded,
     /// The backend does not support the requested operation.
     Unsupported,
     /// Any failure that does not map onto a more specific category above.
@@ -166,6 +165,7 @@ impl fmt::Display for VfsErrorKind {
             VfsErrorKind::StorageFull => "storage full",
             VfsErrorKind::Interrupted => "interrupted",
             VfsErrorKind::Locked => "held by another owner",
+            VfsErrorKind::ProcessEnded => "process ended",
             VfsErrorKind::Unsupported => "unsupported operation",
             VfsErrorKind::Other => "other filesystem error",
         };
@@ -355,7 +355,9 @@ impl LockSpan {
 ///
 /// Implementors are shareable across threads (`Send + Sync`) so a single backend
 /// can be handed to the async daemon and the single-writer monitor at once;
-/// interior mutability, where a backend needs it, is the backend's concern.
+/// interior mutability, where a backend needs it, is the backend's concern. A process view that
+/// has ended issues nothing more: once its end returns, its waits end and every operation through
+/// it fails with [`VfsErrorKind::ProcessEnded`]. A host restart ends every process view.
 ///
 /// Unless stated otherwise, every operation requires the parent directory of
 /// `path` to already exist and fails with [`VfsErrorKind::NotFound`] if it does

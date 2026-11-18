@@ -48,6 +48,10 @@ struct Kept<'a> {
 
 impl Drop for Kept<'_> {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.participant.abandon_participant();
+            return;
+        }
         drop(self.participant.release_lock(self.id));
     }
 }

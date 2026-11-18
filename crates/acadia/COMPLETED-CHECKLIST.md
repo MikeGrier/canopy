@@ -496,3 +496,114 @@ zero.
 ### <a id="m42-3"></a>M42-3 -- The reservation-abandonment test fails when publication is not exercised. *(completed 2026-11-18 06:56:00 -05:00)*
 
 ### <a id="m43-1"></a>M43-1 -- The eighth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 06:56:00 -05:00)*
+
+## Moved 2026-11-18 -- A crash is a host restart in every filesystem
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Three failures, two events: a panic, a process
+ending, a host restart".
+
+### <a id="m44-1"></a>M44-1 -- The `Vfs` contract states that a host restart ends every process and that an ended process issues nothing, and `MemFs::abandon` refuses the abandoned view's later operations and fails its lock waits in progress. *(completed 2026-11-18 13:36:02 -05:00)*
+
+### <a id="m44-2"></a>M44-2 -- `MemFs::simulate_crash` ends every process view made before it -- locks released, waits failed, later operations refused -- and canopy's callers take a post-crash view. *(completed 2026-11-18 13:36:02 -05:00)*
+
+The controller that invokes `simulate_crash` receives a fresh process identity before returning;
+every other process value keeps its ended identity. A waiter on a lock file lost to the crash and an
+old file-registry attachment were both shown unable to act on their successors.
+
+### <a id="m44-3"></a>M44-3 -- The coordination boot checks that defended against a process acting across a simulated restart are removed. *(completed 2026-11-18 13:36:02 -05:00)*
+
+The shared implementation still reads the boot identity as a backend-liveness operation, but no
+longer compares it to decide whether a process is alive.
+
+## Moved 2026-11-18 -- A panic ends the participant it unwinds through
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Three failures, two events: a panic, a process
+ending, a host restart".
+
+### <a id="m45-1"></a>M45-1 -- Every coordination guard that keeps bookkeeping ends its participant as `abandon` does when dropped while a panic unwinds. *(completed 2026-11-18 14:29:13 -05:00)*
+
+Writer holds, attachments, upgrades, discovery probes and creation holds are exercised through
+both file and shared implementations. An old handle is refused, and a fresh participant can
+recover or take the root's next work.
+
+### <a id="m45-2"></a>M45-2 -- A participant mutex poisoned by a panic ends the participant and refuses with `Abandoned`; process-wide mutexes recover from poison with their reason at the lock site. *(completed 2026-11-18 14:29:13 -05:00)*
+
+File holds, shared holds and shared initialization each have a poison test. Pollers, the weak model
+cache and registration cleanup are process-wide and recover.
+
+### <a id="m45-3"></a>M45-3 -- The workspace's own binaries build with `panic = "abort"` in release. *(completed 2026-11-18 14:29:13 -05:00)*
+
+## Moved 2026-11-18 -- Ninth review: shared opening, generations, MemFs sync and Windows
+
+### <a id="m46-1"></a>M46-1 -- A shared `abandon` never returns while an opening it raced still holds the epoch's liveness lock. *(completed 2026-11-18 14:53:52 -05:00)*
+
+### <a id="m46-2"></a>M46-2 -- A shared generation reservation missing or behind the mapped limit at renewal is refused, not restarted at zero. *(completed 2026-11-18 14:53:52 -05:00)*
+
+### <a id="m46-3"></a>M46-3 -- A `MemFs` directory sync across a carried snapshot never fails after changing durable state. *(completed 2026-11-18 14:53:52 -05:00)*
+
+A revert-probe restored the previous anchor rule and made the exact rename/retype sync fail with
+`NotADirectory`; restoring the carried-ancestor anchor made it pass.
+
+### <a id="m46-4"></a>M46-4 -- `wait_native` on Windows accepts only events a wait does not reset. *(completed 2026-11-18 14:53:52 -05:00)*
+
+### <a id="m46-5"></a>M46-5 -- A failed oplock acknowledgement rings only after the handle is closed, even when no thread can be started at teardown. *(completed 2026-11-18 14:53:52 -05:00)*
+
+One process-wide cleanup worker is established before native registration. If it cannot start,
+registration falls back to the poller instead of granting an oplock it cannot release safely.
+
+## Moved 2026-11-18 -- Ninth review: creation, fault injection and tests
+
+### <a id="m47-1"></a>M47-1 -- An artifact name with an embedded NUL is refused before the root is reserved. *(completed 2026-11-18 15:21:00 -05:00)*
+
+The invalid-plan matrix reaches the NUL case through both coordination implementations and over
+both MemFs and OsFs; the root remains empty. A revert-probe without the guard failed the case.
+
+### <a id="m47-2"></a>M47-2 -- `FaultyFs::read_at` never returns more than the range asked for. *(completed 2026-11-18 15:21:00 -05:00)*
+
+Replacement corruption is bounded to the length the undecorated range read returned, including
+zero-length, short, truncated and past-EOF reads. A revert-probe returned the full replacement for a
+zero-length read and failed the test.
+
+### <a id="m47-3"></a>M47-3 -- The marker-abandonment test fails when publication is not exercised. *(completed 2026-11-18 15:21:00 -05:00)*
+
+The test synchronizes the abandonment thread, joins it, and unconditionally asserts the guarded
+ordering, a permitted creation outcome and the marker state. A revert-probe that bypassed the file
+publication guard made the assertion fail because `abandon` returned in the publication callback.
+
+## Moved 2026-11-18 -- Ninth review records
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Ninth review fixes: restart as process end,
+handoff, reservations, carried sync, event and oplock capabilities" and
+"Three failures, two events: a panic, a process ending, a host restart". Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "The ninth review, 2026-11-18".
+
+### <a id="m48-1"></a>M48-1 -- The ninth review's findings that did not hold, and the decisions it changed, are recorded in [DESIGN-NOTES.md](DESIGN-NOTES.md). *(completed 2026-11-18 15:28:47 -05:00)*
+
+All ten findings held. Findings 1 and 2 were fixed at the Vfs process boundary in M44, findings 3 to
+7 in M46, and findings 8 to 10 in M47; the record states which ninth-review fixes supersede parts of
+the eighth review.
+
+## Moved 2026-11-18 -- Tenth review: recovery, participant boundaries and platform capabilities
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Tenth review fixes: interrupted renewal,
+participant boundaries and platform capabilities". Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "The tenth review, 2026-11-18".
+
+### <a id="m49-1"></a>M49-1 -- Interrupted generation renewal resumes an exact one-block-ahead durable reservation. *(completed 2026-11-18 17:25:01 -05:00)*
+
+Missing, behind and arbitrary mismatched reservations remain malformed.
+
+### <a id="m49-2"></a>M49-2 -- Poisoning shared liveness ends acquisition without a recursive hold-table lock. *(completed 2026-11-18 17:25:01 -05:00)*
+
+### <a id="m49-3"></a>M49-3 -- A panic through a shared-state guard ends creation on the public participant too. *(completed 2026-11-18 17:25:01 -05:00)*
+
+### <a id="m49-4"></a>M49-4 -- Windows oplock teardown transfers one registration to one cleanup owner. *(completed 2026-11-18 17:25:01 -05:00)*
+
+Concurrent notice withdrawal and channel failure cannot split the timer, I/O, ring and cleanup
+sender between callers.
+
+### <a id="m49-5"></a>M49-5 -- Sealed Windows waits accept only acadia's manual-reset event capability. *(completed 2026-11-18 17:25:01 -05:00)*
+
+### <a id="m49-6"></a>M49-6 -- The callback panic contract states the behavior of unwind and abort strategies. *(completed 2026-11-18 17:25:01 -05:00)*
+
+### <a id="m49-7"></a>M49-7 -- MemFs crash identity storage uses an ended prefix and a bounded current-boot abandon set. *(completed 2026-11-18 17:25:01 -05:00)*

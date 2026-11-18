@@ -113,15 +113,18 @@ impl Words {
 /// changes nothing more.
 pub(crate) struct OpenGate<'a> {
     pub(crate) lock: &'a Mutex<()>,
-    pub(crate) abandoned: &'a AtomicBool,
+    pub(crate) abandoned: Arc<AtomicBool>,
 }
 
 impl OpenGate<'_> {
     fn enter(&self) -> CoordResult<std::sync::MutexGuard<'_, ()>> {
-        let guard = self
-            .lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = match self.lock.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.abandoned.store(true, Ordering::Release);
+                return Err(CoordError::Abandoned);
+            }
+        };
         if self.abandoned.load(Ordering::Acquire) {
             return Err(CoordError::Abandoned);
         }
@@ -205,9 +208,18 @@ fn read_optional(vfs: &dyn Vfs, path: &Path) -> CoordResult<Option<Vec<u8>>> {
 }
 
 impl SharedState {
-    fn reserve_generations(vfs: &dyn Vfs, directory: &Path) -> CoordResult<(u64, u64)> {
+    fn reserve_generations(
+        vfs: &dyn Vfs,
+        directory: &Path,
+        renewing: Option<u64>,
+    ) -> CoordResult<(u64, u64)> {
         let path = directory.join("generation-range");
         let previous = match read_optional(vfs, &path)? {
+            None if renewing.is_some() => {
+                return Err(CoordError::Malformed {
+                    what: "generation reservation",
+                });
+            }
             None => 0,
             Some(record) => {
                 let bytes =
@@ -231,6 +243,17 @@ impl SharedState {
                 value
             }
         };
+        if let Some(expected) = renewing
+            && previous != expected
+        {
+            if expected.checked_add(format::GENERATION_BLOCK) != Some(previous) {
+                return Err(CoordError::Malformed {
+                    what: "generation reservation",
+                });
+            }
+            vfs.fsync(directory)?;
+            return Ok((expected, previous));
+        }
         if previous == u64::MAX {
             return Err(CoordError::Exhausted { what: "generation" });
         }
@@ -252,29 +275,33 @@ impl SharedState {
     /// reserved.
     #[cfg(test)]
     pub(crate) fn open(vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Self> {
-        Self::open_gated(vfs, root, None)
+        Self::open_gated(vfs, root, None, |state| state)
     }
 
-    /// As [`open`](Self::open), for a participant that `gate` can abandon while it waits.
-    pub(crate) fn open_gated(
+    /// As [`open`](Self::open), for a participant that `gate` can abandon while it waits, handing
+    /// the state to `handoff` before the final opening guard is released.
+    pub(crate) fn open_gated<T>(
         vfs: Arc<dyn Vfs>,
         root: &Path,
         gate: Option<&OpenGate<'_>>,
-    ) -> CoordResult<Self> {
+        handoff: impl FnOnce(Self) -> T,
+    ) -> CoordResult<T> {
+        let mut handoff = Some(handoff);
         loop {
-            if let Some(state) = Self::open_once(Arc::clone(&vfs), root, gate)? {
-                return Ok(state);
+            if let Some(handoffed) = Self::open_once(Arc::clone(&vfs), root, gate, &mut handoff)? {
+                return Ok(handoffed);
             }
         }
     }
 
     /// One attempt at [`open`](Self::open), or `None` when the epoch it would join ended between
     /// finding a live participant and joining it, so the attempt must decide again.
-    fn open_once(
+    fn open_once<T>(
         vfs: Arc<dyn Vfs>,
         root: &Path,
         gate: Option<&OpenGate<'_>>,
-    ) -> CoordResult<Option<Self>> {
+        handoff: &mut Option<impl FnOnce(Self) -> T>,
+    ) -> CoordResult<Option<T>> {
         let directory = root.join(DIRECTORY);
         let setup = directory.join("setup.lock");
         {
@@ -412,7 +439,7 @@ impl SharedState {
             Err(error) => return Err(error.into()),
         }
         let generations = if first {
-            Some(Self::reserve_generations(vfs.as_ref(), &directory)?)
+            Some(Self::reserve_generations(vfs.as_ref(), &directory, None)?)
         } else {
             None
         };
@@ -446,7 +473,11 @@ impl SharedState {
                 current_boot.clone().unwrap_or_default(),
                 normalized_root,
             );
-            let mut models = MODELS.get_or_init(Default::default).lock().unwrap();
+            // This cache is process-wide, and retaining a surviving weak map is safe after a panic.
+            let mut models = MODELS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             models.retain(|_, words| words.strong_count() > 0);
             if let Some(words) = models.get(&key).and_then(Weak::upgrade) {
                 words
@@ -516,17 +547,22 @@ impl SharedState {
             LockMode::Shared,
             LockSpan::File,
         )?;
-        Ok(Some(Self {
+        let state = Self {
             vfs,
             directory,
             words,
             boot: current_boot,
             live: Arc::new(Mutex::new(Some(live))),
-            abandoned: Arc::new(AtomicBool::new(false)),
+            abandoned: gate.map_or_else(
+                || Arc::new(AtomicBool::new(false)),
+                |gate| Arc::clone(&gate.abandoned),
+            ),
             holds: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             hook: None,
-        }))
+        };
+        let handoff = handoff.take().expect("the opening handoff runs once");
+        Ok(Some(handoff(state)))
     }
 
     /// This participant, announcing each later step that changes the shared words to `hook`.
@@ -534,6 +570,30 @@ impl SharedState {
     pub(super) fn with_hook(mut self, hook: Option<Arc<dyn StepHook>>) -> Self {
         self.hook = hook;
         self
+    }
+
+    fn live_guard(&self) -> CoordResult<std::sync::MutexGuard<'_, Option<Box<dyn VfsLock>>>> {
+        match self.live.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                drop(poisoned);
+                self.abandon();
+                Err(CoordError::Abandoned)
+            }
+        }
+    }
+
+    fn holds_guard(
+        &self,
+    ) -> CoordResult<std::sync::MutexGuard<'_, HashMap<u64, Box<dyn VfsLock>>>> {
+        match self.holds.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                drop(poisoned);
+                self.abandon();
+                Err(CoordError::Abandoned)
+            }
+        }
     }
 
     /// Whether the fence word is set, which is what `RecoveryNeed::fenced` and
@@ -553,10 +613,7 @@ impl SharedState {
     /// As [`snapshot`](Self::snapshot), with the boot already read, so a caller holding one of the
     /// participant's mutexes makes no filesystem call under it.
     fn snapshot_at(&self, current_boot: &Option<Vec<u8>>) -> CoordResult<StateSnapshot> {
-        let live = self
-            .live
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let live = self.live_guard()?;
         if live.is_none() {
             return Err(CoordError::Abandoned);
         }

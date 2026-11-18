@@ -704,10 +704,14 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
         match self.check(FaultOp::ReadAt, path) {
             Some(Fault::Fail(kind)) => Err(fault_err(kind, "read_at", path)),
-            Some(Fault::Corrupt(corruption)) => Ok(apply_corruption(
-                self.inner.read_at(path, offset, len)?,
-                &corruption,
-            )),
+            Some(Fault::Corrupt(corruption)) => {
+                let read = self.inner.read_at(path, offset, len)?;
+                let bound = read.len();
+                Ok(apply_corruption(read, &corruption)
+                    .into_iter()
+                    .take(bound)
+                    .collect())
+            }
             _ => self.inner.read_at(path, offset, len),
         }
     }

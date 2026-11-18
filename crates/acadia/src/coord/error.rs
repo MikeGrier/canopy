@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fmt;
 
-use crate::VfsError;
+use crate::{VfsError, VfsErrorKind};
 
 use super::types::ImplementationId;
 
@@ -110,6 +110,10 @@ impl std::error::Error for CoordError {
 
 impl From<VfsError> for CoordError {
     fn from(error: VfsError) -> Self {
-        CoordError::Vfs(error)
+        if error.kind() == VfsErrorKind::ProcessEnded {
+            CoordError::Abandoned
+        } else {
+            CoordError::Vfs(error)
+        }
     }
 }

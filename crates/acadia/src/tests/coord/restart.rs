@@ -95,15 +95,14 @@ fn a_restart_leaves_no_state_trusted() {
         let participant = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert_eq!(participant.trust().expect("trust"), Trust::Vouched);
         mem.simulate_crash();
+        let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert_eq!(
-            participant.trust().expect("trust"),
+            after.trust().expect("trust"),
             untrusted(Untrusted::HostRestarted),
             "a record that survived the crash names the boot before it"
         );
-        participant
-            .record_boot(Standing::Vouched)
-            .expect("vouch again");
-        assert_eq!(participant.trust().expect("trust"), Trust::Vouched);
+        after.record_boot(Standing::Vouched).expect("vouch again");
+        assert_eq!(after.trust().expect("trust"), Trust::Vouched);
     }
 }
 
@@ -115,10 +114,8 @@ fn a_restart_that_loses_the_record_leaves_the_state_untrusted() {
         let participant = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         participant.record_boot(Standing::Vouched).expect("vouch");
         mem.simulate_crash();
-        assert!(matches!(
-            participant.trust().expect("trust"),
-            Trust::Untrusted(_)
-        ));
+        let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        assert!(matches!(after.trust().expect("trust"), Trust::Untrusted(_)));
     }
 }
 

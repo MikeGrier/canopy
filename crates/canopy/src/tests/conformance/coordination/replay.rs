@@ -357,6 +357,15 @@ impl<'t> Replay<'t> {
             projection::settle_crash(&self.mem, kept.owner, kept.fence);
         }
         self.mem.simulate_crash();
+        let observer = acadia::coord::file::FileFactory::new();
+        self.observer = Arc::from(
+            acadia::coord::CoordinationFactory::open(
+                &observer,
+                Arc::new(self.mem.another_process()),
+                root(),
+            )
+            .expect("the observer reopens after the crash"),
+        );
         self.keeper = Keeper::rejoin(&self.mem, self.implementation);
     }
 }

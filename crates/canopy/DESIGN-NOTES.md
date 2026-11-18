@@ -5765,4 +5765,4 @@ replay harness's `Verdict::Die` and `Kind::Die` are `Terminate` likewise. Timeli
 prose in comments and configuration headers, are left as they are[^voc-1].
 
 [^voc-1]: `VOC-1` in [COMPLETED-CHECKLIST.md](../../COMPLETED-CHECKLIST.md#voc-1)
-    [completed 2026-11-18]
+    [completed 2026-11-18; `e0c0fa8`]

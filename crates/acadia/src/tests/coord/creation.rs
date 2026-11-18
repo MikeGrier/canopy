@@ -329,7 +329,7 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
         let vfs = backend.process();
         let root = backend.root();
         let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
-        let bad: [&[&str]; 16] = [
+        let bad: [&[&str]; 17] = [
             &["\u{1f80}", "\u{1f88}"],
             &["\u{1fb3}x", "\u{1fbc}X", "marker"],
             &["\u{1f80}", "\u{1f88}.publishing.1-0"],
@@ -346,6 +346,7 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
             &["files", "files.publishing.1-0"],
             &["files", "FILES.publishing.x", "marker"],
             &["files.publishing.7", "files"],
+            &["bad\0name", "marker"],
         ];
         let reserved_non_unicode = non_unicode(".coord");
         let bad = bad

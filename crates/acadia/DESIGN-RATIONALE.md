@@ -412,3 +412,57 @@ a process ending, a host restart"; the discussion is
   process-wide and not a library's to take, and the test harness needs unwinding.
 - **Treating an unwinding drop as a clean release** would be safe only if every caller bracketed all
   of its work under a hold in modifications, which acadia cannot enforce.
+
+## The ninth review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Ninth review fixes: restart as process
+end, handoff, reservations, carried sync, event and oplock capabilities". All ten findings held.
+
+- **The first two findings were fixed at `MemFs`'s process boundary rather than in the file holds and
+  registry.** A waiter and an attachment cross a restart only because the filesystem let a pre-restart
+  process value act afterwards. Once `Vfs` says a restart ends that process, every consumer gets the
+  rule from its backend and no path needs its own boot comparison.
+- **The handoff is under the final opening guard rather than before that guard**, because the
+  externally visible state is the `OnceLock`, not the local `SharedState` value. Publishing first
+  makes abandonment wait for something it can then end.
+- **Generation renewal compares the durable reservation with the mapped limit rather than merely
+  accepting any well-formed record.** A valid lower value is still stale, and accepting it would
+  reuse generations the running epoch has already handed out.
+- **The carried-sync fix starts from the view an ancestor will materialize**, rather than adding a
+  rollback around the durable mutation. Resolving the anchor first keeps a valid `fsync` from needing
+  transactional cleanup.
+- **`wait_native` is narrower than `wait_for_single_object`** by design. acadia's public name is an
+  observation of a level signal; a consuming native wait remains an explicit capability in another
+  layer.
+- **Oplock teardown is provisioned before the oplock.** Starting a worker as a reaction to failure
+  made failure of the worker itself part of the safety path. The process-wide worker removes that
+  branch: if it cannot be provisioned, native registration is not used.
+- **Fault replacement is bounded at the decorator boundary**, where the range's actual result length
+  is known, rather than by changing whole-file `read` corruption or by making consumers defend
+  against a backend that violates their contract.
+
+## The tenth review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Tenth review fixes: interrupted
+renewal, participant boundaries and platform capabilities". All seven findings held.
+
+- **The one-block-ahead generation reservation is recoverable because it is the only non-equal
+  value that proves a completed rename.** Recovery repeats the directory sync and adopts it;
+  missing, behind and arbitrary values still establish no such publication.
+- **Poison handling moves outside the held-table scope rather than weakening abandonment.** A
+  poisoned mutex still ends the participant, but the recovery path must not recursively acquire a
+  mutex that belongs to the operation it is unwinding.
+- **The participant abandonment flag is shared by the public facade and its shared state**, rather
+  than copied or mirrored. This keeps creation authority, writer exclusion, registry and
+  admission at one process-lifecycle boundary.
+- **Teardown resources are transferred as one registration bundle**, so concurrent cancellation and
+  callbacks cannot each believe they own part of the cleanup. A native registration that hands the
+  callback to the poller preserves the callback rather than withdrawing it.
+- **A sealed capability cannot infer Windows reset mode from the handle alone.** The safe wrapper
+  therefore records provenance at construction, where `EventSignal` establishes manual reset.
+- **Callback isolation follows the consumer's panic strategy.** `catch_unwind` cannot contain an
+  abort, and a library must not replace the consumer's process policy with an unimplementable
+  promise.
+- **A crash-ended prefix represents an invariant of monotonically allocated process identities.**
+  It keeps crash cost independent of how many boots preceded this one; a per-identity set is still
+  needed only for death within the current boot.

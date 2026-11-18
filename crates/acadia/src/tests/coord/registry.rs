@@ -509,6 +509,39 @@ fn every_entry_held_attaches_unregistered_and_listings_say_so_until_a_restart() 
 }
 
 #[test]
+fn an_attachment_from_before_a_crash_cannot_change_its_successors_entry() {
+    for implementation in super::implementations() {
+        let mem = Backend::mem();
+        let root = PathBuf::from(Backend::MEM_ROOT);
+        let make = || participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let mut stale = attach(&make(), Access::Read);
+        let stale_token = registered(&mut *stale, b"before");
+        let layout = make().layout().clone();
+        for path in [
+            layout.registry_entry(0),
+            layout.registry_dir(),
+            layout.state_dir(),
+            root.clone(),
+        ] {
+            mem.fsync(&path).expect("sync");
+        }
+        mem.simulate_crash();
+        let successor_participant = make();
+        let mut successor = attach(&successor_participant, Access::Read);
+        let successor_token = registered(&mut *successor, b"after");
+        assert_ne!(successor_token, stale_token);
+        assert!(matches!(
+            stale.register(b"changed"),
+            Err(CoordError::Abandoned)
+        ));
+        drop(stale);
+        let listing = list(&successor_participant);
+        assert!(live_tokens(&listing).contains(&successor_token));
+        assert!(!live_tokens(&listing).contains(&stale_token));
+    }
+}
+
+#[test]
 fn a_host_restart_discards_the_overflow_record() {
     for implementation in super::implementations() {
         let mem = Backend::mem();
@@ -529,8 +562,9 @@ fn a_host_restart_discards_the_overflow_record() {
         }
         assert!(list(&observer).may_be_incomplete);
         mem.simulate_crash();
+        let after = make();
         assert!(
-            observer
+            after
                 .vfs()
                 .read(&layout.registry_overflow())
                 .is_ok_and(|bytes| !bytes.is_empty()),

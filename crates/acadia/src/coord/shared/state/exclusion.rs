@@ -41,9 +41,7 @@ impl SharedState {
 
     fn alive(&self) -> CoordResult<()> {
         self.not_abandoned()?;
-        if !self.vfs.is_os_filesystem() && boot(self.vfs.as_ref())? != self.boot {
-            return Err(CoordError::Abandoned);
-        }
+        boot(self.vfs.as_ref())?;
         Ok(())
     }
 
@@ -70,10 +68,7 @@ impl SharedState {
             }
         })?;
         self.alive()?;
-        let mut held = self
-            .holds
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut held = self.holds_guard()?;
         self.not_abandoned()?;
         let id = NEXT_INSTANCE
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -92,10 +87,7 @@ impl SharedState {
         id: u64,
     ) -> CoordResult<std::sync::MutexGuard<'_, HashMap<u64, Box<dyn VfsLock>>>> {
         self.alive()?;
-        let held = self
-            .holds
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let held = self.holds_guard()?;
         self.not_abandoned()?;
         if !held.contains_key(&id) {
             return Err(CoordError::Abandoned);
@@ -111,13 +103,13 @@ struct Kept {
 
 impl Drop for Kept {
     fn drop(&mut self) {
-        drop(
-            self.participant
-                .holds
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&self.id),
-        );
+        if std::thread::panicking() {
+            self.participant.abandon();
+            return;
+        }
+        if let Ok(mut held) = self.participant.holds_guard() {
+            held.remove(&self.id);
+        }
     }
 }
 
@@ -151,6 +143,7 @@ impl WriterExclusion for SharedState {
             if current_boot != self.boot {
                 return Err(CoordError::Abandoned);
             }
+            let mut snapshot = self.snapshot_at(&current_boot)?;
             let _held = self.hold_guard(kept.id)?;
             let previous_owner = self
                 .words
@@ -163,7 +156,6 @@ impl WriterExclusion for SharedState {
                     .word(Word::Fence)
                     .store(format::TRUE, Ordering::Release);
             }
-            let mut snapshot = self.snapshot_at(&current_boot)?;
             if !snapshot.modification_count.is_multiple_of(2) {
                 announce!(self, SetFence);
                 self.words
@@ -181,7 +173,15 @@ impl WriterExclusion for SharedState {
                     .word(Word::GenerationLimit)
                     .load(Ordering::Acquire)
             {
-                let (base, limit) = Self::reserve_generations(self.vfs.as_ref(), &self.directory)?;
+                let current_limit = self
+                    .words
+                    .word(Word::GenerationLimit)
+                    .load(Ordering::Acquire);
+                let (base, limit) = Self::reserve_generations(
+                    self.vfs.as_ref(),
+                    &self.directory,
+                    Some(current_limit),
+                )?;
                 found = base;
                 self.words
                     .word(Word::GenerationLimit)
@@ -257,10 +257,10 @@ impl ExclusionHold for SharedHold {
         let kept = self.kept.as_ref().ok_or(CoordError::Abandoned)?;
         let participant = &kept.participant;
         let current_boot = boot(participant.vfs.as_ref())?;
-        let _held = participant.hold_guard(kept.id)?;
         if purpose == Purpose::Ordinary && participant.snapshot_at(&current_boot)?.fenced {
             return Err(CoordError::RecoveryRequired);
         }
+        let _held = participant.hold_guard(kept.id)?;
         let next_depth = self.depth.checked_add(1).ok_or(CoordError::Exhausted {
             what: "modification nesting",
         })?;
@@ -393,6 +393,12 @@ impl ExclusionHold for SharedHold {
 
 impl Drop for SharedHold {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            if let Some(kept) = self.kept.as_ref() {
+                kept.participant.abandon();
+            }
+            return;
+        }
         let _ = self.release_cleanly();
     }
 }

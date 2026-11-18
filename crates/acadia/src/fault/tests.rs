@@ -47,3 +47,28 @@ fn a_predicate_may_use_the_decorator_it_is_installed_in() {
             .expect("a predicate re-entering its decorator deadlocked");
     assert!(refused && allowed);
 }
+
+#[test]
+fn read_at_replacement_never_exceeds_the_readable_slice() {
+    let replacement = b"replacement is much longer";
+    for (offset, len) in [(0, 0), (1, 1), (4, 3), (20, 2)] {
+        let inner = crate::MemFs::new();
+        inner.write(Path::new("/range"), b"abcdef").unwrap();
+        let bound = inner
+            .read_at(Path::new("/range"), offset, len)
+            .unwrap()
+            .len();
+        let policy = FaultPolicy::new().inject(
+            FaultOp::ReadAt,
+            "/range",
+            Fault::corrupt(Corruption::Replace(replacement.to_vec())),
+            When::Always,
+        );
+        let faulty = FaultyFs::new(inner, policy);
+        assert_eq!(
+            faulty.read_at(Path::new("/range"), offset, len).unwrap(),
+            replacement[..bound].to_vec(),
+            "offset={offset}, len={len}"
+        );
+    }
+}

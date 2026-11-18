@@ -195,8 +195,16 @@ fn carried_anchor(
     for k in 1..=parts.len() {
         let prefix = &parts[..k];
         let below = view.and_then(|map| map.get(&parts[k - 1]));
-        let over = anchor.and(carried.get(prefix));
+        let snapshot = carried.get(prefix);
+        let over = anchor.and(snapshot);
         view = match (over, below) {
+            (None, None) if snapshot.is_some_and(|node| matches!(node, Node::Dir(_))) => {
+                anchor = Some(k);
+                snapshot.and_then(|node| match node {
+                    Node::Dir(map) => Some(map),
+                    Node::File(_) => None,
+                })
+            }
             (Some(Node::Dir(map)), _) => Some(map),
             (_, Some(Node::File(_))) => {
                 anchor = Some(k);

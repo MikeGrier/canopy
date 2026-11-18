@@ -308,7 +308,8 @@ fn a_host_restart_is_reported() {
         }
         assert!(!discover(&participant).required());
         mem.simulate_crash();
-        let need = discover(&participant);
+        let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+        let need = discover(&after);
         assert_eq!(need.untrusted(), Some(Untrusted::HostRestarted));
         assert!(need.required());
     }

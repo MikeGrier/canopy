@@ -1,7 +1,9 @@
 // Copyright (c) Michael Grier.
 
 use super::*;
-use crate::coord::{ArtifactMaker, Created, CreationNonce, CreationPlan, ModificationEnd, Purpose};
+use crate::coord::{
+    ArtifactMaker, Created, Creation, CreationNonce, CreationPlan, ModificationEnd, Purpose,
+};
 use std::ffi::OsStr;
 
 struct Maker {
@@ -25,6 +27,106 @@ fn filesystem() -> Arc<crate::MemFs> {
     let fs = Arc::new(crate::MemFs::new());
     fs.create_dir_all(Path::new("/factory")).unwrap();
     fs
+}
+
+#[test]
+fn abandon_cannot_return_between_opening_and_publishing_the_state() {
+    let fs = Arc::new(crate::MemFs::new());
+    let root = Path::new("/handoff");
+    fs.create_dir_all(root).unwrap();
+    let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let resume_rx = Arc::new(Mutex::new(Some(resume_rx)));
+    let policy = crate::FaultPolicy::new().inject(
+        crate::FaultOp::Lock,
+        root.join(".coord-shared/live.lock"),
+        crate::Fault::observe_with(move |_, _| {
+            let resume = resume_rx.lock().unwrap().take().expect("one handoff pause");
+            let _ = paused_tx.send(());
+            let _ = resume.recv();
+        }),
+        crate::When::Once,
+    );
+    let participant = Arc::new(SharedParticipant::new(
+        Arc::new(crate::FaultyFs::new(fs.another_process(), policy)),
+        root,
+        #[cfg(any(test, feature = "test-support"))]
+        None,
+    ));
+    let opening = Arc::clone(&participant);
+    let (sampled_tx, sampled_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sampled_tx.send(opening.sample());
+    });
+    test_timers::mpsc::recv_timeout(&paused_rx, std::time::Duration::from_secs(10))
+        .expect("opening is at the final liveness handoff");
+    let abandoning = Arc::clone(&participant);
+    let (abandoned_tx, abandoned_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        abandoning.abandon();
+        let _ = abandoned_tx.send(());
+    });
+    assert!(
+        test_timers::mpsc::recv_timeout(&abandoned_rx, std::time::Duration::from_millis(100),)
+            .is_err(),
+        "abandon returned before handoff completed"
+    );
+    let _ = resume_tx.send(());
+    test_timers::mpsc::recv_timeout(&abandoned_rx, std::time::Duration::from_secs(10))
+        .expect("abandon finishes after handoff");
+    assert!(participant.inner.state.get().is_some());
+    assert!(matches!(
+        test_timers::mpsc::recv_timeout(&sampled_rx, std::time::Duration::from_secs(10)).unwrap(),
+        Err(CoordError::Abandoned)
+    ));
+    let successor = SharedFactory::new()
+        .open(Arc::new(fs.another_process()), root)
+        .unwrap();
+    successor.sample().unwrap();
+}
+
+#[test]
+fn a_panicking_shared_hold_ends_creation_on_its_public_participant() {
+    let participant = SharedParticipant::new(
+        filesystem(),
+        Path::new("/factory"),
+        #[cfg(any(test, feature = "test-support"))]
+        None,
+    );
+    let mut initial = participant.acquire(Waiting::Wait).unwrap();
+    initial.complete_recovery().unwrap();
+    initial.release().unwrap();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _hold = participant.acquire(Waiting::Wait).unwrap();
+            panic!("the writer stopped unwinding");
+        }))
+        .is_err()
+    );
+    assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+    assert!(matches!(
+        participant.reserve(b"inputs", CreationNonce::from_bytes([1; 16])),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
+fn a_poisoned_initialization_mutex_ends_the_participant() {
+    let fs = filesystem();
+    let participant = SharedParticipant::new(
+        fs,
+        Path::new("/factory"),
+        #[cfg(any(test, feature = "test-support"))]
+        None,
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _initializing = participant.inner.initializing.lock().unwrap();
+            panic!("the initialization mutex is poisoned");
+        }))
+        .is_err()
+    );
+    assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
 }
 
 #[test]

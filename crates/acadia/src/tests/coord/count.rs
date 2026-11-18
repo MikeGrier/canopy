@@ -356,8 +356,9 @@ fn a_sample_after_a_restart_reads_odd() {
         }
         assert_eq!(sample(&publisher), ModCount::new(50));
         mem.simulate_crash();
+        let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert_eq!(
-            sample(&publisher),
+            sample(&after),
             ModCount::new(51),
             "the record survived, from the boot before"
         );

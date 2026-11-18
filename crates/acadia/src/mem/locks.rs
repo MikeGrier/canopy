@@ -23,7 +23,7 @@ pub(super) enum Access {
 #[derive(Debug, Default)]
 pub(super) struct LockShared {
     table: Mutex<LockTable>,
-    released: Condvar,
+    pub(super) released: Condvar,
     /// Run by every operation just after it takes the holds, while it keeps the table.
     #[cfg(test)]
     after_check: Mutex<Option<CheckHook>>,
@@ -42,15 +42,19 @@ impl std::fmt::Debug for CheckHook {
 
 /// Every lock held in one filesystem, by every simulated process over it.
 #[derive(Debug, Default)]
-struct LockTable {
+pub(super) struct LockTable {
     /// The holds on each file, keyed by the file rather than a name of it, so a lock follows its
     /// file through a rename as a native lock follows its handle.
-    holds: HashMap<u64, Vec<Hold>>,
+    pub(super) holds: HashMap<u64, Vec<Hold>>,
     /// The last hold id handed out. Never reused, so a guard whose hold was already released by
     /// an abandonment can never release a later holder's.
     last_hold: u64,
     /// The last simulated process id handed out; the first process is `0`.
-    last_process: u64,
+    pub(super) last_process: u64,
+    /// All process identities through this one ended in the latest crash.
+    pub(super) ended_through: Option<u64>,
+    /// Process views abandoned after the latest crash.
+    pub(super) ended: HashSet<u64>,
 }
 
 /// One holder's lock on `[start, end)` of a file.
@@ -64,6 +68,22 @@ pub(super) struct Hold {
 }
 
 impl LockTable {
+    fn running(&self, process: u64, op: &'static str, path: &Path) -> VfsResult<()> {
+        if self
+            .ended_through
+            .is_some_and(|ended_through| process <= ended_through)
+            || self.ended.contains(&process)
+        {
+            return Err(err(
+                VfsErrorKind::ProcessEnded,
+                op,
+                path,
+                "this process view has ended",
+            ));
+        }
+        Ok(())
+    }
+
     fn excludes(&self, file: u64, mode: LockMode, start: u64, end: u64) -> bool {
         self.holds
             .get(&file)
@@ -162,7 +182,7 @@ impl MemFs {
         MemFs {
             inner: Arc::clone(&self.inner),
             locks: Arc::clone(&self.locks),
-            process: table.last_process,
+            process: AtomicU64::new(table.last_process),
         }
     }
 
@@ -174,14 +194,23 @@ impl MemFs {
     /// what it means to observe. The tree is untouched: a death loses no durable or written
     /// data, which is [`simulate_crash`](MemFs::simulate_crash)'s business.
     pub fn abandon(&self) {
-        self.table().holds.retain(|_, holds| {
-            holds.retain(|hold| hold.process != self.process);
+        let mut table = self.table();
+        let process = self.process.load(Ordering::Acquire);
+        if table
+            .ended_through
+            .is_none_or(|ended_through| process > ended_through)
+        {
+            table.ended.insert(process);
+        }
+        table.holds.retain(|_, holds| {
+            holds.retain(|hold| hold.process != process);
             !holds.is_empty()
         });
+        drop(table);
         self.locks.released.notify_all();
     }
 
-    fn table(&self) -> MutexGuard<'_, LockTable> {
+    pub(super) fn table(&self) -> MutexGuard<'_, LockTable> {
         self.locks
             .table
             .lock()
@@ -190,8 +219,9 @@ impl MemFs {
 
     /// The holds, for an operation to check once it knows the file and the bytes it touches, and
     /// to keep until its change is made.
-    pub(super) fn holds(&self) -> Holds<'_> {
+    pub(super) fn holds(&self, op: &'static str, path: &Path) -> VfsResult<Holds<'_>> {
         let table = self.table();
+        table.running(self.process.load(Ordering::Acquire), op, path)?;
         #[cfg(test)]
         if let Some(hook) = self
             .locks
@@ -202,7 +232,7 @@ impl MemFs {
         {
             (hook.0)();
         }
-        Holds { table }
+        Ok(Holds { table })
     }
 
     /// Runs `hook` in every operation of this filesystem just after it takes the holds it
@@ -236,6 +266,8 @@ impl MemFs {
             ));
         };
         let mut table = self.table();
+        let process = self.process.load(Ordering::Acquire);
+        table.running(process, op, path)?;
         // Opened first, as a native lock opens its handle: a waiter keeps the file it opened
         // whatever names it has by the time it is let in.
         let file = self.create_if_absent(&parts, op, path)?;
@@ -245,6 +277,7 @@ impl MemFs {
                 .released
                 .wait(table)
                 .unwrap_or_else(PoisonError::into_inner);
+            table.running(process, op, path)?;
         }
         if table.excludes(file, mode, start, end) {
             return Err(err(
@@ -258,7 +291,7 @@ impl MemFs {
         let id = table.last_hold;
         table.holds.entry(file).or_default().push(Hold {
             id,
-            process: self.process,
+            process,
             mode,
             start,
             end,

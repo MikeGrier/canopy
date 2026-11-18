@@ -84,7 +84,7 @@ struct ParticipantInner {
     initializing: Mutex<()>,
     /// Held by an opening from the end of its setup wait; see `state::OpenGate`.
     opening: Mutex<()>,
-    abandoned: AtomicBool,
+    abandoned: Arc<AtomicBool>,
     creation: Mutex<HashMap<u64, Box<dyn VfsLock>>>,
     next_creation: AtomicU64,
     #[cfg(any(test, feature = "test-support"))]
@@ -117,7 +117,7 @@ impl SharedParticipant {
                 state: OnceLock::new(),
                 initializing: Mutex::new(()),
                 opening: Mutex::new(()),
-                abandoned: AtomicBool::new(false),
+                abandoned: Arc::new(AtomicBool::new(false)),
                 creation: Mutex::new(HashMap::new()),
                 next_creation: AtomicU64::new(1),
                 #[cfg(any(test, feature = "test-support"))]
@@ -139,30 +139,24 @@ impl SharedParticipant {
         if let Some(state) = self.inner.state.get() {
             return Ok(state);
         }
-        let _initializing = self
-            .inner
-            .initializing
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _initializing = self.inner.lock(&self.inner.initializing)?;
         self.alive()?;
         if self.inner.state.get().is_none() {
             self.check_implementation()?;
             let gate = state::OpenGate {
                 lock: &self.inner.opening,
-                abandoned: &self.inner.abandoned,
+                abandoned: Arc::clone(&self.inner.abandoned),
             };
-            let state = SharedState::open_gated(
+            SharedState::open_gated(
                 Arc::clone(&self.inner.vfs),
                 &self.inner.root,
                 Some(&gate),
+                |state| {
+                    #[cfg(any(test, feature = "test-support"))]
+                    let state = state.with_hook(self.inner.hook.clone());
+                    let _ = self.inner.state.set(Arc::new(state));
+                },
             )?;
-            #[cfg(any(test, feature = "test-support"))]
-            let state = state.with_hook(self.inner.hook.clone());
-            if self.inner.abandoned.load(Ordering::Acquire) {
-                state.abandon();
-                return Err(CoordError::Abandoned);
-            }
-            let _ = self.inner.state.set(Arc::new(state));
         }
         let state = self
             .inner
@@ -196,19 +190,34 @@ impl Coordination for SharedParticipant {
         &IMPLEMENTATION
     }
     fn abandon(&self) {
-        self.inner.abandoned.store(true, Ordering::Release);
+        self.inner.abandon();
+    }
+}
+
+impl ParticipantInner {
+    fn lock<'a, T>(&'a self, mutex: &'a Mutex<T>) -> CoordResult<std::sync::MutexGuard<'a, T>> {
+        match mutex.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                drop(poisoned);
+                self.abandon();
+                Err(CoordError::Abandoned)
+            }
+        }
+    }
+
+    fn abandon(&self) {
+        self.abandoned.store(true, Ordering::Release);
         drop(
-            self.inner
-                .opening
+            self.opening
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
-        self.inner
-            .creation
+        self.creation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        if let Some(state) = self.inner.state.get() {
+        if let Some(state) = self.state.get() {
             state.abandon();
         }
     }

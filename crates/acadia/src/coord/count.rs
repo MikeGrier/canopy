@@ -46,7 +46,9 @@ pub trait CountNotification {
     /// samples again. How the change is noticed is the implementation's -- a poller per process
     /// sampling with backoff only while a registration is outstanding, or a notification from the
     /// operating system -- and in neither does the registrant hold a thread. `ring` runs on a thread
-    /// of the implementation's and must return promptly; one that panics does not stop others.
+    /// of the implementation's and must return promptly. Under `panic = "unwind"`, a panic in one
+    /// ring does not stop others. Under `panic = "abort"`, the panic ends the process as the binary's
+    /// panic strategy requires.
     ///
     /// # Errors
     ///

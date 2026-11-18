@@ -84,10 +84,7 @@ impl SharedState {
                 }
             })?;
         self.alive()?;
-        let mut held = self
-            .holds
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut held = self.holds_guard()?;
         self.not_abandoned()?;
         let id = NEXT_INSTANCE
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -133,10 +130,7 @@ impl SharedState {
     /// abandoned participant records nothing once `abandon` has returned.
     fn incomplete(&self) -> CoordResult<()> {
         self.alive()?;
-        let _held = self
-            .holds
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _held = self.holds_guard()?;
         self.not_abandoned()?;
         self.words
             .word(Word::RegistryOverflow)
@@ -229,6 +223,10 @@ impl SharedState {
 
 impl Drop for Entry {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.participant.abandon();
+            return;
+        }
         if let Ok(claim) = self
             .participant
             .registry_lock("registry-claims.lock", self.index)

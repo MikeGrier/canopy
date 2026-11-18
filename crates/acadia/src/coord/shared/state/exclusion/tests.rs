@@ -5,8 +5,9 @@ use super::*;
 fn participants() -> (Arc<crate::MemFs>, SharedState, SharedState) {
     let fs = Arc::new(crate::MemFs::new());
     fs.create_dir_all(Path::new("/exclusion")).unwrap();
-    let first = SharedState::open(fs.clone(), Path::new("/exclusion")).unwrap();
-    let second = SharedState::open(fs.clone(), Path::new("/exclusion")).unwrap();
+    let first = SharedState::open(Arc::new(fs.another_process()), Path::new("/exclusion")).unwrap();
+    let second =
+        SharedState::open(Arc::new(fs.another_process()), Path::new("/exclusion")).unwrap();
     first
         .acquire(Waiting::Wait)
         .unwrap()
@@ -173,6 +174,89 @@ fn an_unreadable_generation_reservation_cannot_be_reused_by_a_new_epoch() {
 }
 
 #[test]
+fn a_generation_renewal_requires_the_mapped_reservation() {
+    for missing in [true, false] {
+        let (fs, first, _) = participants();
+        let limit = first
+            .words
+            .word(Word::GenerationLimit)
+            .load(Ordering::Acquire);
+        first
+            .words
+            .word(Word::Generation)
+            .store(limit, Ordering::Release);
+        let path = Path::new("/exclusion")
+            .join(DIRECTORY)
+            .join("generation-range");
+        if missing {
+            fs.remove_file(&path).unwrap();
+        } else {
+            let previous = limit - 1;
+            let mut record = super::format::GENERATIONS.to_vec();
+            record.extend_from_slice(&previous.to_le_bytes());
+            record.extend_from_slice(&(!previous).to_le_bytes());
+            fs.write(&path, &record).unwrap();
+        }
+        let before = fs.read(&path).ok();
+        assert!(matches!(
+            first.acquire(Waiting::Never),
+            Err(CoordError::Malformed { .. })
+        ));
+        assert_eq!(fs.read(&path).ok(), before);
+        assert_eq!(
+            first
+                .words
+                .word(Word::GenerationLimit)
+                .load(Ordering::Acquire),
+            limit
+        );
+    }
+}
+
+#[test]
+fn an_interrupted_generation_renewal_resumes_its_durable_reservation() {
+    let fs = Arc::new(crate::MemFs::new());
+    let root = Path::new("/generation-interrupted");
+    fs.create_dir_all(root).unwrap();
+    let gate = crate::FaultGate::closed();
+    let policy = crate::FaultPolicy::new().inject_gated(
+        crate::FaultOp::Fsync,
+        crate::PathMatcher::exact(root.join(DIRECTORY)),
+        crate::Fault::Fail(crate::VfsErrorKind::Other),
+        crate::When::Once,
+        gate.clone(),
+    );
+    let participant = SharedState::open(
+        Arc::new(crate::FaultyFs::new(fs.another_process(), policy)),
+        root,
+    )
+    .unwrap();
+    let limit = participant
+        .words
+        .word(Word::GenerationLimit)
+        .load(Ordering::Acquire);
+    participant
+        .words
+        .word(Word::Generation)
+        .store(limit, Ordering::Release);
+    gate.open();
+    assert!(matches!(
+        participant.acquire(Waiting::Never),
+        Err(CoordError::Vfs(_))
+    ));
+    let renewed = participant.acquire(Waiting::Never).unwrap();
+    assert_eq!(renewed.acquired().found().get(), limit);
+    assert_eq!(renewed.acquired().advanced_to().get(), limit + 1);
+    assert!(
+        participant
+            .words
+            .word(Word::GenerationLimit)
+            .load(Ordering::Acquire)
+            > limit
+    );
+}
+
+#[test]
 fn generation_and_count_exhaustion_do_not_wrap() {
     let (_, first, second) = participants();
     first
@@ -237,6 +321,42 @@ fn new_epochs_refuse_ordinary_work_and_empty_ends_change_nothing() {
     );
     hold.begin_modification(Purpose::Ordinary).unwrap();
     hold.end_modification(ModificationEnd::Settled).unwrap();
+}
+
+#[test]
+fn a_poisoned_shared_hold_table_ends_the_participant() {
+    let (_, first, _) = participants();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = first.holds.lock().unwrap();
+            panic!("the hold table is poisoned");
+        }))
+        .is_err()
+    );
+    assert!(matches!(
+        first.acquire(Waiting::Never),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
+fn a_poisoned_liveness_mutex_ends_an_acquisition_without_deadlocking() {
+    let (_, first, _) = participants();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _live = first.live.lock().unwrap();
+            panic!("the liveness mutex is poisoned");
+        }))
+        .is_err()
+    );
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(first.acquire(Waiting::Never));
+    });
+    assert!(matches!(
+        test_timers::mpsc::recv_timeout(&finished, std::time::Duration::from_secs(1)).unwrap(),
+        Err(CoordError::Abandoned)
+    ));
 }
 
 #[test]
