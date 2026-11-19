@@ -158,7 +158,7 @@ impl FileCoordination {
                 std::mem::take(&mut table.watchers),
             )
         };
-        drop(released);
+        crate::coord::discard(released.into_values());
         for watcher in watchers.iter().filter_map(Weak::upgrade) {
             watcher.abandoned();
         }
@@ -244,6 +244,15 @@ impl FileCoordination {
         &self.layout
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_test_lock(&self, lock: Box<dyn VfsLock>) -> HoldId {
+        let mut table = self.holds.table_recovering();
+        table.next += 1;
+        let id = table.next;
+        table.locks.insert(id, lock);
+        HoldId(id)
+    }
+
     /// Refuses with [`CoordError::Abandoned`] once the participant is abandoned. Takes no lock, so
     /// it never waits for a change in progress.
     pub(crate) fn alive(&self) -> CoordResult<()> {
@@ -296,6 +305,14 @@ impl FileCoordination {
                 self.abandon_participant();
                 None
             }
+        }
+    }
+
+    pub(crate) fn release_lock_safely(&self, id: HoldId) {
+        if let Some(lock) = self.release_lock(id)
+            && crate::coord::catch_contained(|| drop(lock)).is_none()
+        {
+            self.abandon_participant();
         }
     }
 

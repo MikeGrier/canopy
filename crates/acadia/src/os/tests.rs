@@ -179,5 +179,6 @@ fn a_read_no_buffer_can_hold_is_an_error() {
     let path = dir.0.join("sparse");
     fs::File::create(&path).unwrap().set_len(1 << 43).unwrap();
     let refused = OsFs::new().read_at(&path, 0, usize::MAX).unwrap_err();
+    assert_eq!(refused.kind(), VfsErrorKind::StorageFull);
     assert_eq!(refused.op(), "read_at");
 }

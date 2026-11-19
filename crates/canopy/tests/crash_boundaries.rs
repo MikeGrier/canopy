@@ -291,8 +291,9 @@ fn sweep_through(op: FaultOp, label: &str, crash: bool, cut_points: u32) {
         // disk is still failing during recovery is a different scenario and not this one.
         gate.close();
         drop(store);
+        let mut vfs = vfs;
         if crash {
-            faulty.inner().simulate_crash();
+            vfs = Arc::new(faulty.simulate_restart());
         }
 
         let (recovered, _) = Store::open(vfs.clone(), root.clone(), options())

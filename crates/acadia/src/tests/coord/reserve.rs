@@ -237,12 +237,12 @@ fn a_reservation_cut_short_by_a_failure_is_finished_by_the_next_call() {
             let cut = participant(&implementation, vfs, &root);
             let first = cut.reserve(INPUTS, nonce(1));
             cut.abandon();
-            mem.simulate_crash();
+            let mem = mem.simulate_restart();
             let again = participant(&implementation, Arc::new(mem.another_process()), &root)
                 .reserve(INPUTS, nonce(2))
                 .unwrap_or_else(|error| panic!("{failing_sync}: {first:?} then {error}"));
             assert!(matches!(again, Created::Created | Created::Resumed));
-            mem.simulate_crash();
+            let mem = mem.simulate_restart();
             let kept = reservation(&mem, &root).expect("the reservation survives a crash");
             assert_eq!(kept.inputs, INPUTS, "{failing_sync}");
         }
@@ -257,7 +257,7 @@ fn a_reservation_that_returned_survives_a_crash() {
         participant(&implementation, Arc::new(mem.another_process()), &root)
             .reserve(INPUTS, nonce(1))
             .expect("reserve");
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let kept = reservation(&mem, &root).expect("the reservation is durable");
         assert_eq!(&kept.implementation, implementation.implementation());
         assert_eq!(kept.inputs, INPUTS);

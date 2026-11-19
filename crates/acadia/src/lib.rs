@@ -38,8 +38,9 @@
 //!   lets the store place the single commit point of its log protocol (D53)
 //!   exactly where it wants it.
 //! - **Rename is atomic, not durable.** [`Vfs::rename`] replaces the destination
-//!   atomically on the same filesystem; the *effect* of the rename is durable
-//!   only after the containing directory is [`fsync`](Vfs::fsync)'d.
+//!   atomically on the same filesystem. The new name is durable only after its parent is
+//!   [`fsync`](Vfs::fsync)'d; a cross-directory move also requires the source parent to be
+//!   synced to make removal of the old name durable.
 //!
 //! This file defines the contract. The real OS backend ([`OsFs`]) and the in-memory
 //! mock ([`MemFs`]) build on top of it; fault injection ([`FaultyFs`]) layers over any
@@ -364,6 +365,29 @@ impl LockSpan {
 /// not; directories are created only by [`create_dir`](Vfs::create_dir) and
 /// [`create_dir_all`](Vfs::create_dir_all).
 pub trait Vfs: Send + Sync {
+    /// Refuses an operation through a process view that has ended.
+    ///
+    /// Backends whose process identity is meaningful override this; decorators call the wrapped
+    /// backend before selecting any behavior of their own. Other backends have no extra process
+    /// view state to check.
+    fn check_process(&self, _op: &'static str, _path: &Path) -> VfsResult<()> {
+        Ok(())
+    }
+
+    /// Runs `commit` as one process-liveness decision: a backend that can end process views keeps
+    /// restart ordered before or after the call. Arbitrary matching and user callbacks belong
+    /// outside this hook; only the state commit named by the operation belongs inside it.
+    fn commit_process(
+        &self,
+        op: &'static str,
+        path: &Path,
+        commit: &mut dyn FnMut(),
+    ) -> VfsResult<()> {
+        self.check_process(op, path)?;
+        commit();
+        Ok(())
+    }
+
     /// Reads the entire contents of the file at `path`.
     ///
     /// Fails with [`VfsErrorKind::NotFound`] if the file does not exist and
@@ -375,7 +399,8 @@ pub trait Vfs: Send + Sync {
     /// Returns fewer than `len` bytes when the file ends first, and an empty
     /// vector when `offset` is at or past the end: reaching the end is not an
     /// error. It never allocates for bytes the file does not have, so a caller may
-    /// pass a `len` larger than the file.
+    /// pass a `len` larger than the file. [`OsFs`] refuses a result larger than 256 MiB with
+    /// [`VfsErrorKind::StorageFull`] before reserving memory; larger reads must be made in chunks.
     ///
     /// This is the read of a file that is **still being written**: a reader
     /// following a growing output file asks for the next slice from where it left
@@ -423,8 +448,10 @@ pub trait Vfs: Send + Sync {
     /// `from` and `to` must be on the same filesystem (a cross-filesystem
     /// rename fails with [`VfsErrorKind::InvalidInput`]). The rename is atomic --
     /// an observer sees either the old or the new `to`, never a partial state --
-    /// but its effect is durable only after the containing directory is
-    /// [`fsync`](Vfs::fsync)'d. This is the store's stage-then-rename primitive.
+    /// but its effect is durable only after the affected parent directories are
+    /// [`fsync`](Vfs::fsync)'d: the destination parent names the new entry, and a different source
+    /// parent must also be synced to make removal of the old name durable. This is the store's
+    /// stage-then-rename primitive.
     fn rename(&self, from: &Path, to: &Path) -> VfsResult<()>;
 
     /// Removes the file at `path`.
@@ -501,8 +528,11 @@ pub trait Vfs: Send + Sync {
     /// misconfiguration -- two daemons pointed at one root -- into a hang, which
     /// is harder to diagnose than a refusal.
     ///
-    /// The lock is released when the returned guard is dropped, **and when the
-    /// owning process dies by any means**, which is the property the whole
+    /// The lock is released when the returned guard is dropped. The operating system also releases
+    /// it when the owning process dies and no other process retains an inherited descriptor for the
+    /// same open file description. On Unix a process must not `fork` while retaining this guard
+    /// unless every child closes or `exec`s away the inherited description; the kernel lock follows
+    /// the open description, not the Rust guard. This is the property the whole
     /// operation exists for. It follows that the file at `path` may outlive the
     /// lock: its existence carries no meaning and it must never be treated as a
     /// stale lock to reap. Only a live holder means anything.
@@ -526,8 +556,10 @@ pub trait Vfs: Send + Sync {
     /// **Every guard is its own holder**, so two guards taken in one process, or on one thread,
     /// conflict exactly as guards in two processes do.
     ///
-    /// The lock is released when the guard is dropped and when its process dies by any means.
-    /// After a death the release is the operating system's, which on Windows may lag the
+    /// The lock is released when the guard is dropped. After process death the operating system
+    /// releases it once no retained inherited description keeps it alive; on Unix a forked child
+    /// must close or `exec` away inherited descriptions. A Windows process-death release may lag
+    /// the
     /// process's exit by a moment; a successor that must not fail on that lag retries.
     ///
     /// # A locked span holds no data
@@ -640,6 +672,7 @@ pub trait Vfs: Send + Sync {
     /// says so. **A decorator that wraps another `Vfs` must forward this
     /// explicitly**, for the reason given at [`lock_exclusive`](Vfs::lock_exclusive).
     fn open_output(&self, path: &Path) -> VfsResult<std::fs::File> {
+        self.check_process("open_output", path)?;
         Err(VfsError::new(VfsErrorKind::Unsupported, "open_output", {
             "this backend has no operating-system files to hand out"
         })

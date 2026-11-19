@@ -183,11 +183,11 @@ impl ExclusionHold for FileHold {
     }
 
     fn begin_modification(&mut self, purpose: Purpose) -> CoordResult<()> {
+        let participant = self.participant().same_participant();
+        participant.alive()?;
         if purpose == Purpose::Ordinary && self.recovery_required() {
             return Err(CoordError::RecoveryRequired);
         }
-        let participant = self.participant().same_participant();
-        participant.alive()?;
         participant.begin_modification(&mut self.modifications)
     }
 
@@ -204,11 +204,11 @@ impl ExclusionHold for FileHold {
     }
 
     fn complete_recovery(&mut self) -> CoordResult<()> {
+        let participant = self.participant();
+        participant.alive()?;
         if self.modifications.is_open() {
             return Err(CoordError::ModificationOpen);
         }
-        let participant = self.participant();
-        participant.alive()?;
         // Rounded from what a sampler sees, so the result is above every sample taken before it.
         let visible = participant.read_count()?.sample().get();
         let even = if visible.is_multiple_of(2) {

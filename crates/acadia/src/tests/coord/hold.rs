@@ -205,6 +205,27 @@ fn the_fence_outlives_the_clean_release_of_the_holder_that_found_a_death() {
 }
 
 #[test]
+fn an_abandoned_file_hold_reports_abandonment_before_local_state_errors() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let participant = participant_on(
+        &crate::coord::file::FileFactory::new(),
+        Arc::new(mem.another_process()),
+        &root,
+    );
+    let mut hold = participant.acquire(Waiting::Never).unwrap();
+    participant.abandon();
+    assert!(matches!(
+        hold.begin_modification(Purpose::Ordinary),
+        Err(CoordError::Abandoned)
+    ));
+    assert!(matches!(
+        hold.complete_recovery(),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
 fn a_live_holder_releasing_is_never_reported_dead() {
     const ROUNDS: usize = 30;
     on_every_implementation("coord-hold-no-false-death", &|implementation, backend| {
@@ -443,7 +464,7 @@ fn a_restart_requires_recovery_and_remakes_the_boot_record() {
         ] {
             mem.fsync(&path).expect("sync");
         }
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         let hold = acquire(&after);
         assert_eq!(
@@ -477,7 +498,7 @@ fn a_restart_repair_cut_short_is_finished_by_the_next_acquisition() {
         ] {
             mem.fsync(&path).expect("sync");
         }
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         mem.write(&layout.generation(), b"")
             .expect("lose the contents");
         let gate = FaultGate::opened();
@@ -762,7 +783,7 @@ fn a_hold_from_before_a_restart_changes_nothing_its_successor_wrote() {
         let root = PathBuf::from(Backend::MEM_ROOT);
         let stale = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         let mut old = acquire(&stale);
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let successor = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         let new = acquire(&successor);
         let count = successor.sample().expect("sample");
@@ -786,6 +807,24 @@ fn a_hold_from_before_a_restart_changes_nothing_its_successor_wrote() {
         );
         drop(new);
     }
+}
+
+#[test]
+fn a_crash_controller_cannot_reauthorize_its_file_hold() {
+    let mem = Arc::new(Backend::mem());
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let stale_vfs: Arc<dyn Vfs> = mem.clone();
+    let stale = participant_on(&FileFactory::new(), stale_vfs, &root);
+    let old = acquire(&stale);
+    let mem = mem.simulate_restart();
+    let successor = participant_on(&FileFactory::new(), Arc::new(mem.another_process()), &root);
+    let new = acquire(&successor);
+    drop(old);
+    assert!(
+        owner_recorded(&successor),
+        "the crash controller let a stale hold clear its successor's owner"
+    );
+    drop(new);
 }
 
 /// Within a boot the generation is replaced whole and never lost, so a missing one beside this

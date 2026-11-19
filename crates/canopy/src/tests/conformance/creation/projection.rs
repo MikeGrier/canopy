@@ -171,7 +171,7 @@ pub(super) fn model(state: &Map<String, Value>) -> Projection {
 /// a file is durable if a crash now keeps it as it is.
 pub(super) fn observe(mem: &MemFs, artifacts: usize) -> Projection {
     let durable = mem.fork();
-    durable.simulate_crash();
+    let durable = durable.simulate_restart();
     let reservation = root().join(RESERVATION);
     let mut projection = Projection {
         res: mem.read(&reservation).map_or_else(

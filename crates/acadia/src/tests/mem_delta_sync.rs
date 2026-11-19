@@ -75,7 +75,7 @@ fn random_op(rng: &mut Rng, step: u64) -> Op {
     }
 }
 
-fn apply(fs: &MemFs, op: &Op) -> Result<(), VfsErrorKind> {
+fn apply(fs: &mut MemFs, op: &Op) -> Result<(), VfsErrorKind> {
     let result = match op {
         Op::Write(path, bytes) => fs.write(path, bytes),
         Op::Append(path, bytes) => fs.append(path, bytes),
@@ -88,7 +88,7 @@ fn apply(fs: &MemFs, op: &Op) -> Result<(), VfsErrorKind> {
         Op::Rename(from, to) => fs.rename(from, to),
         Op::Fsync(path) => fs.fsync(path),
         Op::Crash => {
-            fs.simulate_crash();
+            *fs = fs.simulate_restart();
             Ok(())
         }
     };
@@ -130,12 +130,12 @@ fn tree(fs: &MemFs) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 fn mem_a_tracked_directory_sync_agrees_with_reconciling_every_entry() {
     for seed in 0..64 {
         let mut rng = Rng(seed);
-        let tracked = MemFs::new();
-        let oracle = MemFs::with_full_directory_sync();
+        let mut tracked = MemFs::new();
+        let mut oracle = MemFs::with_full_directory_sync();
         for step in 0..400 {
             let op = random_op(&mut rng, step);
-            let got = apply(&tracked, &op);
-            let want = apply(&oracle, &op);
+            let got = apply(&mut tracked, &op);
+            let want = apply(&mut oracle, &op);
             assert_eq!(got, want, "seed {seed} step {step}: {op:?}");
             if matches!(op, Op::Crash) {
                 assert_eq!(
@@ -146,8 +146,8 @@ fn mem_a_tracked_directory_sync_agrees_with_reconciling_every_entry() {
                 tracked.audit_refs();
             }
         }
-        tracked.simulate_crash();
-        oracle.simulate_crash();
+        let tracked = tracked.simulate_restart();
+        let oracle = oracle.simulate_restart();
         assert_eq!(tree(&tracked), tree(&oracle), "seed {seed}: final crash");
         tracked.audit_refs();
     }
@@ -179,7 +179,7 @@ fn mem_a_directory_sync_examines_only_what_changed_since_its_last_sync() {
         examined, 300,
         "each sync of /p examines only the one new shard"
     );
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read_dir(p("/p")).unwrap().len(), 300);
     assert_eq!(fs.read(p("/p/s299/f")).unwrap(), b"x");
     fs.audit_refs();
@@ -212,7 +212,7 @@ fn mem_a_directory_new_to_the_durable_tree_reconciles_every_entry() {
     fs.fsync(p("/d/x")).unwrap();
     assert_eq!(fs.examined_entries() - before, 3);
     fs.fsync(p("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read_dir(p("/d/x")).unwrap().len(), 3);
 }
 
@@ -230,7 +230,7 @@ fn mem_changes_inside_a_renamed_directory_follow_it() {
     fs.fsync(p("/e/y")).unwrap();
     fs.fsync(p("/e")).unwrap();
     fs.fsync(p("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(p("/e/y/f")).unwrap(), b"v");
     assert!(!fs.exists(p("/d/x")).unwrap());
     fs.audit_refs();
@@ -245,7 +245,7 @@ fn mem_a_directory_recreated_after_removal_does_not_keep_stale_records() {
     fs.create_dir(p("/d/x")).unwrap();
     fs.fsync(p("/d/x")).unwrap();
     fs.fsync(p("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.read_dir(p("/d/x")).unwrap().is_empty());
     fs.audit_refs();
 }
@@ -311,7 +311,7 @@ fn a_directory_made_over_a_carried_file_and_moved_carries_no_file() {
     fs.rename(p("/r/b/x"), p("/r/c")).unwrap();
     fs.fsync(p("/r/c")).expect("the moved directory syncs");
     fs.fsync(p("/r")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.metadata(p("/r/c")).unwrap().is_dir());
     assert!(fs.read_dir(p("/r/c")).unwrap().is_empty());
 }

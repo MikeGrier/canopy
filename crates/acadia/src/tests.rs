@@ -42,13 +42,13 @@ mod waiting_locks;
 /// A unique, self-cleaning scratch directory on the real filesystem for driving
 /// [`OsFs`]. Created and removed through [`OsFs`] itself so the tests exercise
 /// the backend rather than `std::fs` directly.
-struct TempDir {
+pub(crate) struct TempDir {
     path: PathBuf,
     fs: OsFs,
 }
 
 impl TempDir {
-    fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let mut path = std::env::temp_dir();
@@ -59,7 +59,7 @@ impl TempDir {
         TempDir { path, fs }
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }

@@ -293,7 +293,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_by_the_next_write()
         .write_document_replicated_as(name("tickets"), &doc("second"), &body(b"b"), &nonce("t2"))
         .expect("the retry succeeds");
 
-    faulty.inner().simulate_crash();
+    let faulty = Arc::new(faulty.simulate_restart());
     assert!(
         faulty.inner().exists(&partition.join("TICKETS")).unwrap(),
         "the node directory's name was never made durable"
@@ -367,7 +367,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_after_a_reopen() {
         .expect("write after reopen");
     drop(reopened);
 
-    faulty.inner().simulate_crash();
+    let faulty = Arc::new(faulty.simulate_restart());
     assert!(
         faulty.inner().exists(&partition.join("TICKETS")).unwrap(),
         "the node directory's name was never made durable"
@@ -651,7 +651,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
         .expect("write after reopen");
     drop(reopened);
 
-    faulty.inner().simulate_crash();
+    let faulty = Arc::new(faulty.simulate_restart());
     assert!(
         faulty.inner().exists(&partition.join("TICKETS")).unwrap(),
         "the node directory's name was never made durable"

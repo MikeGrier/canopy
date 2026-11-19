@@ -370,9 +370,11 @@ may open one store").
   the other. `MemFs` treats `lock_exclusive` as an exclusive whole-file hold, the stricter
   reading, and creates its file without truncating it, as `OsFs` does.
 - **A Unix lock is released explicitly before its handle closes.** A child forked by another
-  thread holds a duplicate of the description until it execs, and `flock` and
-  open-file-description locks last as long as the description, so a lock released only by the
-  close outlives its guard for that window. A Linux run of the cross-process root-lock suite
+  thread holds a duplicate of the description until it closes or execs, and `flock` and
+  open-file-description locks last as long as the description. A forked child can therefore
+  retain a lock across the parent's death; callers that fork a process holding `VfsLock` must
+  arrange for inherited descriptions to close or be replaced by exec before relying on death to
+  release them. Normal guard drop explicitly unlocks, so it does not depend on that window. A Linux run of the cross-process root-lock suite
   once saw a holder refused a root whose only other holder had already dropped its guard, which
   this window explains. On Windows, `UnlockFileEx` before the close makes the release prompt,
   where a closed handle's locks go only when the system gets to them.
@@ -557,15 +559,14 @@ drop failed the test that a drop waits for a running callback.
 
 [^ac-4]: `AC-4` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#ac-4) [completed 2026-11-13; `191fbf2`]
 
-## A signal's operations are ordered as acquire-release operations, 2026-11-13
+## A signal's synchronization edges, 2026-11-13
 
-`Signal` promises that `raise`, `lower` and `wait` are each ordered with the calling thread's own
-memory accesses as an acquire-release read-modify-write of the signal's level would be. A protocol
-over a signal -- canopy's doorbell is the one there is -- may then treat the level as one more
-atomic location, and order it with its own atomics by acquire and release alone ([canopy's
-DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's orderings, checked by loom")[^rg-2-2].
-The contract is the engineer's: it is the obvious one, and it follows from what each platform
-documents of the operations behind it.
+`Signal` promises that a successful `wait` observes a prior `raise` with the synchronization
+needed to order the raiser's preceding memory before the waiter's following work. `lower` promises
+only that the signal is reset before it returns; it is not an independent acquire or release edge
+on every platform. A protocol that needs one uses an explicit atomic in its own state, as canopy's
+doorbell does ([canopy's DESIGN-NOTES.md](../canopy/DESIGN-NOTES.md) "The doorbell's orderings,
+checked by loom")[^rg-2-2].
 
 - **Windows, `EventSignal`.** Microsoft's documentation of the Win32 synchronization functions
   ([Synchronization and Multiprocessor
@@ -979,8 +980,9 @@ joining `CountNotification` to `Coordination`:
   holding the count odd for tens of milliseconds.
 - **Registrations through one participant that are due together are sampled once.**
 - **A registration rings once and is gone**, when its count differs from what it sampled, when its
-  deadline passes, or when its count cannot be sampled -- so the caller, sampling again, meets the
-  failure itself. A dropped notice withdraws a registration that has not yet been taken to ring.
+  deadline passes, when its count cannot be sampled, or when its platform notification is an early
+  hint. The caller always samples again; an unrelated native hint is therefore safe when the count
+  is unchanged. A dropped notice withdraws a registration that has not yet been taken to ring.
 - **Rings run on the poller's thread, outside its lock, each under `catch_unwind`**, so a ring that
   panics costs its own registration and not the poller every other registration in the process
   depends on.
@@ -1075,7 +1077,9 @@ waits: the break is an I/O completion and the deadline a timer, both on the thre
   `FileFactory::polled` makes a factory's participants take the poller alone.
 - **The break comes before the rename finishes**, so a registration whose lock broke samples again on
   pool timers, from 250 microseconds and doubling, up to six samples and no later than its deadline,
-  and rings once the count differs or the samples are spent.
+  and rings once the count differs or the samples are spent. A break can also be caused by access
+  outside this process; that ring is an allowed early hint, and the caller's resample is what keeps
+  it from changing correctness.
 - **The lock must be on the published file.** After it is granted the file it is held on is compared
   with the one now at the count's path, and the count is sampled again; if either differs, the
   registration goes to the poller, because a rename between the open and the grant would leave a lock
@@ -1421,8 +1425,10 @@ announces each such step before it acts[^ac-5]:
   until its parent names the directory. Nested carried contents survive only when the relevant
   parent snapshot is refreshed; the root snapshot keeps descendants that no direct child sync owns.
 - **Rename may leave two durable file names for one inode.** File rename is atomic in the live
-  tree but directory durability is independent. Syncing the destination parent before the source
-  parent leaves both names after a crash, both referring to the same inode. The reference does not
+  tree but directory durability is independent. A cross-directory move requires the destination
+  parent to be synced to name the new entry and the source parent to be synced to remove the old
+  one. Syncing the destination parent before the source parent leaves both names after a crash,
+  both referring to the same inode. The reference does not
   require deduplication or directory-sync ordering across parents.
 - **Unnamed descendants are lost precisely at the unsynced link.** Syncing a directory's own
   contents does not name that directory in its parent. A crash therefore retains an explicitly
@@ -1982,6 +1988,11 @@ Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The eighth review, 
 
 ## Three failures, two events: a panic, a process ending, a host restart, 2026-11-18
 
+> **SUPERSEDED in part, 2026-11-18, by "Eleventh review fixes: immutable process views and
+> unwind-safe native boundaries" below.** A crash cannot change the identity of an existing
+> `MemFs` view. `simulate_restart` returns the distinct successor view; `simulate_crash` ends the
+> caller and returns no replacement.
+
 > **SUPERSEDED in part, 2026-11-18, by "Tenth review fixes: abort-strategy notification callbacks"
 > below.** `catch_unwind` isolates a callback only in an unwinding binary. The workspace release
 > profile uses `panic = "abort"`, so a callback panic in a release binary ends the process and no
@@ -2024,6 +2035,11 @@ The storage model, [MemFsDurability.tla](spec/MemFsDurability.tla), models no pr
 and its `Crash` is unchanged. The work is milestones M44 and M45 in [CHECKLIST.md](CHECKLIST.md).
 
 ## Ninth review fixes: restart as process end, handoff, reservations, carried sync, event and oplock capabilities, 2026-11-18
+
+> **SUPERSEDED in part, 2026-11-18, by "Eleventh review fixes: immutable process views and
+> unwind-safe native boundaries" below.** The process view invoking a crash is ended permanently;
+> the fresh identity is carried by `simulate_restart`'s returned value rather than substituted
+> into an existing value.
 
 A ninth review of the crate, made on 2026-11-18, raised ten findings. All ten held. They are split
 across three implementation milestones because the first two exposed the shared crash/process
@@ -2109,3 +2125,231 @@ addressed by M49 in [CHECKLIST.md](CHECKLIST.md).
   subsumes and clears that set.
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The tenth review, 2026-11-18".
+
+## Eleventh review fixes: immutable process views and unwind-safe native boundaries, 2026-11-18
+
+An eleventh review of the crate, made on 2026-11-18, raised nine findings. All nine held and are
+recorded as M50 in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md).
+
+- **A `MemFs` process identity is immutable.** `simulate_crash` ends the caller and discards
+  nondurable storage; `simulate_restart` performs that crash and returns a distinct fresh process
+  value. `FaultyFs<MemFs>` provides the corresponding policy-preserving successor decorator, so
+  callers reopen their higher-level objects through a new view rather than reusing a stale one.
+- **State-side abandonment reaches participant-owned creation.** `SharedState` holds a weak route
+  to the public participant's creation table. A writer, registry, admission or creation guard
+  abandoned through shared state therefore clears an in-progress creation lock even while its
+  artifact maker is paused elsewhere.
+- **Registry claim locks are unwind guards.** A listing panic ends the file participant and releases
+  every hold owned by it; an ordinary return drops only the current claim. No numeric claim can be
+  stranded by escaping inspection code.
+- **Oplock callback destruction is outside registration ownership.** Notice withdrawal extracts a
+  pending ring under the mutex and drops it after unlocking, so a ring destructor may abandon the
+  participant and notify its watcher without recursively taking the registration mutex.
+- **Native callback context is panic-restoring and sample-failing.** The Windows thread-pool scope
+  restores its thread-local callback marker through RAII, contains an escaping callback unwind and
+  treats a panicking sample as a failed sample, so its registration rings and later native
+  registrations remain usable.
+- **A public sealed event can make a sealed thread-pool wait.**
+  `SealedWaitOnlyEvent::threadpool_wait` transfers its known manual-reset target into
+  `SealedThreadpoolWait` without exposing a raw or reset-mode-blind handle. The test exercises the
+  same public constructor a consumer uses.
+- **Fault selection and range replacement are borrowed.** `FaultyFs` borrows the selected rule;
+  `read_at` copies at most the undecorated result length from replacement bytes and performs no
+  full-policy or full-replacement clone for that operation.
+- **A lock-wait test proves entry into the wait.** The crash and process-abandonment tests receive a
+  positive signal from the conflicting-lock loop while it still owns the lock table, then end the
+  process. A removed post-wake check cannot pass by racing a late-starting worker.
+- **Interrupted final renewal uses the same saturated next limit as publication.** A durable
+  `u64::MAX` reservation is the exact successor of every mapped limit close enough that one more
+  block saturates; missing, behind and unrelated values remain malformed.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The eleventh review, 2026-11-18".
+
+## Eleventh review follow-up: teardown ownership and unwind containment, 2026-11-18
+
+A follow-up review of the M50 work raised eight findings. All eight held and are recorded as M51 in
+[COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md).
+
+- **Windows callback teardown transfers discarded rings with native resources.** A callback thread
+  sends one cleanup object carrying the timer, I/O, and a ring marked either run or discard before
+  any user destructor executes. If the worker channel is gone, a separate cleanup thread owns that
+  object. Destructor panic is contained after the native callback has no self-wait left to perform.
+- **Every file-registry claim is an RAII value.** Registration update, first registration,
+  unregistration and listing all keep the same claim guard through VFS/publication work. A panic
+  ends that participant and releases the claim; an ordinary return releases it directly.
+- **Process-wide pollers discard participant state one item at a time under panic containment.**
+  Retired registrations and sampled participant clones may own arbitrary VFS destructors; none can
+  unwind the file or shared poller worker and strand its running state.
+- **Shared model liveness drops before model words.** `SharedState` declares the live lock owner
+  before `words`, so the last ordinary drop releases liveness only after its shared model remains
+  discoverable through the field-owning phase and before an opener can observe both conditions as a
+  stranded live epoch.
+- **Native registration-time samples have the settling sample's failure rule.** A sample panic or
+  error at initial oplock registration makes native registration fail closed and returns the ring to
+  the poller, rather than unwinding out of `notify`.
+- **Windows review tests prove the native source.** The panic observer records that its callback did
+  not run on `acadia-coord-poller`, and the withdrawal case asserts the count is not polled after
+  registration before teardown begins.
+- **Wait-entry failure cleanup releases its blocker before scope join.** The holder is an option;
+  missing the positive entry signal releases the lock and then panics, so a regression fails the
+  assertion rather than hanging the scoped thread harness.
+- **The fault-predicate test uses a weak fixture route.** Its policy can reach the decorator during
+  a call, but no strong self-reference survives the worker or test scope.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The eleventh review follow-up,
+2026-11-18".
+
+## Final eleventh review fixes: temporary ownership and layer precedence, 2026-11-18
+
+A final M50/M51 review raised five findings. All five held.
+
+- **A process-wide notification worker owns no VFS destruction path without containment.**
+  Retired registrations and every temporary participant clone are discarded one value at a time
+  under `catch_unwind`. Ordinary sampling return and deadline-expired early exits use the same
+  rule, so a VFS destructor cannot end the worker while leaving its running flag set.
+- **Participant lock maps are detached from their mutex before destruction.** Shared release,
+  public-participant abandonment and shared-state abandonment remove or take owned lock values
+  under the mutex, release that guard, then destroy the values. A `VfsLock` destructor may call
+  back into the same participant without recursively taking the map mutex.
+- **A decorator does not run after an ended wrapped process.** `Vfs::check_process` is the
+  backend liveness hook with a no-op default. `MemFs` implements the ended-process refusal;
+  `FaultyFs` forwards the check before matching a rule or running an observer. A successor
+  process uses the same retained policy because it is a new decorated process view.
+- **Oplock withdrawal releases native ownership before user ownership.** Every stopping path
+  closes or transfers the timer and I/O before discarding a ring capture. Callback-thread cleanup
+  owns the complete bundle off the callback; ordinary teardown performs the same ordering in
+  place. Neither path lets a publisher in ring destruction wait on its own still-held oplock.
+- **An initial native sample failure is a notification, not a registration failure.** Failure to
+  install native registration returns the ring to the poller. After registration succeeds, a
+  changed, unavailable or panicking validation sample releases native resources and runs the ring
+  exactly once, including a one-shot failure with a count that would otherwise remain unchanged
+  until the deadline.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The final eleventh review
+follow-up, 2026-11-18".
+
+## Final review fixes: asynchronous delivery, complete cleanup and restart ordering, 2026-11-18
+
+A final GPT-6.2 Astra review of the M50-M52 work raised seven findings. All seven held.
+
+- **Every native notification ring runs off the registering caller.** A failed initial validation
+  sample transfers the timer, I/O and ring to the cleanup worker. The worker releases native
+  ownership before running user code, while ordinary withdrawal retains its native-first in-place
+  cleanup.
+- **Shared abandonment owns no live value while its mutex is held.** Creation locks, ordinary
+  holds and the liveness lock are all detached before any arbitrary destructor runs. Destruction
+  continues category by category under containment, including on an already-unwinding thread;
+  cleanup never depends on starting another thread.
+- **Caught panic payloads are not destroyed on a process-wide worker.** `catch_contained` and
+  `run_contained` forget hostile payloads after catching them, so a payload whose own `Drop`
+  panics cannot escape the containment boundary. Both pollers and native callback/ring paths use
+  this boundary.
+- **Ended-process precedence belongs to the raw backend.** `MemFs` checks process identity before
+  path and range validation, and trait defaults such as `open_output` ask the backend before
+  returning `Unsupported`. A decorator therefore preserves one error ordering rather than
+  creating it.
+- **A fault policy's deterministic counters are shared by restarted process views.** Selection
+  checks the wrapped process before and after matchers run, and an ended view does not consume a
+  `When` schedule. A predicate paused across restart cannot apply the old fault or duplicate the
+  successor's one-shot fault.
+- **Timeout assertions in scoped concurrency tests cannot strand their own waiter.** A missing
+  crash or abandonment wake releases the conflicting blocker before the assertion unwinds and
+  joins the scope.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The final review follow-up,
+2026-11-18".
+
+## Teardown availability and restart commit ordering, 2026-11-18
+
+A final GPT-6.2 Astra review of the M50-M53 work raised four findings. All four held.
+
+- **Every participant path uses per-value contained destruction.** File and shared participant
+  abandonment detach their lock maps before cleanup, then discard each `VfsLock` through the same
+  panic-payload-safe boundary. The file registry can therefore unwind through abandonment
+  without a second lock-destructor panic escaping the process.
+- **Unwind cleanup needs no late resource.** `coord::discard` catches each value's destructor on
+  the current thread, even while another panic is unwinding. It neither creates a thread nor leaks
+  ordinary lock values when thread creation would be unavailable; hostile panic payloads alone
+  are forgotten after their first unwind is caught.
+- **A fault schedule commits under the wrapped process's restart ordering.** `Vfs::commit_process`
+  is the object-safe point for state changes that must occur with one process-liveness decision.
+  `MemFs` holds its lock-table mutex while the commit runs, so process end is ordered wholly
+  before or after `FaultyFs` consumes a `When` count. Matchers remain outside this critical
+  section, and observers run after the committed fault decision.
+- **Cleanup regressions observe attempts, not only map contents.** The shared-abandonment test's
+  creation, hold and liveness fixtures each publish a destructor count before panicking. A no-op
+  cleanup or a map-emptying leak fails even when the test later scrubs retained fixture values.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "Teardown availability and restart
+commit ordering".
+
+## Merge review fixes: ordinary release and native notification hints, 2026-11-19
+
+A MAI Code 2 review of the full `origin/main` merge surface raised two findings. Both held.
+
+- **Every owned lock release is a participant event.** File and shared participants expose one
+  ordinary release path: remove the lock from the participant table, destroy it under the
+  containment boundary, and abandon the participant if that destructor panics. Multi-lock
+  owners continue their remaining releases, while participant abandonment has already detached
+  every sibling value. A destructor that is the first panic therefore cannot leave a live
+  participant retaining stale exclusion.
+- **Deadline-only tests and native hints assert different guarantees.** The polled factory is
+  used when the test means to prove that an unchanged count cannot ring before a deadline.
+  Default native Windows notification is allowed to deliver an early hint; that path proves the
+  result is safe by resampling the unchanged count. A caller's correctness depends on the
+  resample, not on the native event's source.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The merge review follow-up,
+2026-11-19".
+
+## Full review fixes: admission liveness and worker-owned capture destruction, 2026-11-19
+
+A full GPT-6.2 Astra review raised two findings. Both held.
+
+- **Admission transitions observe abandonment caused by gate release.** File and shared
+  attachment construction, conversion, safe upgrade and reader admission check participant
+  liveness after a temporary gate or old tier is released. A contained lock-destructor panic
+  may abandon the participant; it can never leave behind an attachment or upgrade that claims
+  to hold tiers which the participant already released.
+- **Linux epoll workers own final entry destruction through containment.** When a callback
+  self-withdraws, the last service-owned `Arc<Entry>` is discarded one value at a time through
+  the same panic containment used for other arbitrary user state. Callback captures can panic
+  while being destroyed without ending the epoll worker or leaving `Service::workers` claiming a
+  worker that died. A later watch on the same service remains deliverable.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The full review follow-up,
+2026-11-19".
+
+## Corrected full review fixes: durability, cleanup and contract alignment, 2026-11-19
+
+The corrected full-review report raised twelve items. Eight required code or integration changes
+and four aligned public documentation with behavior the code and its protocols already permit.
+
+- **MemFs fsync names direct root files.** A file directly beneath the implicit root has no parent
+  directory the caller can sync, so fsyncing the file makes both its bytes and that already-named
+  root entry durable. Nested files still require their containing directory to publish the name.
+- **Shared sampling uses the current boot observation.** The count is forced odd when the boot read
+  for that sample is unavailable or differs from the opened epoch; trust captured at open cannot
+  outlive a later inability to identify the boot.
+- **Registry cleanup precedes registration success.** Claim-drop abandonment is observed before a
+  token is returned, and unregister contains claim-acquisition/publication/destructor panics while
+  it still releases the entry's liveness lock and the attachment's remaining tiers.
+- **Large OsFs reads fail before large reservation.** `read_at` refuses an owned result larger than
+  256 MiB with `StorageFull`, so host overcommit policy cannot turn one call into an allocation
+  kill. Larger reads are made in bounded chunks.
+- **Abandonment precedes local capability errors.** File hold and upgrade operations check
+  participant liveness before recovery, nesting or admission-state errors, matching the public
+  participant contract.
+- **Process hooks survive replay decoration and public admission is exercised.** Canopy's Recorder
+  forwards `check_process` and `commit_process`; admission regressions inject destructor failure
+  into the gate acquired by the same public attach call rather than testing a helper in isolation.
+- **Notification docs name hints, rename docs name every affected parent.** Early native hints are
+  permitted and require resampling; cross-directory moves sync the destination parent for the new
+  name and the source parent for removal of the old one.
+- **Platform contract limits are stated at the public API.** Unix lock process-death release is
+  qualified by inherited open descriptions after fork. `Signal::lower` guarantees reset
+  completion but no independent Windows acquire/release edge; protocols use their own atomics for
+  that synchronization.
+
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The corrected full-review follow-up,
+2026-11-19".

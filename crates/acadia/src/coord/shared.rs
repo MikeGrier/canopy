@@ -85,7 +85,7 @@ struct ParticipantInner {
     /// Held by an opening from the end of its setup wait; see `state::OpenGate`.
     opening: Mutex<()>,
     abandoned: Arc<AtomicBool>,
-    creation: Mutex<HashMap<u64, Box<dyn VfsLock>>>,
+    creation: Arc<Mutex<HashMap<u64, Box<dyn VfsLock>>>>,
     next_creation: AtomicU64,
     #[cfg(any(test, feature = "test-support"))]
     hook: Option<Arc<dyn StepHook>>,
@@ -118,7 +118,7 @@ impl SharedParticipant {
                 initializing: Mutex::new(()),
                 opening: Mutex::new(()),
                 abandoned: Arc::new(AtomicBool::new(false)),
-                creation: Mutex::new(HashMap::new()),
+                creation: Arc::new(Mutex::new(HashMap::new())),
                 next_creation: AtomicU64::new(1),
                 #[cfg(any(test, feature = "test-support"))]
                 hook,
@@ -152,6 +152,7 @@ impl SharedParticipant {
                 &self.inner.root,
                 Some(&gate),
                 |state| {
+                    let state = state.with_creation(Arc::downgrade(&self.inner.creation));
                     #[cfg(any(test, feature = "test-support"))]
                     let state = state.with_hook(self.inner.hook.clone());
                     let _ = self.inner.state.set(Arc::new(state));
@@ -213,10 +214,14 @@ impl ParticipantInner {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
-        self.creation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        let creation = {
+            let mut creation = self
+                .creation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *creation)
+        };
+        crate::coord::discard(creation.into_values());
         if let Some(state) = self.state.get() {
             state.abandon();
         }

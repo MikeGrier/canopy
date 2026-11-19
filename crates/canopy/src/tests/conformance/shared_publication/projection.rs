@@ -358,7 +358,7 @@ fn read_documents(world: &World, fs: &dyn Vfs) -> Result<Documents, String> {
 
 pub(super) fn observe(world: &World, mem: &MemFs) -> Result<Projection, String> {
     let durable = mem.fork();
-    durable.simulate_crash();
+    let durable = durable.simulate_restart();
     let records = CommitLog::new(Arc::new(mem.another_process()), &world.root)
         .read()
         .map_err(|error| error.to_string())?;

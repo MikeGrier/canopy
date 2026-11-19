@@ -269,7 +269,7 @@ fn a_committed_write_into_new_directories_survives_a_crash() {
     assert!(outcome.is_committed());
     drop(store);
 
-    mem.simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(mem.simulate_restart());
     let reopened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
     assert!(reopened.recovery_required().unwrap());
     reopened

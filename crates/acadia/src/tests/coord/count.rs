@@ -355,7 +355,7 @@ fn a_sample_after_a_restart_reads_odd() {
             mem.fsync(&path).expect("sync");
         }
         assert_eq!(sample(&publisher), ModCount::new(50));
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert_eq!(
             sample(&after),

@@ -243,7 +243,7 @@ fn a_migrated_root_opens_with_its_documents_and_carries_the_new_names_only() {
 fn a_migration_survives_a_power_loss() {
     let (faulty, vfs, root) = legacy_root_v6();
     Store::migrate(Arc::clone(&vfs), root.clone(), &options()).unwrap();
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
     assert_migrated(&vfs, &root);
     let store = Store::open_unsourced(vfs, root).unwrap();
     assert!(store.recovery_required().unwrap());
@@ -427,7 +427,7 @@ fn a_migration_interrupted_at_any_step_is_not_opened_and_is_finished_by_the_next
                 cut.when,
                 gate.clone(),
             );
-            let (faulty, vfs, root) = legacy_root(MIGRATABLE_FORMAT_VERSION, policy);
+            let (faulty, mut vfs, root) = legacy_root(MIGRATABLE_FORMAT_VERSION, policy);
             gate.open();
             Store::migrate(Arc::clone(&vfs), root.clone(), &options())
                 .expect_err(&format!("{step} fails"));
@@ -440,7 +440,7 @@ fn a_migration_interrupted_at_any_step_is_not_opened_and_is_finished_by_the_next
                 );
             }
             if power_loss {
-                faulty.inner().simulate_crash();
+                vfs = Arc::new(faulty.simulate_restart());
             }
 
             match Store::open_unsourced(Arc::clone(&vfs), root.clone()) {

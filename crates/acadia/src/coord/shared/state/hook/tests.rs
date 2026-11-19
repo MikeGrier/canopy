@@ -236,7 +236,7 @@ fn a_host_restart_leaves_no_words_until_a_participant_makes_them_again() {
     let fs = store();
     let (_, participant) = recovered(&fs);
     drop(participant);
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(inspect(&fs, Path::new(ROOT)).unwrap(), None);
     let (recording, participant) = hooked(&fs);
     let hold = participant.acquire(Waiting::Wait).unwrap();

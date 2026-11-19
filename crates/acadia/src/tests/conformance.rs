@@ -68,7 +68,7 @@ fn a_mem_rename_between_two_names_of_one_file_changes_nothing() {
     fs.fsync(Path::new("/p")).unwrap();
     fs.rename(a, b).unwrap();
     fs.fsync(Path::new("/q")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(
         fs.exists(a).unwrap() && fs.exists(b).unwrap(),
         "the crash leaves both names of the file"
@@ -78,7 +78,7 @@ fn a_mem_rename_between_two_names_of_one_file_changes_nothing() {
     assert_eq!(fs.read(b).unwrap(), b"one file");
     fs.fsync(Path::new("/p")).unwrap();
     fs.fsync(Path::new("/q")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(a).unwrap(), b"one file");
     assert_eq!(fs.read(b).unwrap(), b"one file");
 }
@@ -365,7 +365,7 @@ fn mem_crash_loses_unsynced_writes() {
     fs.create_dir_all(Path::new("/d")).unwrap();
     fs.write(Path::new("/d/f"), b"never synced").unwrap();
     // Nothing was fsync'd, so a crash reverts to the (empty) durable state.
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(!fs.exists(Path::new("/d/f")).unwrap());
 }
 
@@ -377,8 +377,17 @@ fn mem_fsynced_file_and_name_survive_crash() {
     fs.write(Path::new("/d/f"), b"payload").unwrap();
     fs.fsync(Path::new("/d/f")).unwrap(); // make the file bytes durable
     fs.fsync(Path::new("/d")).unwrap(); // make the file's name durable
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/f")).unwrap(), b"payload");
+}
+
+#[test]
+fn mem_a_fsynced_file_directly_under_the_implicit_root_survives() {
+    let fs = MemFs::new();
+    fs.write(Path::new("/record"), b"payload").unwrap();
+    fs.fsync(Path::new("/record")).unwrap();
+    let fs = fs.simulate_restart();
+    assert_eq!(fs.read(Path::new("/record")).unwrap(), b"payload");
 }
 
 #[test]
@@ -388,7 +397,7 @@ fn mem_fsynced_bytes_without_dir_fsync_lose_the_name() {
     fs.fsync(Path::new("/d")).unwrap();
     fs.write(Path::new("/d/f"), b"payload").unwrap();
     fs.fsync(Path::new("/d/f")).unwrap(); // bytes durable, but the name is not
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     // The containing directory was never fsync'd after the create, so the name
     // does not survive even though the bytes were flushed.
     assert!(!fs.exists(Path::new("/d/f")).unwrap());
@@ -401,7 +410,7 @@ fn mem_syncing_a_directory_does_not_make_its_own_name_durable() {
     fs.write(Path::new("/d/sub/f"), b"payload").unwrap();
     fs.fsync(Path::new("/d/sub/f")).unwrap();
     fs.fsync(Path::new("/d/sub")).unwrap(); // `sub`'s entries, not `sub` itself
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(!fs.exists(Path::new("/d/sub")).unwrap());
 }
 
@@ -413,7 +422,7 @@ fn mem_syncing_the_parent_too_makes_a_new_directory_survive() {
     fs.fsync(Path::new("/d/sub/f")).unwrap();
     fs.fsync(Path::new("/d/sub")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/sub/f")).unwrap(), b"payload");
 }
 
@@ -424,7 +433,7 @@ fn mem_syncing_the_parent_first_still_needs_the_child_synced() {
     fs.fsync(Path::new("/d")).unwrap(); // `sub`'s name is durable, its entries are not
     fs.write(Path::new("/d/sub/f"), b"payload").unwrap();
     fs.fsync(Path::new("/d/sub/f")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.exists(Path::new("/d/sub")).unwrap());
     assert!(!fs.exists(Path::new("/d/sub/f")).unwrap());
 }
@@ -437,7 +446,7 @@ fn mem_an_unnamed_chain_is_lost_from_its_first_unsynced_link() {
     fs.fsync(Path::new("/d/a/b/f")).unwrap();
     fs.fsync(Path::new("/d/a/b")).unwrap();
     fs.fsync(Path::new("/d")).unwrap(); // names `a`, but `a`'s entry for `b` is not durable
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.exists(Path::new("/d/a")).unwrap());
     assert!(!fs.exists(Path::new("/d/a/b")).unwrap());
 }
@@ -458,7 +467,7 @@ fn mem_a_renamed_directory_keeps_its_durable_contents() {
     let fs = mem_with_durable_dir();
     fs.rename(Path::new("/d/x"), Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/y/f")).unwrap(), b"payload");
     assert!(!fs.exists(Path::new("/d/x")).unwrap());
 }
@@ -472,7 +481,7 @@ fn mem_a_directory_moved_across_parents_keeps_its_contents() {
         .unwrap();
     fs.fsync(Path::new("/d/other")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/other/x/f")).unwrap(), b"payload");
     assert!(!fs.exists(Path::new("/d/x")).unwrap());
 }
@@ -486,7 +495,7 @@ fn mem_a_moved_directory_survives_its_old_parent_being_synced_first() {
         .unwrap();
     fs.fsync(Path::new("/d")).unwrap();
     fs.fsync(Path::new("/d/other")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/other/x/f")).unwrap(), b"payload");
     assert!(!fs.exists(Path::new("/d/x")).unwrap());
 }
@@ -498,7 +507,7 @@ fn mem_a_directory_renamed_over_an_empty_one_brings_its_contents() {
     fs.fsync(Path::new("/d")).unwrap();
     fs.rename(Path::new("/d/x"), Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/y/f")).unwrap(), b"payload");
 }
 
@@ -510,7 +519,7 @@ fn mem_a_renamed_directory_synced_before_its_parent_keeps_old_and_new_contents()
     fs.fsync(Path::new("/d/y/g")).unwrap();
     fs.fsync(Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/y/f")).unwrap(), b"payload");
     assert_eq!(fs.read(Path::new("/d/y/g")).unwrap(), b"later");
 }
@@ -521,7 +530,7 @@ fn mem_a_refused_removal_does_not_drop_what_a_renamed_directory_carries() {
     fs.rename(Path::new("/d/x"), Path::new("/d/y")).unwrap();
     assert!(fs.remove_dir(Path::new("/d/y")).is_err(), "not empty");
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/y/f")).unwrap(), b"payload");
 }
 
@@ -540,7 +549,7 @@ fn mem_a_directory_moved_out_of_a_renamed_one_keeps_its_contents() {
         .unwrap();
     fs.fsync(Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/z/f")).unwrap(), b"deep");
     assert!(fs.read_dir(Path::new("/d/y")).unwrap().is_empty());
 }
@@ -562,7 +571,7 @@ fn mem_a_recreated_directory_moved_out_of_a_renamed_one_does_not_inherit_old_con
         .unwrap();
     fs.fsync(Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.read_dir(Path::new("/d/z")).unwrap().is_empty());
 }
 
@@ -585,7 +594,7 @@ fn mem_reclaims_the_data_of_files_no_tree_can_reach() {
     assert_eq!(fs.held_file_data(), (0, 0));
 
     fs.write(Path::new("/d/g"), b"volatile").unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.held_file_data(), (0, 0));
 }
 
@@ -595,7 +604,7 @@ fn mem_a_directory_recreated_at_its_own_path_starts_empty() {
     fs.remove_dir_all(Path::new("/d/x")).unwrap();
     fs.create_dir(Path::new("/d/x")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.read_dir(Path::new("/d/x")).unwrap().is_empty());
 }
 
@@ -605,7 +614,7 @@ fn mem_a_directory_renamed_away_and_replaced_does_not_inherit_its_contents() {
     fs.rename(Path::new("/d/x"), Path::new("/d/y")).unwrap();
     fs.create_dir(Path::new("/d/x")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.read_dir(Path::new("/d/x")).unwrap().is_empty());
     assert_eq!(fs.read(Path::new("/d/y/f")).unwrap(), b"payload");
 }
@@ -614,7 +623,7 @@ fn mem_a_directory_renamed_away_and_replaced_does_not_inherit_its_contents() {
 fn mem_an_unsynced_directory_rename_is_undone_by_a_crash() {
     let fs = mem_with_durable_dir();
     fs.rename(Path::new("/d/x"), Path::new("/d/y")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/x/f")).unwrap(), b"payload");
     assert!(!fs.exists(Path::new("/d/y")).unwrap());
 }
@@ -631,7 +640,7 @@ fn mem_a_nested_directory_moves_with_its_renamed_parent() {
 
     fs.rename(Path::new("/d/x"), Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(Path::new("/d/y/inner/f")).unwrap(), b"deep");
 }
 
@@ -642,7 +651,7 @@ fn mem_a_directory_recreated_after_removal_does_not_inherit_old_contents() {
     fs.remove_dir_all(Path::new("/d/y")).unwrap();
     fs.create_dir(Path::new("/d/y")).unwrap();
     fs.fsync(Path::new("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.read_dir(Path::new("/d/y")).unwrap().is_empty());
 }
 

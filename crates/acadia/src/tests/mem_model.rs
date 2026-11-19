@@ -43,7 +43,7 @@ enum Expected<'a> {
 }
 
 fn replay(name: &str, actions: &[Action], expected: &[Expected<'_>]) {
-    let fs = MemFs::new();
+    let mut fs = MemFs::new();
     for (step, action) in actions.iter().enumerate() {
         let result = match action {
             Action::CreateDir(path) => fs.create_dir(Path::new(path)),
@@ -54,7 +54,7 @@ fn replay(name: &str, actions: &[Action], expected: &[Expected<'_>]) {
             Action::Rename(from, to) => fs.rename(Path::new(from), Path::new(to)),
             Action::Fsync(path) => fs.fsync(Path::new(path)),
             Action::Crash => {
-                fs.simulate_crash();
+                fs = fs.simulate_restart();
                 Ok(())
             }
         };
@@ -99,14 +99,14 @@ fn mem_model_double_name_after_a_one_parent_sync() {
         Action::Fsync("/d/r"),
         Action::Crash,
     ];
-    let fs = MemFs::new();
+    let mut fs = MemFs::new();
     for action in actions {
         match action {
             Action::CreateDir(path) => fs.create_dir(Path::new(path)).unwrap(),
             Action::Write(path, bytes) => fs.write(Path::new(path), bytes).unwrap(),
             Action::Rename(from, to) => fs.rename(Path::new(from), Path::new(to)).unwrap(),
             Action::Fsync(path) => fs.fsync(Path::new(path)).unwrap(),
-            Action::Crash => fs.simulate_crash(),
+            Action::Crash => fs = fs.simulate_restart(),
             Action::RemoveFile(_) | Action::RemoveDir(_) | Action::RemoveDirAll(_) => {
                 unreachable!()
             }

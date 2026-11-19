@@ -27,6 +27,9 @@ pub(super) struct LockShared {
     /// Run by every operation just after it takes the holds, while it keeps the table.
     #[cfg(test)]
     after_check: Mutex<Option<CheckHook>>,
+    /// Run immediately before a conflicting lock wait releases the table.
+    #[cfg(test)]
+    before_wait: Mutex<Option<CheckHook>>,
 }
 
 #[cfg(test)]
@@ -55,6 +58,8 @@ pub(super) struct LockTable {
     pub(super) ended_through: Option<u64>,
     /// Process views abandoned after the latest crash.
     pub(super) ended: HashSet<u64>,
+    #[cfg(test)]
+    panic_on_lock_drop: HashSet<Vec<OsString>>,
 }
 
 /// One holder's lock on `[start, end)` of a file.
@@ -68,7 +73,7 @@ pub(super) struct Hold {
 }
 
 impl LockTable {
-    fn running(&self, process: u64, op: &'static str, path: &Path) -> VfsResult<()> {
+    pub(super) fn running(&self, process: u64, op: &'static str, path: &Path) -> VfsResult<()> {
         if self
             .ended_through
             .is_some_and(|ended_through| process <= ended_through)
@@ -149,6 +154,8 @@ struct MemHold {
     shared: Arc<LockShared>,
     file: u64,
     id: u64,
+    #[cfg(test)]
+    panic_on_drop: bool,
 }
 
 impl VfsLock for MemHold {}
@@ -168,6 +175,10 @@ impl Drop for MemHold {
         }
         drop(table);
         self.shared.released.notify_all();
+        #[cfg(test)]
+        if self.panic_on_drop {
+            panic!("configured lock destructor stopped");
+        }
     }
 }
 
@@ -223,6 +234,14 @@ impl MemFs {
         let table = self.table();
         table.running(self.process.load(Ordering::Acquire), op, path)?;
         #[cfg(test)]
+        self.run_after_check();
+        Ok(Holds { table })
+    }
+
+    /// Runs `hook` in every operation of this filesystem just after it takes the holds it
+    /// checks, while it keeps them.
+    #[cfg(test)]
+    pub(super) fn run_after_check(&self) {
         if let Some(hook) = self
             .locks
             .after_check
@@ -232,16 +251,28 @@ impl MemFs {
         {
             (hook.0)();
         }
-        Ok(Holds { table })
     }
 
-    /// Runs `hook` in every operation of this filesystem just after it takes the holds it
-    /// checks, while it keeps them.
     #[cfg(test)]
     pub(crate) fn after_lock_check(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self
             .locks
             .after_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(CheckHook(Arc::new(hook)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_when_next_lock_drops(&self, path: &Path) {
+        let parts = split_path(path, "panic_when_next_lock_drops").expect("valid lock path");
+        self.table().panic_on_lock_drop.insert(parts);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn before_lock_wait(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self
+            .locks
+            .before_wait
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(CheckHook(Arc::new(hook)));
     }
@@ -256,6 +287,9 @@ impl MemFs {
         span: LockSpan,
         wait: bool,
     ) -> VfsResult<Box<dyn VfsLock>> {
+        let mut table = self.table();
+        let process = self.process.load(Ordering::Acquire);
+        table.running(process, op, path)?;
         let parts = split_path(path, op)?;
         let Some((start, end)) = span.bounds() else {
             return Err(err(
@@ -265,13 +299,20 @@ impl MemFs {
                 "a range must be non-empty and end at or before LockSpan::MAX_END",
             ));
         };
-        let mut table = self.table();
-        let process = self.process.load(Ordering::Acquire);
-        table.running(process, op, path)?;
         // Opened first, as a native lock opens its handle: a waiter keeps the file it opened
         // whatever names it has by the time it is let in.
         let file = self.create_if_absent(&parts, op, path)?;
         while wait && table.excludes(file, mode, start, end) {
+            #[cfg(test)]
+            if let Some(hook) = self
+                .locks
+                .before_wait
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                (hook.0)();
+            }
             table = self
                 .locks
                 .released
@@ -296,10 +337,14 @@ impl MemFs {
             start,
             end,
         });
+        #[cfg(test)]
+        let panic_on_drop = table.panic_on_lock_drop.remove(&parts);
         Ok(Box::new(MemHold {
             shared: Arc::clone(&self.locks),
             file,
             id,
+            #[cfg(test)]
+            panic_on_drop,
         }))
     }
 

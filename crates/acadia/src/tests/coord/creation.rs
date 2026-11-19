@@ -875,7 +875,7 @@ fn an_open_makes_a_marker_its_creator_did_not_make_durable() {
             .expect("open")
             .confirm_created(OsStr::new(MARKER))
             .expect("the open finds the marker");
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         assert_created(&mem, &root, INPUTS);
         implementation
             .open(Arc::new(mem.another_process()), &root)
@@ -902,7 +902,7 @@ fn an_identical_creator_makes_a_marker_its_creator_did_not_make_durable() {
             .expect("found"),
             Created::Existing
         );
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         assert_created(&mem, &root, INPUTS);
     }
 }
@@ -912,7 +912,7 @@ fn a_marker_no_open_made_durable_is_lost_to_a_crash() {
     let mem = Backend::mem();
     let root = PathBuf::from(Backend::MEM_ROOT);
     root_with_an_unsynced_marker(&FileFactory::new(), &mem, &root);
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     assert!(!mem.exists(&root.join(MARKER)).expect("exists"));
 }
 
@@ -987,7 +987,7 @@ fn a_crash_between_any_two_steps_of_creation_leaves_a_creation_to_finish() {
             let creator = implementation.open(vfs, &root).expect("open");
             assert!(create(&*creator, INPUTS, nonce(1), &mut maker).is_err());
             creator.abandon();
-            mem.simulate_crash();
+            let mem = mem.simulate_restart();
 
             let names = store_names(&mem, &root);
             if !names.is_empty() {
@@ -1009,7 +1009,7 @@ fn a_crash_between_any_two_steps_of_creation_leaves_a_creation_to_finish() {
             )
             .unwrap_or_else(|error| panic!("{sync:?} {make:?}: {error}"));
             assert!(matches!(outcome, Created::Created | Created::Resumed));
-            mem.simulate_crash();
+            let mem = mem.simulate_restart();
             assert_created(&mem, &root, INPUTS);
             implementation
                 .open(Arc::new(mem.another_process()), &root)

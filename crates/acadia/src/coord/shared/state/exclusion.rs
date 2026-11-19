@@ -34,6 +34,7 @@ impl SharedState {
             live: Arc::clone(&self.live),
             abandoned: Arc::clone(&self.abandoned),
             holds: Arc::clone(&self.holds),
+            creation: self.creation.clone(),
             #[cfg(any(test, feature = "test-support"))]
             hook: self.hook.clone(),
         }
@@ -43,6 +44,11 @@ impl SharedState {
         self.not_abandoned()?;
         boot(self.vfs.as_ref())?;
         Ok(())
+    }
+
+    fn current_boot(&self) -> CoordResult<Option<Vec<u8>>> {
+        self.not_abandoned()?;
+        boot(self.vfs.as_ref())
     }
 
     /// The part of [`alive`](Self::alive) that makes no filesystem call, for use under the
@@ -107,8 +113,15 @@ impl Drop for Kept {
             self.participant.abandon();
             return;
         }
-        if let Ok(mut held) = self.participant.holds_guard() {
-            held.remove(&self.id);
+        let lock = self
+            .participant
+            .holds_guard()
+            .ok()
+            .and_then(|mut held| held.remove(&self.id));
+        if let Some(lock) = lock
+            && crate::coord::catch_contained(|| drop(lock)).is_none()
+        {
+            self.participant.abandon();
         }
     }
 }

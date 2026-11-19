@@ -48,6 +48,27 @@ pub(crate) struct Entry {
     liveness: HoldId,
 }
 
+struct Claim {
+    participant: FileCoordination,
+    hold: HoldId,
+}
+
+impl Claim {
+    fn new(participant: FileCoordination, hold: HoldId) -> Self {
+        Self { participant, hold }
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.participant.abandon_participant();
+            return;
+        }
+        self.participant.release_lock_safely(self.hold);
+    }
+}
+
 /// A token no other registration has: this process's identifier, the time its first token was
 /// made, and a count of the tokens it has made.
 fn next_token() -> CoordResult<RegistryToken> {
@@ -136,14 +157,14 @@ enum Inspected {
 
 impl FileCoordination {
     /// Tries entry `index`'s claim lock: `None` if someone else holds it.
-    fn try_claim(&self, index: usize) -> CoordResult<Option<HoldId>> {
+    fn try_claim(&self, index: usize) -> CoordResult<Option<Claim>> {
         match self.take_lock(
             &self.layout().registry_lock(),
             LockMode::Exclusive,
             Layout::claim(index),
             Waiting::Never,
         ) {
-            Ok(claim) => Ok(Some(claim)),
+            Ok(claim) => Ok(Some(Claim::new(self.same_participant(), claim))),
             Err(CoordError::WouldWait) => Ok(None),
             Err(error) => Err(error),
         }
@@ -185,7 +206,8 @@ impl FileCoordination {
                 &layout.registry_entry(held.index),
                 &encode(held.token, tiers, payload),
             );
-            drop(self.release_lock(claim));
+            drop(claim);
+            self.alive()?;
             written?;
             return Ok(Registration::Registered(held.token));
         }
@@ -203,7 +225,7 @@ impl FileCoordination {
             ) {
                 Ok(liveness) => liveness,
                 Err(error) => {
-                    drop(self.release_lock(claim));
+                    drop(claim);
                     match error {
                         CoordError::WouldWait => continue,
                         error => return Err(error),
@@ -213,8 +235,8 @@ impl FileCoordination {
             let token = match next_token() {
                 Ok(token) => token,
                 Err(error) => {
-                    drop(self.release_lock(liveness));
-                    drop(self.release_lock(claim));
+                    self.release_lock_safely(liveness);
+                    drop(claim);
                     return Err(error);
                 }
             };
@@ -225,11 +247,13 @@ impl FileCoordination {
                 )
             });
             if let Err(error) = written {
-                drop(self.release_lock(liveness));
-                drop(self.release_lock(claim));
+                self.release_lock_safely(liveness);
+                drop(claim);
+                self.alive()?;
                 return Err(error);
             }
-            drop(self.release_lock(claim));
+            drop(claim);
+            self.alive()?;
             *entry = Some(Entry {
                 index,
                 token,
@@ -245,15 +269,18 @@ impl FileCoordination {
     /// lock can be had, then releases its liveness lock. An abandoned participant does neither,
     /// since its locks were released already.
     pub(crate) fn unregister_entry(&self, entry: Entry) {
-        let claim = self.try_claim(entry.index).ok().flatten();
-        if claim.is_some() {
-            let _ =
-                self.publishing(|vfs| vfs.remove_file(&self.layout().registry_entry(entry.index)));
+        let result = crate::coord::catch_contained(|| {
+            let claim = self.try_claim(entry.index).ok().flatten();
+            if claim.is_some() {
+                let _ = self
+                    .publishing(|vfs| vfs.remove_file(&self.layout().registry_entry(entry.index)));
+            }
+            drop(claim);
+        });
+        if result.is_none() {
+            self.abandon_participant();
         }
-        drop(self.release_lock(entry.liveness));
-        if let Some(claim) = claim {
-            drop(self.release_lock(claim));
-        }
+        self.release_lock_safely(entry.liveness);
     }
 
     /// Records that a participant attached unregistered in this boot. The record names the boot,
@@ -296,7 +323,7 @@ impl FileCoordination {
             Waiting::Never,
         ) {
             Ok(probe) => {
-                drop(self.release_lock(probe));
+                self.release_lock_safely(probe);
                 return Ok(Inspected::Free);
             }
             Err(CoordError::WouldWait) => {}
@@ -323,7 +350,7 @@ impl Registry for FileCoordination {
                 continue;
             };
             let inspected = self.inspect(index);
-            drop(self.release_lock(claim));
+            drop(claim);
             match inspected? {
                 Inspected::Free => {}
                 Inspected::Live(entry) => listing.live.push(entry),

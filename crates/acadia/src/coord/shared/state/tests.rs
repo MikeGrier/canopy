@@ -92,8 +92,8 @@ fn host_restart_and_abandonment_are_not_clean_release() {
     assert!(matches!(first.snapshot(), Err(CoordError::Abandoned)));
     assert_eq!(second.snapshot().unwrap().owner, 42);
     second.abandon();
-    fs.simulate_crash();
-    let restarted = SharedState::open(fs, Path::new("/state")).unwrap();
+    let fs = fs.simulate_restart();
+    let restarted = SharedState::open(Arc::new(fs), Path::new("/state")).unwrap();
     assert_eq!(
         restarted.snapshot().unwrap().trust,
         Trust::Untrusted(Untrusted::HostRestarted)
@@ -146,7 +146,7 @@ fn identities_a_retry_issues_survive_a_crash_after_the_first_attempt_died_before
     let range = root.join(DIRECTORY).join("generation-range");
     let issued = fs.read(&range).unwrap();
     retry.abandon();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(
         fs.read(&range).ok(),
         Some(issued),
@@ -334,6 +334,28 @@ fn a_native_participant_that_cannot_identify_its_boot_samples_odd_and_reports_no
     drop(blind);
     drop(live);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_participant_that_loses_boot_identity_during_life_samples_odd() {
+    let fs = Arc::new(crate::MemFs::new());
+    fs.create_dir_all(Path::new("/state-loses-boot")).unwrap();
+    let gate = crate::FaultGate::closed();
+    let faulty = Arc::new(crate::FaultyFs::new(
+        fs.another_process(),
+        crate::FaultPolicy::new().inject_gated(
+            crate::FaultOp::BootIdentity,
+            crate::PathMatcher::predicate(|_| true),
+            crate::Fault::error(VfsErrorKind::Unsupported),
+            crate::When::Always,
+            gate.clone(),
+        ),
+    ));
+    let state = SharedState::open(faulty, Path::new("/state-loses-boot")).unwrap();
+    vouch(&state);
+    assert!(state.sample().unwrap().is_settled());
+    gate.open();
+    assert!(!state.sample().unwrap().is_settled());
 }
 
 #[test]

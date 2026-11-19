@@ -248,6 +248,8 @@ impl Service {
             {
                 let mut state = entry.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state.removed {
+                    drop(state);
+                    crate::coord::discard([entry]);
                     continue;
                 }
                 state.running = Some(thread::current().id());
@@ -266,6 +268,7 @@ impl Service {
             }
             drop(state);
             entry.idle.notify_all();
+            crate::coord::discard([entry]);
         }
     }
 }

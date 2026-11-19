@@ -2,13 +2,38 @@
 
 //! How calls are grouped into the steps a model takes.
 
-use super::Runs;
+use super::{Recorder, Runs};
+use acadia::{Vfs, VfsErrorKind};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Rename,
     Sync,
     Other,
+}
+
+#[test]
+fn recorder_preserves_process_hooks() {
+    let recorder = Recorder::new();
+    drop(recorder.mem().simulate_restart());
+    assert_eq!(
+        Vfs::check_process(&recorder, "read", Path::new("/file"))
+            .unwrap_err()
+            .kind(),
+        VfsErrorKind::ProcessEnded
+    );
+    let committed = AtomicBool::new(false);
+    assert_eq!(
+        Vfs::commit_process(&recorder, "read", Path::new("/file"), &mut || {
+            committed.store(true, Ordering::Release);
+        })
+        .unwrap_err()
+        .kind(),
+        VfsErrorKind::ProcessEnded
+    );
+    assert!(!committed.load(Ordering::Acquire));
 }
 
 #[test]

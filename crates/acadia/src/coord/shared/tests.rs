@@ -5,6 +5,22 @@ use crate::coord::{
     ArtifactMaker, Created, Creation, CreationNonce, CreationPlan, ModificationEnd, Purpose,
 };
 use std::ffi::OsStr;
+use std::sync::Weak;
+
+#[derive(Debug)]
+struct ReenteringCreationLock {
+    participant: Weak<ParticipantInner>,
+}
+
+impl crate::VfsLock for ReenteringCreationLock {}
+
+impl Drop for ReenteringCreationLock {
+    fn drop(&mut self) {
+        if let Some(participant) = self.participant.upgrade() {
+            participant.abandon();
+        }
+    }
+}
 
 struct Maker {
     fs: Arc<dyn Vfs>,
@@ -86,6 +102,30 @@ fn abandon_cannot_return_between_opening_and_publishing_the_state() {
 }
 
 #[test]
+fn participant_abandonment_drops_creation_locks_after_unlocking_the_table() {
+    let participant = SharedParticipant::new(
+        filesystem(),
+        Path::new("/factory"),
+        #[cfg(any(test, feature = "test-support"))]
+        None,
+    );
+    participant.inner.creation.lock().unwrap().insert(
+        1,
+        Box::new(ReenteringCreationLock {
+            participant: Arc::downgrade(&participant.inner),
+        }),
+    );
+
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        participant.abandon();
+        let _ = finished.send(());
+    });
+    test_timers::mpsc::recv_timeout(&completion, std::time::Duration::from_secs(1))
+        .expect("participant abandonment completed without re-entering its mutex");
+}
+
+#[test]
 fn a_panicking_shared_hold_ends_creation_on_its_public_participant() {
     let participant = SharedParticipant::new(
         filesystem(),
@@ -108,6 +148,91 @@ fn a_panicking_shared_hold_ends_creation_on_its_public_participant() {
         participant.reserve(b"inputs", CreationNonce::from_bytes([1; 16])),
         Err(CoordError::Abandoned)
     ));
+}
+
+#[test]
+fn a_panicking_shared_hold_releases_an_in_progress_creation_lock() {
+    struct PausedMaker {
+        fs: Arc<dyn Vfs>,
+        root: PathBuf,
+        entered: std::sync::mpsc::Sender<()>,
+        resume: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl ArtifactMaker for PausedMaker {
+        fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+            let _ = self.entered.send(());
+            self.resume.lock().unwrap().recv().unwrap();
+            self.fs
+                .write(&self.root.join(name), inputs)
+                .map_err(Into::into)
+        }
+
+        fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+            Ok(inputs.to_vec())
+        }
+    }
+
+    let fs = filesystem();
+    let participant = Arc::new(SharedParticipant::new(
+        fs.clone(),
+        Path::new("/factory"),
+        #[cfg(any(test, feature = "test-support"))]
+        None,
+    ));
+    let mut initial = participant.acquire(Waiting::Wait).unwrap();
+    initial.complete_recovery().unwrap();
+    initial.release().unwrap();
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (resume, resume_rx) = std::sync::mpsc::channel();
+    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let plan = CreationPlan {
+        inputs: b"inputs",
+        nonce: CreationNonce::from_bytes([1; 16]),
+        artifacts: &names,
+    };
+    std::thread::scope(|scope| {
+        let creating = Arc::clone(&participant);
+        let creator_fs = Arc::clone(&fs);
+        let plan = &plan;
+        let creator = scope.spawn(move || {
+            creating.create(
+                plan,
+                &mut PausedMaker {
+                    fs: creator_fs,
+                    root: PathBuf::from("/factory"),
+                    entered,
+                    resume: Arc::new(Mutex::new(resume_rx)),
+                },
+            )
+        });
+        test_timers::mpsc::recv_timeout(&entered_rx, std::time::Duration::from_secs(10))
+            .expect("creation reached its paused maker");
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _hold = participant.acquire(Waiting::Wait).unwrap();
+                panic!("writer stopped during creation");
+            }))
+            .is_err()
+        );
+        let successor = SharedFactory::new()
+            .open(Arc::new(fs.another_process()), Path::new("/factory"))
+            .unwrap();
+        let (reserved_tx, reserved_rx) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ =
+                reserved_tx.send(successor.reserve(b"inputs", CreationNonce::from_bytes([1; 16])));
+        });
+        let reserved =
+            test_timers::mpsc::recv_timeout(&reserved_rx, std::time::Duration::from_millis(100));
+        let _ = resume.send(());
+        let creator_result = creator.join().unwrap();
+        let reserved = reserved.expect("successor did not wait for the abandoned creation");
+        assert!(
+            reserved.is_ok(),
+            "successor reservation failed: {reserved:?}"
+        );
+        assert!(matches!(creator_result, Err(CoordError::Abandoned)));
+    });
 }
 
 #[test]
@@ -556,7 +681,7 @@ fn an_identical_creator_makes_a_marker_its_creator_did_not_make_durable() {
         root: root.to_path_buf(),
     };
     assert_eq!(finder.create(&plan, &mut maker).unwrap(), Created::Existing);
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.exists(&root.join("marker")).unwrap());
     assert_eq!(fs.read(&root.join("data")).unwrap(), b"one identity");
 }

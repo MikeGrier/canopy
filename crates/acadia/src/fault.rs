@@ -99,6 +99,33 @@ pub enum FaultOp {
     BootIdentity,
 }
 
+impl FaultOp {
+    fn as_str(self) -> &'static str {
+        match self {
+            FaultOp::Read => "read",
+            FaultOp::ReadAt => "read_at",
+            FaultOp::Write => "write",
+            FaultOp::Append => "append",
+            FaultOp::Truncate => "truncate",
+            FaultOp::Fsync => "fsync",
+            FaultOp::Rename => "rename",
+            FaultOp::RemoveFile => "remove_file",
+            FaultOp::CreateDir => "create_dir",
+            FaultOp::CreateDirAll => "create_dir_all",
+            FaultOp::RemoveDir => "remove_dir",
+            FaultOp::RemoveDirAll => "remove_dir_all",
+            FaultOp::ReadDir => "read_dir",
+            FaultOp::Metadata => "metadata",
+            FaultOp::LockExclusive => "lock_exclusive",
+            FaultOp::TryLock => "try_lock",
+            FaultOp::Lock => "lock",
+            FaultOp::PublishNew => "publish_new",
+            FaultOp::OpenOutput => "open_output",
+            FaultOp::BootIdentity => "boot_identity",
+        }
+    }
+}
+
 /// A caller-supplied path test, for what [`PathMatcher`]'s vocabulary does not
 /// cover.
 pub type PathPredicate = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
@@ -590,22 +617,31 @@ pub struct FaultyFs<V> {
     inner: V,
     rules: Vec<Rule>,
     /// How many calls each rule has applied to, by its index in `rules`.
-    matched: Mutex<Vec<u32>>,
+    matched: Arc<Mutex<Vec<u32>>>,
+    #[cfg(test)]
+    panic_on_drop: AtomicBool,
 }
 
-impl<V> FaultyFs<V> {
+impl<V: Vfs> FaultyFs<V> {
     /// Wraps `inner`, injecting the faults in `policy`.
     pub fn new(inner: V, policy: FaultPolicy) -> Self {
         Self {
             inner,
-            matched: Mutex::new(vec![0; policy.rules.len()]),
+            matched: Arc::new(Mutex::new(vec![0; policy.rules.len()])),
             rules: policy.rules,
+            #[cfg(test)]
+            panic_on_drop: AtomicBool::new(false),
         }
     }
 
     /// The wrapped backend.
     pub fn inner(&self) -> &V {
         &self.inner
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_when_dropped(&self) {
+        self.panic_on_drop.store(true, Ordering::Release);
     }
 
     /// Locks the rules' call counts, recovering the guard on poison (D56: poisoning is
@@ -621,25 +657,56 @@ impl<V> FaultyFs<V> {
     /// observation and reports no fault, so the operation proceeds unchanged.
     /// The rule state is **unlocked** before the observation runs, so an action
     /// that re-enters this same decorator does not deadlock.
-    fn check(&self, op: FaultOp, path: &Path) -> Option<Fault> {
-        match self.select(op, path) {
+    fn check(&self, op: FaultOp, path: &Path) -> VfsResult<Option<&Fault>> {
+        self.inner.check_process(op.as_str(), path)?;
+        let selected = self.select(op, path);
+        let mut fire = false;
+        self.inner.commit_process(op.as_str(), path, &mut || {
+            if let Some((index, rule)) = selected {
+                let mut matched = self.matched();
+                fire = should_fire(rule.when, matched[index]);
+                matched[index] = matched[index].saturating_add(1);
+            }
+        })?;
+        let fault = selected.and_then(|(_, rule)| fire.then_some(&rule.fault));
+        Ok(match fault {
             Some(Fault::Observe(observation)) => {
                 observation.observe(op, path);
                 None
             }
             other => other,
-        }
+        })
     }
 
-    /// Picks the fault the policy scripts for this call. Matchers run with nothing locked, since
-    /// a predicate may use this decorator; only the rule's count is taken under the lock.
-    fn select(&self, op: FaultOp, path: &Path) -> Option<Fault> {
+    /// Picks the rule this policy scripts for this call. Matchers run with nothing locked, since a
+    /// predicate may use this decorator; the caller checks liveness again before consuming it.
+    fn select(&self, op: FaultOp, path: &Path) -> Option<(usize, &Rule)> {
         let index = self.rules.iter().position(|rule| rule.applies(op, path))?;
-        let rule = &self.rules[index];
-        let mut matched = self.matched();
-        let fire = should_fire(rule.when, matched[index]);
-        matched[index] = matched[index].saturating_add(1);
-        fire.then(|| rule.fault.clone())
+        Some((index, &self.rules[index]))
+    }
+}
+
+impl FaultyFs<crate::MemFs> {
+    /// Restarts the wrapped in-memory filesystem while retaining this decorator's rules and
+    /// deterministic call counts. The returned decorator is the successor process view.
+    #[must_use]
+    pub fn simulate_restart(&self) -> Self {
+        Self {
+            inner: self.inner.simulate_restart(),
+            rules: self.rules.clone(),
+            matched: Arc::clone(&self.matched),
+            #[cfg(test)]
+            panic_on_drop: AtomicBool::new(self.panic_on_drop.load(Ordering::Acquire)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl<V> Drop for FaultyFs<V> {
+    fn drop(&mut self) {
+        if self.panic_on_drop.load(Ordering::Acquire) {
+            panic!("FaultyFs destructor stopped");
+        }
     }
 }
 
@@ -691,36 +758,49 @@ fn apply_corruption(mut bytes: Vec<u8>, corruption: &Corruption) -> Vec<u8> {
 }
 
 impl<V: Vfs> Vfs for FaultyFs<V> {
+    fn check_process(&self, op: &'static str, path: &Path) -> VfsResult<()> {
+        self.inner.check_process(op, path)
+    }
+
+    fn commit_process(
+        &self,
+        op: &'static str,
+        path: &Path,
+        commit: &mut dyn FnMut(),
+    ) -> VfsResult<()> {
+        self.inner.commit_process(op, path, commit)
+    }
+
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
-        match self.check(FaultOp::Read, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "read", path)),
+        match self.check(FaultOp::Read, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "read", path)),
             Some(Fault::Corrupt(corruption)) => {
-                Ok(apply_corruption(self.inner.read(path)?, &corruption))
+                Ok(apply_corruption(self.inner.read(path)?, corruption))
             }
             _ => self.inner.read(path),
         }
     }
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
-        match self.check(FaultOp::ReadAt, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "read_at", path)),
+        match self.check(FaultOp::ReadAt, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "read_at", path)),
+            Some(Fault::Corrupt(Corruption::Replace(replacement))) => {
+                let read = self.inner.read_at(path, offset, len)?;
+                Ok(replacement[..replacement.len().min(read.len())].to_vec())
+            }
             Some(Fault::Corrupt(corruption)) => {
                 let read = self.inner.read_at(path, offset, len)?;
-                let bound = read.len();
-                Ok(apply_corruption(read, &corruption)
-                    .into_iter()
-                    .take(bound)
-                    .collect())
+                Ok(apply_corruption(read, corruption))
             }
             _ => self.inner.read_at(path, offset, len),
         }
     }
 
     fn write(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
-        match self.check(FaultOp::Write, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "write", path)),
+        match self.check(FaultOp::Write, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "write", path)),
             Some(Fault::ShortWrite { persist }) => {
-                let n = persist.min(contents.len());
+                let n = (*persist).min(contents.len());
                 self.inner.write(path, &contents[..n])?;
                 Err(fault_err(VfsErrorKind::WriteZero, "write", path))
             }
@@ -729,10 +809,10 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     }
 
     fn append(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
-        match self.check(FaultOp::Append, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "append", path)),
+        match self.check(FaultOp::Append, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "append", path)),
             Some(Fault::ShortWrite { persist }) => {
-                let n = persist.min(contents.len());
+                let n = (*persist).min(contents.len());
                 self.inner.append(path, &contents[..n])?;
                 Err(fault_err(VfsErrorKind::WriteZero, "append", path))
             }
@@ -741,71 +821,71 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     }
 
     fn truncate(&self, path: &Path, len: u64) -> VfsResult<()> {
-        match self.check(FaultOp::Truncate, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "truncate", path)),
+        match self.check(FaultOp::Truncate, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "truncate", path)),
             _ => self.inner.truncate(path, len),
         }
     }
 
     fn fsync(&self, path: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::Fsync, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "fsync", path)),
+        match self.check(FaultOp::Fsync, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "fsync", path)),
             _ => self.inner.fsync(path),
         }
     }
 
     fn rename(&self, from: &Path, to: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::Rename, from) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "rename", from)),
+        match self.check(FaultOp::Rename, from)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "rename", from)),
             _ => self.inner.rename(from, to),
         }
     }
 
     fn remove_file(&self, path: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::RemoveFile, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "remove_file", path)),
+        match self.check(FaultOp::RemoveFile, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "remove_file", path)),
             _ => self.inner.remove_file(path),
         }
     }
 
     fn create_dir(&self, path: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::CreateDir, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "create_dir", path)),
+        match self.check(FaultOp::CreateDir, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "create_dir", path)),
             _ => self.inner.create_dir(path),
         }
     }
 
     fn create_dir_all(&self, path: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::CreateDirAll, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "create_dir_all", path)),
+        match self.check(FaultOp::CreateDirAll, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "create_dir_all", path)),
             _ => self.inner.create_dir_all(path),
         }
     }
 
     fn remove_dir(&self, path: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::RemoveDir, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "remove_dir", path)),
+        match self.check(FaultOp::RemoveDir, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "remove_dir", path)),
             _ => self.inner.remove_dir(path),
         }
     }
 
     fn remove_dir_all(&self, path: &Path) -> VfsResult<()> {
-        match self.check(FaultOp::RemoveDirAll, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "remove_dir_all", path)),
+        match self.check(FaultOp::RemoveDirAll, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "remove_dir_all", path)),
             _ => self.inner.remove_dir_all(path),
         }
     }
 
     fn read_dir(&self, path: &Path) -> VfsResult<Vec<DirEntry>> {
-        match self.check(FaultOp::ReadDir, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "read_dir", path)),
+        match self.check(FaultOp::ReadDir, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "read_dir", path)),
             _ => self.inner.read_dir(path),
         }
     }
 
     fn metadata(&self, path: &Path) -> VfsResult<Metadata> {
-        match self.check(FaultOp::Metadata, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "metadata", path)),
+        match self.check(FaultOp::Metadata, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "metadata", path)),
             _ => self.inner.metadata(path),
         }
     }
@@ -814,16 +894,16 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     // `Unsupported`, which would silently downgrade a wrapped backend that does
     // support exclusion.
     fn lock_exclusive(&self, path: &Path) -> VfsResult<Box<dyn VfsLock>> {
-        match self.check(FaultOp::LockExclusive, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "lock_exclusive", path)),
+        match self.check(FaultOp::LockExclusive, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "lock_exclusive", path)),
             _ => self.inner.lock_exclusive(path),
         }
     }
 
     // Forwarded explicitly for the same reason as `lock_exclusive`.
     fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
-        match self.check(FaultOp::TryLock, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "try_lock", path)),
+        match self.check(FaultOp::TryLock, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "try_lock", path)),
             _ => self.inner.try_lock(path, mode, span),
         }
     }
@@ -831,8 +911,8 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     // Forwarded explicitly for the same reason as `lock_exclusive`. A failure is reported
     // before any wait.
     fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
-        match self.check(FaultOp::Lock, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "lock", path)),
+        match self.check(FaultOp::Lock, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "lock", path)),
             _ => self.inner.lock(path, mode, span),
         }
     }
@@ -840,8 +920,8 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     // Forwarded explicitly for the same reason as `lock_exclusive`. A failure publishes
     // nothing, as a failed publication does.
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
-        match self.check(FaultOp::PublishNew, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "publish_new", path)),
+        match self.check(FaultOp::PublishNew, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "publish_new", path)),
             _ => self.inner.publish_new(path, contents),
         }
     }
@@ -850,8 +930,8 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     // `Unsupported`. Only the open is intercepted -- the handle it returns is the
     // caller's, and a write made through it never comes back through this decorator.
     fn open_output(&self, path: &Path) -> VfsResult<std::fs::File> {
-        match self.check(FaultOp::OpenOutput, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "open_output", path)),
+        match self.check(FaultOp::OpenOutput, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "open_output", path)),
             _ => self.inner.open_output(path),
         }
     }
@@ -864,8 +944,8 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     // Forwarded explicitly for the same reason as `lock_exclusive`.
     fn boot_identity(&self) -> VfsResult<Vec<u8>> {
         let path = Path::new("");
-        match self.check(FaultOp::BootIdentity, path) {
-            Some(Fault::Fail(kind)) => Err(fault_err(kind, "boot_identity", path)),
+        match self.check(FaultOp::BootIdentity, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "boot_identity", path)),
             _ => self.inner.boot_identity(),
         }
     }

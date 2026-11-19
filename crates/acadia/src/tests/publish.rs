@@ -134,7 +134,7 @@ fn a_crash_before_the_parent_is_synced_leaves_no_file() {
     fs.create_dir_all(root).unwrap();
     fs.fsync(root).unwrap();
     fs.publish_new(&root.join("record"), b"complete").unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(!fs.exists(&root.join("record")).unwrap());
 }
 
@@ -147,7 +147,7 @@ fn a_crash_after_the_parent_is_synced_leaves_the_whole_file() {
     fs.create_dir_all(root).unwrap();
     fs.publish_new(&root.join("record"), b"complete").unwrap();
     fs.fsync(root).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(&root.join("record")).unwrap(), b"complete");
     fs.audit_refs();
 }

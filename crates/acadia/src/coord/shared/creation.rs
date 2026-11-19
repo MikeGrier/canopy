@@ -97,10 +97,16 @@ impl Drop for CreationHold {
             self.inner.abandon();
             return;
         }
-        let _ = self
+        let lock = self
             .inner
             .lock(&self.inner.creation)
-            .map(|mut owned| owned.remove(&self.id));
+            .ok()
+            .and_then(|mut owned| owned.remove(&self.id));
+        if let Some(lock) = lock
+            && crate::coord::catch_contained(|| drop(lock)).is_none()
+        {
+            self.inner.abandon();
+        }
     }
 }
 

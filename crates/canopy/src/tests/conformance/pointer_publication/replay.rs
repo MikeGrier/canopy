@@ -286,7 +286,8 @@ impl<'t> Replay<'t> {
         drop(self.store.take());
         self.recorder.revive();
         self.recorder.mem().abandon();
-        self.recorder.mem().simulate_crash();
+        let restarted = self.recorder.mem().simulate_restart();
+        self.recorder = Arc::new(Recorder::over(restarted));
     }
 
     /// Runs the operation step `k` starts, through the step at which its task ends.

@@ -22,30 +22,40 @@ fn a_saturated_count_keeps_once_and_times_spent() {
 
 #[test]
 fn a_predicate_may_use_the_decorator_it_is_installed_in() {
-    let faulty: Arc<std::sync::OnceLock<Arc<FaultyFs<crate::mem::MemFs>>>> = Arc::default();
-    let reached = Arc::clone(&faulty);
-    let policy = FaultPolicy::new().inject_matching(
-        FaultOp::Write,
-        PathMatcher::predicate(move |path| {
-            let fs = reached.get().expect("installed before the first call");
-            fs.exists(&path.with_extension("flag")).unwrap_or(false)
-        }),
-        Fault::io_error(),
-        When::Always,
+    let weak_fs = {
+        let faulty: Arc<std::sync::OnceLock<Arc<FaultyFs<crate::mem::MemFs>>>> = Arc::default();
+        let reached = Arc::downgrade(&faulty);
+        let policy = FaultPolicy::new().inject_matching(
+            FaultOp::Write,
+            PathMatcher::predicate(move |path| {
+                let faulty = reached.upgrade().expect("fixture lives through the call");
+                let fs = faulty.get().expect("installed before the first call");
+                fs.exists(&path.with_extension("flag")).unwrap_or(false)
+            }),
+            Fault::io_error(),
+            When::Always,
+        );
+        let fs = faulty.get_or_init(|| Arc::new(FaultyFs::new(crate::mem::MemFs::new(), policy)));
+        let weak_fs = Arc::downgrade(fs);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(fs);
+        let thread = std::thread::spawn(move || {
+            worker.write(Path::new("a.flag"), b"").unwrap();
+            let refused = worker.write(Path::new("a.data"), b"x").is_err();
+            let allowed = worker.write(Path::new("b.data"), b"x").is_ok();
+            let _ = tx.send((refused, allowed));
+        });
+        let (refused, allowed) =
+            test_timers::mpsc::recv_timeout(&rx, std::time::Duration::from_secs(10))
+                .expect("a predicate re-entering its decorator deadlocked");
+        thread.join().expect("predicate worker");
+        assert!(refused && allowed);
+        weak_fs
+    };
+    assert!(
+        weak_fs.upgrade().is_none(),
+        "the predicate retained the fixture"
     );
-    let fs = faulty.get_or_init(|| Arc::new(FaultyFs::new(crate::mem::MemFs::new(), policy)));
-    let (tx, rx) = std::sync::mpsc::channel();
-    let worker = Arc::clone(fs);
-    std::thread::spawn(move || {
-        worker.write(Path::new("a.flag"), b"").unwrap();
-        let refused = worker.write(Path::new("a.data"), b"x").is_err();
-        let allowed = worker.write(Path::new("b.data"), b"x").is_ok();
-        let _ = tx.send((refused, allowed));
-    });
-    let (refused, allowed) =
-        test_timers::mpsc::recv_timeout(&rx, std::time::Duration::from_secs(10))
-            .expect("a predicate re-entering its decorator deadlocked");
-    assert!(refused && allowed);
 }
 
 #[test]

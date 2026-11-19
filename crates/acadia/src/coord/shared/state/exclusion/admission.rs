@@ -85,6 +85,7 @@ impl Admission for SharedState {
         held.gate = Some(held.take("gate.lock", LockMode::Shared, waiting)?);
         held.reader = Some(held.take("reader-tier.lock", LockMode::Shared, waiting)?);
         held.gate.take();
+        held.participant.alive()?;
         if access == Access::Write {
             held.writer = Some(held.take("writer-tier.lock", LockMode::Shared, waiting)?);
         }
@@ -142,6 +143,7 @@ impl Attachment for SharedAttachment {
         held.writer = Some(held.take("writer-tier.lock", LockMode::Exclusive, waiting)?);
         if safety == ReaderSafety::Safe {
             held.gate.take();
+            held.participant.alive()?;
         }
         Ok(Box::new(SharedUpgrade { safety, held }))
     }
@@ -161,6 +163,7 @@ impl Upgrade for SharedUpgrade {
         self.held.participant.alive()?;
         if self.safety == ReaderSafety::Safe {
             self.held.gate.take();
+            self.held.participant.alive()?;
         }
         Ok(())
     }

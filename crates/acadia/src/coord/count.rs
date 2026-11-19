@@ -37,8 +37,10 @@ pub trait Notice: Send + Sync + fmt::Debug {}
 
 /// Being told when the modification count moves, so that work waiting on a change holds no thread.
 pub trait CountNotification {
-    /// Runs `ring` once, when the published count differs from `sampled` or `deadline` passes,
-    /// whichever comes first, unless the returned [`Notice`] is dropped before then.
+    /// Runs `ring` once when the notification mechanism decides the caller should sample, unless
+    /// the returned [`Notice`] is dropped first. A changed published count and the deadline are
+    /// required triggers; an implementation may also deliver earlier hints, including a native
+    /// event whose cause is not a count publication by this process.
     ///
     /// A notification is a hint: the caller samples again and decides from what it reads, so one
     /// that comes early or late costs time and never correctness, and the deadline bounds what a

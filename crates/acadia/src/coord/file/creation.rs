@@ -52,7 +52,7 @@ impl Drop for Kept<'_> {
             self.participant.abandon_participant();
             return;
         }
-        drop(self.participant.release_lock(self.id));
+        self.participant.release_lock_safely(self.id);
     }
 }
 

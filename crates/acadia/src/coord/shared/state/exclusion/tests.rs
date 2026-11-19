@@ -1,6 +1,67 @@
 // Copyright (c) Michael Grier.
 
 use super::*;
+use crate::coord::ModificationCount;
+
+#[derive(Debug)]
+struct ReenteringLock {
+    holds: Arc<Mutex<HashMap<u64, Box<dyn crate::VfsLock>>>>,
+}
+
+impl crate::VfsLock for ReenteringLock {}
+
+impl Drop for ReenteringLock {
+    fn drop(&mut self) {
+        drop(self.holds.lock().unwrap());
+    }
+}
+
+#[derive(Debug)]
+struct ReenteringLiveLock {
+    live: Arc<Mutex<Option<Box<dyn crate::VfsLock>>>>,
+}
+
+impl crate::VfsLock for ReenteringLiveLock {}
+
+impl Drop for ReenteringLiveLock {
+    fn drop(&mut self) {
+        drop(self.live.lock().unwrap());
+    }
+}
+
+#[derive(Debug)]
+struct PanickingLock;
+
+impl crate::VfsLock for PanickingLock {}
+
+impl Drop for PanickingLock {
+    fn drop(&mut self) {
+        panic!("lock destruction stopped");
+    }
+}
+
+#[derive(Debug)]
+struct ObservedLock(Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::VfsLock for ObservedLock {}
+
+impl Drop for ObservedLock {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug)]
+struct ObservedPanickingLock(Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::VfsLock for ObservedPanickingLock {}
+
+impl Drop for ObservedPanickingLock {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        panic!("lock destruction stopped");
+    }
+}
 
 fn participants() -> (Arc<crate::MemFs>, SharedState, SharedState) {
     let fs = Arc::new(crate::MemFs::new());
@@ -152,6 +213,23 @@ fn cold_epochs_never_reuse_an_acquired_generation_and_live_ranges_can_renew() {
             .word(Word::GenerationLimit)
             .load(Ordering::Acquire)
             > limit
+    );
+}
+
+#[test]
+fn an_interrupted_final_generation_renewal_adopts_the_maximum_limit() {
+    let fs = crate::MemFs::new();
+    let directory = Path::new("/generation-final");
+    fs.create_dir_all(directory).unwrap();
+    let expected = (u64::MAX - format::GENERATION_BLOCK) + 1;
+    let mut record = format::GENERATIONS.to_vec();
+    record.extend_from_slice(&u64::MAX.to_le_bytes());
+    record.extend_from_slice(&(!u64::MAX).to_le_bytes());
+    fs.write(&directory.join("generation-range"), &record)
+        .unwrap();
+    assert_eq!(
+        SharedState::reserve_generations(&fs, directory, Some(expected)).unwrap(),
+        (expected, u64::MAX)
     );
 }
 
@@ -324,6 +402,162 @@ fn new_epochs_refuse_ordinary_work_and_empty_ends_change_nothing() {
 }
 
 #[test]
+fn releasing_a_hold_drops_its_lock_after_unlocking_the_hold_table() {
+    let (_, first, _) = participants();
+    let id = 1;
+    let kept = Kept {
+        participant: first.same_participant(),
+        id,
+    };
+    first.holds.lock().unwrap().insert(
+        id,
+        Box::new(ReenteringLock {
+            holds: Arc::clone(&first.holds),
+        }),
+    );
+
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(kept);
+        let _ = finished.send(());
+    });
+    test_timers::mpsc::recv_timeout(&completion, std::time::Duration::from_secs(1))
+        .expect("hold destruction completed without re-entering its mutex");
+}
+
+#[test]
+fn abandonment_drops_shared_locks_after_unlocking_the_hold_table() {
+    let (_, first, second) = participants();
+    first.holds.lock().unwrap().insert(
+        2,
+        Box::new(ReenteringLock {
+            holds: Arc::clone(&first.holds),
+        }),
+    );
+
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        first.abandon();
+        let _ = finished.send(());
+    });
+    test_timers::mpsc::recv_timeout(&completion, std::time::Duration::from_secs(1))
+        .expect("abandonment completed without re-entering its mutex");
+    assert!(second.acquire(Waiting::Never).is_ok());
+}
+
+#[test]
+fn abandonment_drops_the_liveness_lock_after_unlocking_its_mutex() {
+    let (_, first, _) = participants();
+    let replaced = first.live.lock().unwrap().take();
+    drop(replaced);
+    first
+        .live
+        .lock()
+        .unwrap()
+        .replace(Box::new(ReenteringLiveLock {
+            live: Arc::clone(&first.live),
+        }));
+
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        first.abandon();
+        let _ = finished.send(());
+    });
+    test_timers::mpsc::recv_timeout(&completion, std::time::Duration::from_secs(1))
+        .expect("liveness destruction completed without re-entering its mutex");
+}
+
+#[test]
+fn abandonment_contains_lock_destructor_panics_and_attempts_every_category() {
+    let (_, first, _) = participants();
+    let creation_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hold_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let live_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let creation = Arc::new(Mutex::new(HashMap::new()));
+    creation.lock().unwrap().insert(
+        1,
+        Box::new(ObservedPanickingLock(Arc::clone(&creation_drops))) as _,
+    );
+    let first = first.with_creation(Arc::downgrade(&creation));
+    first
+        .holds
+        .lock()
+        .unwrap()
+        .insert(2, Box::new(ObservedPanickingLock(Arc::clone(&hold_drops))));
+    let replaced = first.live.lock().unwrap().take();
+    drop(replaced);
+    first
+        .live
+        .lock()
+        .unwrap()
+        .replace(Box::new(ObservedPanickingLock(Arc::clone(&live_drops))));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| first.abandon()));
+    let retained_creation = std::mem::take(&mut *creation.lock().unwrap());
+    let retained_holds = std::mem::take(&mut *first.holds.lock().unwrap());
+    let retained_live = first.live.lock().unwrap().take();
+    for lock in retained_creation
+        .into_values()
+        .chain(retained_holds.into_values())
+        .chain(retained_live)
+    {
+        std::mem::forget(lock);
+    }
+    assert!(result.is_ok(), "all lock destructors are contained");
+    assert_eq!(creation_drops.load(Ordering::Acquire), 1);
+    assert_eq!(hold_drops.load(Ordering::Acquire), 1);
+    assert_eq!(live_drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn a_panicking_hold_cleanup_does_not_panic_during_unwind() {
+    let (_, first, _) = participants();
+    let id = 3;
+    let kept = Kept {
+        participant: first.same_participant(),
+        id,
+    };
+    first
+        .holds
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(PanickingLock));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _kept = kept;
+        panic!("hold owner unwinds");
+    }));
+    assert!(result.is_err());
+    assert!(first.holds.lock().unwrap().is_empty());
+    assert!(first.live.lock().unwrap().is_none());
+}
+
+#[test]
+fn an_ordinary_panicking_lock_release_abandons_the_shared_participant() {
+    let (_, first, _) = participants();
+    let id = 4;
+    let kept = Kept {
+        participant: first.same_participant(),
+        id,
+    };
+    let sibling_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    first
+        .holds
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(PanickingLock));
+    first
+        .holds
+        .lock()
+        .unwrap()
+        .insert(id + 1, Box::new(ObservedLock(Arc::clone(&sibling_drops))));
+
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(kept))).is_ok());
+    assert!(matches!(first.sample(), Err(CoordError::Abandoned)));
+    assert_eq!(sibling_drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn a_poisoned_shared_hold_table_ends_the_participant() {
     let (_, first, _) = participants();
     assert!(
@@ -378,7 +612,7 @@ fn a_panicking_discovery_inspector_releases_its_probe_without_bookkeeping() {
 fn a_modeled_restart_invalidates_old_holds_before_any_new_effect() {
     let (fs, first, second) = participants();
     let mut old = first.acquire(Waiting::Wait).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(matches!(
         old.begin_modification(Purpose::Recovery),
         Err(CoordError::Abandoned)
@@ -389,7 +623,7 @@ fn a_modeled_restart_invalidates_old_holds_before_any_new_effect() {
     ));
     first.abandon();
     second.abandon();
-    let replacement = SharedState::open(fs, Path::new("/exclusion")).unwrap();
+    let replacement = SharedState::open(Arc::new(fs), Path::new("/exclusion")).unwrap();
     let mut current = replacement.acquire(Waiting::Wait).unwrap();
     current.complete_recovery().unwrap();
     drop(old);

@@ -72,6 +72,6 @@ impl Drop for Exclusion {
             self.participant.abandon_participant();
             return;
         }
-        drop(self.participant.release_lock(self.hold));
+        self.participant.release_lock_safely(self.hold);
     }
 }

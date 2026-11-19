@@ -20,7 +20,6 @@ use std::cell::Cell;
 use std::io;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -47,22 +46,45 @@ use crate::coord::{ModCount, ModificationCount, Notice};
 
 use super::{FileCoordination, Watcher};
 
+#[cfg(test)]
+mod tests;
+
 type Ring = Box<dyn FnOnce() + Send>;
-type Cleanup = (Option<ThreadpoolTimer>, Option<ThreadpoolIo>, Option<Ring>);
+
+enum CleanupRing {
+    None,
+    Run(Ring),
+    Discard(Ring),
+}
+
+struct Cleanup {
+    timer: Option<ThreadpoolTimer>,
+    io: Option<ThreadpoolIo>,
+    ring: CleanupRing,
+}
+
+impl Cleanup {
+    fn finish(self) {
+        let Cleanup { timer, io, ring } = self;
+        crate::coord::run_contained(|| {
+            drop(timer);
+            drop(io);
+        });
+        match ring {
+            CleanupRing::None => {}
+            CleanupRing::Run(ring) => crate::coord::run_contained(ring),
+            CleanupRing::Discard(ring) => crate::coord::discard([ring]),
+        }
+    }
+}
 
 fn start_cleanup_worker() -> io::Result<Sender<Cleanup>> {
     let (sender, receiver) = mpsc::channel::<Cleanup>();
     std::thread::Builder::new()
         .name("acadia-oplock-release".into())
         .spawn(move || {
-            while let Ok((timer, io, ring)) = receiver.recv() {
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    drop(timer);
-                    drop(io);
-                }));
-                if let Some(ring) = ring {
-                    let _ = catch_unwind(AssertUnwindSafe(ring));
-                }
+            while let Ok(cleanup) = receiver.recv() {
+                cleanup.finish();
             }
         })?;
     Ok(sender)
@@ -102,9 +124,16 @@ thread_local! {
 }
 
 fn in_callback(work: impl FnOnce()) {
-    let outer = IN_CALLBACK.replace(true);
-    work();
-    IN_CALLBACK.set(outer);
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_CALLBACK.set(self.0);
+        }
+    }
+
+    let restore = Restore(IN_CALLBACK.replace(true));
+    crate::coord::run_contained(work);
+    drop(restore);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,7 +256,7 @@ impl Shared {
         }
         let ring = lock(&self.registration).ring.take();
         if let Some(ring) = ring {
-            let _ = catch_unwind(AssertUnwindSafe(ring));
+            crate::coord::run_contained(ring);
         }
     }
 
@@ -282,10 +311,8 @@ impl Shared {
     /// Rings once the count differs from what was sampled, or after the last settling sample or
     /// the deadline; otherwise samples again after a longer interval.
     fn settle(&self, step: u32) {
-        let unmoved = self
-            .participant
-            .sample()
-            .is_ok_and(|count| count == self.sampled);
+        let unmoved = crate::coord::catch_contained(|| self.participant.sample())
+            .is_some_and(|sample| sample.is_ok_and(|count| count == self.sampled));
         if !unmoved || step > SETTLE_STEPS || Instant::now() >= self.deadline {
             self.fire();
             return;
@@ -368,14 +395,20 @@ pub(super) fn register(
     if participant.holds.watch(watcher) {
         shared.abandoned();
     }
-    if hold_lock(&shared, endpoint, delay).is_ok() {
-        return Ok(Box::new(notice));
-    }
-    stop_then(&shared, StopRing::Preserve);
-    // A ring that already ran is not run again, and the registration stands as rung.
-    match lock(&shared.registration).ring.take() {
-        Some(ring) => Err(ring),
-        None => Ok(Box::new(notice)),
+    match hold_lock(&shared, endpoint, delay) {
+        Ok(true) => Ok(Box::new(notice)),
+        Ok(false) => {
+            stop_then(&shared, StopRing::Ring);
+            Ok(Box::new(notice))
+        }
+        Err(_) => {
+            stop_then(&shared, StopRing::Preserve);
+            // A ring that already ran is not run again, and the registration stands as rung.
+            match lock(&shared.registration).ring.take() {
+                Some(ring) => Err(ring),
+                None => Ok(Box::new(notice)),
+            }
+        }
     }
 }
 
@@ -385,7 +418,7 @@ fn hold_lock(
     shared: &Arc<Shared>,
     endpoint: UnassociatedEndpoint,
     delay: Duration,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let cleanup = cleanup_worker()?;
     let weak: Weak<Shared> = Arc::downgrade(shared);
     let timer = {
@@ -425,15 +458,9 @@ fn hold_lock(
     drop(registration);
     // The lock was granted on the file that was open, which a rename may already have replaced,
     // after which nothing would break it.
-    let unmoved = shared
-        .participant
-        .sample()
-        .is_ok_and(|count| count == shared.sampled);
-    if unmoved && shared.lock_is_on_the_published_file() {
-        Ok(())
-    } else {
-        Err(io::Error::other("the count moved while it was registered"))
-    }
+    let unmoved = crate::coord::catch_contained(|| shared.participant.sample())
+        .is_some_and(|sample| sample.is_ok_and(|count| count == shared.sampled));
+    Ok(unmoved && shared.lock_is_on_the_published_file())
 }
 
 /// Stops a registration: its callbacks no longer ring, and its lock and timer are released.
@@ -452,47 +479,47 @@ fn stop(shared: &Shared) {
 fn stop_then(shared: &Shared, ring_action: StopRing) {
     let run = |ring: Option<Ring>| {
         if let Some(ring) = ring {
-            let _ = catch_unwind(AssertUnwindSafe(ring));
+            crate::coord::run_contained(ring);
         }
     };
     shared.stopped.store(true, Ordering::Release);
-    let (timer, io, cleanup, ring) = {
+    let (timer, io, sender, ring, withdrawn) = {
         let mut registration = lock(&shared.registration);
         let timer = registration.timer.take();
         let io = registration.io.take();
-        let cleanup = registration.cleanup.take();
-        let ring = match ring_action {
-            StopRing::Preserve => None,
-            StopRing::Withdraw => {
-                drop(registration.ring.take());
-                None
-            }
-            StopRing::Ring => registration.ring.take(),
+        let sender = registration.cleanup.take();
+        let (ring, withdrawn) = match ring_action {
+            StopRing::Preserve => (None, None),
+            StopRing::Withdraw => (None, registration.ring.take()),
+            StopRing::Ring => (registration.ring.take(), None),
         };
-        (timer, io, cleanup, ring)
+        (timer, io, sender, ring, withdrawn)
     };
-    if !IN_CALLBACK.get() {
-        drop(timer);
-        drop(io);
-        run(ring);
-        drop(cleanup);
-        return;
-    }
-    let Some(cleanup) = cleanup else {
-        drop(timer);
-        drop(io);
-        run(ring);
-        return;
-    };
-    if let Err(unsent) = cleanup.send((timer, io, ring)) {
-        let (timer, io, ring) = unsent.0;
-        std::thread::spawn(move || {
+    if !IN_CALLBACK.get() && !matches!(ring_action, StopRing::Ring) {
+        crate::coord::run_contained(|| {
             drop(timer);
             drop(io);
-            if let Some(ring) = ring {
-                let _ = catch_unwind(AssertUnwindSafe(ring));
-            }
         });
+        drop(sender);
+        crate::coord::run_contained(|| drop(withdrawn));
+        run(ring);
+        return;
+    }
+    let cleanup_ring = withdrawn.map_or_else(
+        || ring.map_or(CleanupRing::None, CleanupRing::Run),
+        CleanupRing::Discard,
+    );
+    let cleanup = Cleanup {
+        timer,
+        io,
+        ring: cleanup_ring,
+    };
+    let Some(sender) = sender else {
+        std::thread::spawn(move || cleanup.finish());
+        return;
+    };
+    if let Err(unsent) = sender.send(cleanup) {
+        std::thread::spawn(move || unsent.0.finish());
     }
 }
 

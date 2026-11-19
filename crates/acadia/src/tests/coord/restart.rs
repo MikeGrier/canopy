@@ -94,7 +94,7 @@ fn a_restart_leaves_no_state_trusted() {
         vouched_and_durable(&mem, &root);
         let participant = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert_eq!(participant.trust().expect("trust"), Trust::Vouched);
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert_eq!(
             after.trust().expect("trust"),
@@ -113,7 +113,7 @@ fn a_restart_that_loses_the_record_leaves_the_state_untrusted() {
         let root = PathBuf::from(Backend::MEM_ROOT);
         let participant = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         participant.record_boot(Standing::Vouched).expect("vouch");
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let after = participant_on(&implementation, Arc::new(mem.another_process()), &root);
         assert!(matches!(after.trust().expect("trust"), Trust::Untrusted(_)));
     }
@@ -236,7 +236,7 @@ fn a_boot_identity_is_shared_by_every_view_and_changes_only_with_a_crash() {
     assert_eq!(mem.another_process().boot_identity().expect("same"), first);
     assert_eq!(mem.boot_identity().expect("same"), first);
     let fork = mem.fork();
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     let second = mem.boot_identity().expect("an identity");
     assert_ne!(second, first);
     assert_eq!(mem.another_process().boot_identity().expect("same"), second);

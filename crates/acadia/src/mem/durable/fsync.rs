@@ -46,6 +46,14 @@ impl MemFs {
             Resolved::File(id) => {
                 let bytes = live_data.get(&id).cloned().unwrap_or_default();
                 refs.durable_data.insert(id, bytes);
+                if parents.is_empty()
+                    && !matches!(durable.get(name), Some(Node::File(existing)) if *existing == id)
+                {
+                    refs.retain(id);
+                    if let Some(displaced) = durable.insert(name.clone(), Node::File(id)) {
+                        refs.release_node(&displaced);
+                    }
+                }
             }
             Resolved::Dir => {
                 let parent = dir_of(live, parents, "fsync", path)?;

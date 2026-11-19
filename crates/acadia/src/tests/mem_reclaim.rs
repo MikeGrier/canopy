@@ -39,7 +39,7 @@ fn mem_a_directory_renamed_over_another_does_not_inherit_what_that_one_carried()
         }
         fs.fsync(p("/d")).unwrap();
         fs.audit_refs();
-        fs.simulate_crash();
+        let fs = fs.simulate_restart();
         fs.audit_refs();
         assert!(
             fs.read_dir(p("/d/y")).unwrap().is_empty(),
@@ -58,7 +58,7 @@ fn mem_a_directory_renamed_over_another_keeps_what_it_carries_itself() {
     fs.rename(p("/d/x"), p("/d/y")).unwrap();
     fs.fsync(p("/d")).unwrap();
     fs.audit_refs();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/y/f")).unwrap(), b"old");
 }
@@ -117,7 +117,7 @@ fn mem_a_renamed_directory_materialized_over_an_old_one_releases_the_old_one() {
     fs.fsync(p("/d")).unwrap();
     fs.audit_refs();
     assert_eq!(fs.held_file_data(), (1, 1));
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(p("/d/y/f")).unwrap(), b"old");
     assert!(!fs.exists(p("/d/y/g")).unwrap());
 }
@@ -125,8 +125,8 @@ fn mem_a_renamed_directory_materialized_over_an_old_one_releases_the_old_one() {
 #[test]
 fn mem_counts_survive_every_mutation_and_a_crash() {
     // One scripted walk through every operation that changes a tree, audited at each step.
-    let fs = MemFs::new();
-    type Step = Box<dyn Fn(&MemFs)>;
+    let mut fs = MemFs::new();
+    type Step = Box<dyn Fn(&mut MemFs)>;
     let steps: Vec<Step> = vec![
         Box::new(|fs| fs.create_dir_all(p("/r/a/b")).unwrap()),
         Box::new(|fs| fs.write(p("/r/a/b/f"), b"1").unwrap()),
@@ -145,11 +145,11 @@ fn mem_counts_survive_every_mutation_and_a_crash() {
         Box::new(|fs| fs.truncate(p("/r/e/f"), 0).unwrap()),
         Box::new(|fs| fs.remove_dir_all(p("/r/e")).unwrap()),
         Box::new(|fs| fs.write(p("/r/h"), b"4").unwrap()),
-        Box::new(MemFs::simulate_crash),
+        Box::new(|fs| *fs = fs.simulate_restart()),
         Box::new(|fs| fs.fsync(p("/r")).unwrap()),
     ];
     for (index, step) in steps.iter().enumerate() {
-        step(&fs);
+        step(&mut fs);
         let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fs.audit_refs()));
         assert!(audit.is_ok(), "the counts drifted at step {index}");
     }
@@ -198,7 +198,7 @@ fn crash_restored_alias() -> MemFs {
     fs.fsync(p("/right")).unwrap();
     fs.rename(p("/left/f"), p("/right/f")).unwrap();
     fs.fsync(p("/right")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/left/f")).unwrap(), b"payload");
     assert_eq!(fs.read(p("/right/f")).unwrap(), b"payload");
@@ -213,7 +213,7 @@ fn mem_removing_one_name_of_a_crash_restored_alias_keeps_the_other_readable() {
     assert_eq!(fs.read(p("/right/f")).unwrap(), b"payload");
     fs.fsync(p("/right/f")).unwrap();
     fs.fsync(p("/left")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert_eq!(fs.read(p("/right/f")).unwrap(), b"payload");
     assert!(!fs.exists(p("/left/f")).unwrap());
 }
@@ -269,7 +269,7 @@ fn mem_a_directory_replacing_a_file_can_be_synced_before_its_parent() {
     fs.audit_refs();
     fs.fsync(p("/d")).unwrap();
     fs.audit_refs();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/x/f")).unwrap(), b"new");
     assert_eq!(
@@ -284,7 +284,7 @@ fn mem_a_directory_replacing_a_file_is_lost_to_a_crash_before_its_parent_sync() 
     // Only the parent's sync makes the name change durable; until then the file survives.
     let fs = file_replaced_by_directory();
     fs.fsync(p("/d/x")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/x")).unwrap(), b"old file");
 }
@@ -294,7 +294,7 @@ fn mem_a_directory_replacing_a_file_syncs_in_either_order() {
     let fs = file_replaced_by_directory();
     fs.fsync(p("/d")).unwrap();
     fs.fsync(p("/d/x")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/x/f")).unwrap(), b"new");
 }
@@ -314,7 +314,7 @@ fn mem_a_nested_directory_under_a_replaced_file_syncs_bottom_up() {
     fs.fsync(p("/d/x")).unwrap();
     fs.audit_refs();
     fs.fsync(p("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/x/y/f")).unwrap(), b"deep");
 }
@@ -346,7 +346,7 @@ fn mem_a_moved_directory_synced_over_a_file_keeps_its_durable_contents() {
         }
         fs.fsync(p("/d")).unwrap();
         fs.audit_refs();
-        fs.simulate_crash();
+        let fs = fs.simulate_restart();
         fs.audit_refs();
         assert_eq!(
             fs.read(p("/d/x/sub/f")).unwrap(),
@@ -378,7 +378,7 @@ fn mem_a_file_replaced_inside_a_carried_directory_does_not_lose_what_was_carried
     fs.fsync(p("/d/x")).unwrap();
     fs.fsync(p("/d")).unwrap();
     fs.audit_refs();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/x/a/b/sub/f")).unwrap(), b"moved");
 }
@@ -399,7 +399,7 @@ fn mem_syncing_inside_a_carried_directory_does_not_materialize_a_file_it_replace
     fs.audit_refs();
     fs.fsync(p("/d/b")).unwrap();
     fs.fsync(p("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     assert!(fs.read_dir(p("/d/b/item")).unwrap().is_empty());
 }
 
@@ -413,7 +413,7 @@ fn mem_a_directory_under_a_carried_one_is_lost_if_its_own_parent_was_never_synce
     fs.fsync(p("/d/x/y/f")).unwrap();
     fs.fsync(p("/d/x/y")).unwrap();
     fs.fsync(p("/d")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert!(
         fs.read_dir(p("/d/x")).unwrap().is_empty(),
@@ -431,7 +431,7 @@ fn mem_a_directory_under_a_carried_one_survives_once_its_parent_is_synced() {
     fs.fsync(p("/d/x/y")).unwrap();
     fs.fsync(p("/d")).unwrap();
     fs.fsync(p("/d/x")).unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     fs.audit_refs();
     assert_eq!(fs.read(p("/d/x/y/f")).unwrap(), b"deep");
 }

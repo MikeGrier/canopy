@@ -13,17 +13,19 @@ const LAST_INTERVAL: Duration = Duration::from_millis(32);
 
 impl ModificationCount for SharedState {
     fn sample(&self) -> CoordResult<ModCount> {
-        self.alive()?;
+        let current_boot = self.current_boot()?;
         let count = self
             .words
             .word(Word::Count)
             .fetch_or(format::FALSE, Ordering::AcqRel);
         // A participant that cannot identify its boot can vouch for nothing, so it samples odd.
-        Ok(ModCount::new(if self.boot.is_none() {
-            count | 1
-        } else {
-            count
-        }))
+        Ok(ModCount::new(
+            if current_boot.is_none() || current_boot != self.boot {
+                count | 1
+            } else {
+                count
+            },
+        ))
     }
 }
 
@@ -124,7 +126,7 @@ impl Poller {
             self.wake.notify_one();
             removed
         };
-        drop(withdrawn);
+        crate::coord::discard(withdrawn);
     }
 
     fn run(&self) {
@@ -153,6 +155,7 @@ impl Poller {
                 for (id, participant, sampled, deadline) in due {
                     if Instant::now() >= deadline {
                         ring_ids.push(id);
+                        crate::coord::discard([participant]);
                         continue;
                     }
                     let current = if let Some((_, current)) = samples
@@ -162,11 +165,7 @@ impl Poller {
                         *current
                     } else {
                         // A sample that panics is one that failed, and the poller survives it.
-                        let current =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                participant.sample()
-                            }))
-                            .ok()
+                        let current = crate::coord::catch_contained(|| participant.sample())
                             .and_then(Result::ok);
                         samples.push((participant, current));
                         current
@@ -198,11 +197,11 @@ impl Poller {
                     }
                 }
                 drop(state);
-                drop(retired);
+                crate::coord::discard(retired);
                 for ring in rings {
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(ring));
+                    crate::coord::run_contained(ring);
                 }
-                drop(samples);
+                crate::coord::discard(samples);
                 state = self.state();
                 continue;
             }

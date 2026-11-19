@@ -2,7 +2,6 @@
 
 use super::*;
 use win_sync_sys::{Alertable, WaitAnyOutcome, wait_for_all, wait_for_any};
-use windows_threadpool_sys::wait::{SealedThreadpoolWait, SealedWaitableHandle};
 
 #[test]
 fn sealed_event_waits_preserve_the_level_and_mix_with_ordinary_events() {
@@ -39,16 +38,13 @@ fn sealed_threadpool_callbacks_rearm_without_a_handle_accessor() {
     let sealed = signal.sealed_wait_only().unwrap();
     let owner = Arc::clone(&signal);
     let (sender, receiver) = std::sync::mpsc::channel();
-    let wait = SealedThreadpoolWait::new(
-        SealedWaitableHandle::from(sealed.into_raw()),
-        move |activation| {
+    let wait = sealed
+        .threadpool_wait(move |activation| {
             owner.lower().unwrap();
             activation.rearm(None);
             let _ = sender.send(());
-        },
-        None,
-    )
-    .unwrap();
+        })
+        .unwrap();
     wait.arm(None);
     for _ in 0..12 {
         signal.raise().unwrap();

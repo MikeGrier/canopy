@@ -135,7 +135,7 @@ fn a_nonce_whose_record_was_not_made_durable_is_not_returned_and_a_crash_unsets_
     gate.open();
     assert!(store.store_nonce().is_err());
     drop(store);
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     assert!(!mem.exists(&root.join(RECORD)).unwrap());
     let (reopened, _) = Store::open(
         Arc::new(mem.another_process()),
@@ -172,7 +172,7 @@ fn a_record_left_undurable_is_made_durable_by_the_next_call() {
     assert!(store.store_nonce().is_err());
     let nonce = store.store_nonce().unwrap();
     drop(store);
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     let (reopened, _) = Store::open(
         Arc::new(mem.another_process()),
         root.clone(),
@@ -188,7 +188,7 @@ fn a_returned_nonce_survives_a_crash() {
     let (store, root) = store_on(&mem, "durable");
     let nonce = store.store_nonce().unwrap();
     drop(store);
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     let (reopened, _) =
         Store::open(Arc::new(mem.another_process()), root, counted("other").0).unwrap();
     assert_eq!(reopened.store_nonce().unwrap(), nonce);

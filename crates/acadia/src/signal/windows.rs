@@ -13,7 +13,9 @@ use win_sync_sys::{
     Event, ResetMode, SealedWaitOnlyEvent as RawSealedWaitOnlyEvent, WaitOnlyEvent, WaitOutcome,
     wait_for_single_object,
 };
-use windows_threadpool_sys::wait::ThreadpoolWait;
+use windows_threadpool_sys::wait::{
+    SealedThreadpoolWait, SealedWaitActivation, SealedWaitableHandle, ThreadpoolWait,
+};
 
 use super::{Callback, Registration, Signal, Watch, run_callback, sealed, wait_until_deadline};
 
@@ -39,9 +41,13 @@ impl SealedWaitOnlyEvent {
         self.event.wait_object()
     }
 
-    #[cfg(test)]
-    pub(crate) fn into_raw(self) -> RawSealedWaitOnlyEvent {
-        self.event
+    /// Registers a Windows thread-pool wait without exposing the event handle or weakening its
+    /// known manual-reset provenance.
+    pub fn threadpool_wait<F>(self, callback: F) -> io::Result<SealedThreadpoolWait>
+    where
+        F: Fn(&SealedWaitActivation<'_>) + Send + Sync + 'static,
+    {
+        SealedThreadpoolWait::new(SealedWaitableHandle::from(self.event), callback, None)
     }
 }
 

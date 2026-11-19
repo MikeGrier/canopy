@@ -12,6 +12,17 @@ fn participants() -> (Arc<crate::MemFs>, SharedState, SharedState) {
 }
 
 #[test]
+fn a_panicking_gate_release_refuses_the_shared_attachment() {
+    let (fs, first, _) = participants();
+    fs.panic_when_next_lock_drops(Path::new("/tiers/.coord-shared/gate.lock"));
+
+    assert!(matches!(
+        first.attach(Access::Read, Waiting::Never),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
 fn read_and_write_attachments_hold_only_their_declared_tiers() {
     let (_, first, second) = participants();
     let read = first.attach(Access::Read, Waiting::Never).unwrap();

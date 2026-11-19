@@ -16,6 +16,8 @@ use super::registry::Entry;
 use super::{FileCoordination, HoldId};
 
 mod conversion;
+#[cfg(test)]
+mod tests;
 
 /// The locks one attachment or upgrade holds: its registry entry, released first, then the rest in
 /// reverse of the order taken.
@@ -48,9 +50,10 @@ impl Held {
         Ok(hold)
     }
 
-    fn release(&mut self, hold: HoldId) {
+    fn release(&mut self, hold: HoldId) -> CoordResult<()> {
         self.holds.retain(|held| *held != hold);
-        drop(self.participant.release_lock(hold));
+        self.participant.release_lock_safely(hold);
+        self.participant.alive()
     }
 
     fn register(&mut self, tiers: HeldTiers, payload: &[u8]) -> CoordResult<Registration> {
@@ -63,7 +66,7 @@ impl Held {
             self.participant.unregister_entry(entry);
         }
         while let Some(hold) = self.holds.pop() {
-            drop(self.participant.release_lock(hold));
+            self.participant.release_lock_safely(hold);
         }
     }
 }
@@ -111,7 +114,7 @@ impl FileCoordination {
             Layout::reader_tier(),
             waiting,
         )?;
-        held.release(gate);
+        held.release(gate)?;
         if access == Access::Write {
             held.take(
                 &layout.tiers_lock(),
@@ -147,6 +150,7 @@ impl Attachment for FileAttachment {
         mut self: Box<Self>,
     ) -> CoordResult<Box<dyn crate::coord::UpgradeConversion>> {
         self.held.release_all();
+        self.held.participant.alive()?;
         Ok(Box::new(conversion::FileConversion::new(
             &self.held.participant,
         )))
@@ -184,7 +188,7 @@ impl Attachment for FileAttachment {
             waiting,
         )?;
         if safety == ReaderSafety::Safe {
-            held.release(gate);
+            held.release(gate)?;
         }
         Ok(Box::new(FileUpgrade {
             safety,
@@ -221,10 +225,11 @@ impl Upgrade for FileUpgrade {
     }
 
     fn admit_readers(&mut self) -> CoordResult<()> {
+        self.held.participant.alive()?;
         if self.safety == ReaderSafety::Safe
             && let Some(gate) = self.gate.take()
         {
-            self.held.release(gate);
+            self.held.release(gate)?;
         }
         Ok(())
     }

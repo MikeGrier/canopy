@@ -177,6 +177,19 @@ impl Recorder {
 }
 
 impl Vfs for Recorder {
+    fn check_process(&self, op: &'static str, path: &Path) -> VfsResult<()> {
+        self.faulty.check_process(op, path)
+    }
+
+    fn commit_process(
+        &self,
+        op: &'static str,
+        path: &Path,
+        commit: &mut dyn FnMut(),
+    ) -> VfsResult<()> {
+        self.faulty.commit_process(op, path, commit)
+    }
+
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
         self.call(FaultOp::Read, path, None, |fs| fs.read(path))
     }

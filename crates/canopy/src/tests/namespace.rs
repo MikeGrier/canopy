@@ -1120,7 +1120,7 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
 
     let reopened = open_resolved(Arc::clone(&vfs), root.clone()).expect("recovery completes");
     drop(reopened);
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
 
     let after = open_resolved(vfs, root).expect("reopen after the crash");
     assert_eq!(after.read_body(&node, &d).unwrap(), None);
@@ -1222,7 +1222,7 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
     drop(store);
 
     drop(open_resolved(Arc::clone(&vfs), root.clone()).expect("recovery re-collects w1"));
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
 
     let after = open_resolved(vfs, root).expect("reopen after the crash");
     let read = after

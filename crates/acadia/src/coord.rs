@@ -72,6 +72,26 @@ pub use types::{
     RegistryToken, TierHold, Trust, Untrusted, Waiting,
 };
 
+pub(crate) fn catch_contained<T>(work: impl FnOnce() -> T) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        Ok(value) => Some(value),
+        Err(payload) => {
+            std::mem::forget(payload);
+            None
+        }
+    }
+}
+
+pub(crate) fn run_contained(work: impl FnOnce()) {
+    let _ = catch_contained(work);
+}
+
+pub(crate) fn discard<T>(values: impl IntoIterator<Item = T>) {
+    for value in values {
+        run_contained(|| drop(value));
+    }
+}
+
 /// The prefix of every name directly beneath a root that belongs to the coordination, in every
 /// implementation, so that a creator's reading of the root knows them for the coordination's own.
 /// No artifact of creation's begins with it.

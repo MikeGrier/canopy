@@ -192,11 +192,17 @@ impl MemFs {
     ///
     /// This is the crash / power-loss simulation the recovery-stress harness drives. Every
     /// process view ends: its locks are released, its waits fail, and its later operations are
-    /// refused. The view that calls this method is the test controller and receives a fresh
-    /// process identity before returning; every other value keeps its ended identity. Reads then
-    /// observe exactly what a store recovering from a crash would find -- fsync'd names, with each
-    /// surviving file's last fsync'd bytes (or empty, if its data was never fsync'd).
+    /// refused. This view stays ended; use [`simulate_restart`](Self::simulate_restart) when the
+    /// caller needs the fresh process view. Reads through that view observe exactly what a store
+    /// recovering from a crash would find -- fsync'd names, with each surviving file's last
+    /// fsync'd bytes (or empty, if its data was never fsync'd).
     pub fn simulate_crash(&self) {
+        drop(self.simulate_restart());
+    }
+
+    /// Simulates the same crash as [`simulate_crash`](Self::simulate_crash) and returns its fresh
+    /// process view. The view on which this method was called remains ended.
+    pub fn simulate_restart(&self) -> MemFs {
         let mut table = self.table();
         let last_process = table.last_process;
         let next_process = last_process
@@ -206,7 +212,6 @@ impl MemFs {
         table.ended.clear();
         table.holds.clear();
         table.last_process = next_process;
-        self.process.store(next_process, Ordering::Release);
         let mut guard = self.tree();
         let inner = &mut *guard;
         let mut unnamed: Vec<Vec<OsString>> = inner.unnamed.drain().collect();
@@ -236,6 +241,11 @@ impl MemFs {
         drop(guard);
         drop(table);
         self.locks.released.notify_all();
+        MemFs {
+            inner: Arc::clone(&self.inner),
+            locks: Arc::clone(&self.locks),
+            process: AtomicU64::new(next_process),
+        }
     }
 
     /// The live and durable inode identities at a file path, for crash-model replay.

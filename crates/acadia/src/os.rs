@@ -3,9 +3,10 @@
 //! The real operating-system [`Vfs`] backend (D55).
 //!
 //! [`OsFs`] is a thin passthrough that implements the [`Vfs`] contract over
-//! `std::fs`. It is the *only* place in the whole workspace that touches
-//! `std::fs` directly; every other crate reaches the filesystem through the
-//! [`Vfs`] seam so it can be mocked and fault-injected (D55/D56).
+//! `std::fs`. Normal filesystem operations reach the OS through this backend so
+//! they can be mocked and fault-injected through [`Vfs`] (D55/D56). Native
+//! integrations may inspect an OS capability outside the seam, as the Windows
+//! count oplock does.
 //!
 //! Its single job beyond delegation is to translate `std::io::Error` into the
 //! Canopy-owned [`VfsError`] taxonomy: the OS reports errno-flavored
@@ -64,6 +65,9 @@ impl OsFs {
         OsFs
     }
 }
+
+/// The largest range `read_at` accepts into one owned buffer.
+const MAX_READ_AT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Maps a `std::io::ErrorKind` onto the Canopy-owned [`VfsErrorKind`] taxonomy.
 ///
@@ -666,6 +670,9 @@ impl Vfs for OsFs {
             )
             .with_path(path)
         };
+        if wanted > MAX_READ_AT_BYTES {
+            return Err(no_room());
+        }
         let wanted = usize::try_from(wanted).map_err(|_| no_room())?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(wanted).map_err(|_| no_room())?;

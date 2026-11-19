@@ -223,7 +223,7 @@ fn a_description_retry_syncs_a_rename_that_was_visible_but_not_durable() {
             .agent_stamp
             .unwrap();
         drop(writer);
-        fs.inner().simulate_crash();
+        let vfs: Arc<dyn Vfs> = Arc::new(fs.simulate_restart());
         assert_eq!(
             DiagnosticView::open(vfs, root)
                 .unwrap()
@@ -267,7 +267,7 @@ fn description_writes_are_durable_and_version_stamps_preserve_the_description() 
     assert_eq!(properties.agent_version, "new-version");
     assert_eq!(properties.agent_description, "new\n\"description\"");
     drop(writer);
-    mem.simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(mem.simulate_restart());
     assert_eq!(
         DiagnosticView::open(vfs, root)
             .unwrap()

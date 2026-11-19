@@ -62,7 +62,7 @@ pub(super) fn initialized_with(
     );
     mem.fsync(&debt).unwrap();
     let durable = mem.fork();
-    durable.simulate_crash();
+    let durable = durable.simulate_restart();
     assert!(
         durable.read(&debt).unwrap_or_default().is_empty(),
         "fixture leaves durable directory debt"
@@ -176,7 +176,7 @@ fn the_projection_distinguishes_live_and_durable_pointer_removal() {
     assert_eq!(removed.live.pointers[0][0], None);
     assert_eq!(removed.durable.pointers[0][0], Some(0));
     assert_eq!(removed.live.pointers[1], initial.live.pointers[1]);
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     assert_eq!(projection::observe(&world, &mem).unwrap(), initial);
 }
 
@@ -600,7 +600,7 @@ fn directory_debt_recovery_uses_sync_and_clear_units() {
         let (mem, keeper) = initialized_with(&world, implementation);
         world.seed_directory_debt(&mem);
         keeper.abandon_for_replay();
-        mem.simulate_crash();
+        let mem = mem.simulate_restart();
         let process = Process::start(&mem, world.clone(), implementation, 1);
         process.command(Command::Open, None).unwrap();
         assert_eq!(process.returned(), Some(Reply::Done), "{implementation:?}");
@@ -628,7 +628,7 @@ fn directory_debt_recovery_uses_sync_and_clear_units() {
             .unwrap();
         assert!(mem.read(&world.directory_record()).unwrap().is_empty());
         let durable = mem.fork();
-        durable.simulate_crash();
+        let durable = durable.simulate_restart();
         assert!(!durable.read(&world.directory_record()).unwrap().is_empty());
         process.step(None, true).unwrap();
         assert!(matches!(process.returned(), Some(Reply::Failed(_))));

@@ -15,9 +15,32 @@ use crate::coord::file::layout::{Layout, REGISTRY_ENTRIES};
 use crate::coord::file::registry::decode;
 use crate::coord::{
     Access, Admission, Attachment, CoordError, Coordination, CoordinationFactory, HeldTiers,
-    ListedEntry, Listing, ReaderSafety, Registration, Registry, RegistryToken, TierHold, Waiting,
+    ListedEntry, Listing, ModificationCount, ReaderSafety, Registration, Registry, RegistryToken,
+    TierHold, Waiting,
 };
 use crate::{Fault, FaultOp, FaultPolicy, FaultyFs, LockMode, Vfs, When};
+
+#[derive(Debug)]
+struct PanickingLock;
+
+impl crate::VfsLock for PanickingLock {}
+
+impl Drop for PanickingLock {
+    fn drop(&mut self) {
+        panic!("registry claim cleanup stopped");
+    }
+}
+
+#[derive(Debug)]
+struct ObservedLock(Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::VfsLock for ObservedLock {}
+
+impl Drop for ObservedLock {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
+}
 
 fn attach(participant: &FileCoordination, access: Access) -> Box<dyn Attachment> {
     participant.attach(access, Waiting::Never).expect("attach")
@@ -77,6 +100,221 @@ fn a_failed_first_registration_marks_missing_membership_without_releasing_attach
 
 fn live_tokens(listing: &Listing) -> HashSet<RegistryToken> {
     listing.live.iter().map(|entry| entry.token).collect()
+}
+
+#[test]
+fn a_panicking_registration_releases_its_claim() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let implementation = crate::coord::file::FileFactory::new();
+    let layout = implementation
+        .participant(Arc::new(mem.another_process()), &root)
+        .layout()
+        .clone();
+    let participant = participant_on(
+        &implementation,
+        Arc::new(FaultyFs::new(
+            mem.another_process(),
+            FaultPolicy::new().inject(
+                FaultOp::TryLock,
+                layout.registry_lock(),
+                Fault::observe_with(|_, _| panic!("registration stopped")),
+                When::OnCall(2),
+            ),
+        )),
+        &root,
+    );
+    let mut attachment = attach(&participant, Access::Read);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = attachment.register(b"never published");
+        }))
+        .is_err()
+    );
+    assert!(matches!(
+        attachment.register(b"refused"),
+        Err(CoordError::Abandoned)
+    ));
+    let peer = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+    let mut peer_attachment = attach(&peer, Access::Read);
+    assert!(matches!(
+        peer_attachment.register(b"peer"),
+        Ok(Registration::Registered(_))
+    ));
+}
+
+#[test]
+fn a_panicking_file_claim_survives_panicking_participant_lock_destruction() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let implementation = crate::coord::file::FileFactory::new();
+    let layout = implementation
+        .participant(Arc::new(mem.another_process()), &root)
+        .layout()
+        .clone();
+    let participant = participant_on(
+        &implementation,
+        Arc::new(FaultyFs::new(
+            mem.another_process(),
+            FaultPolicy::new().inject(
+                FaultOp::TryLock,
+                layout.registry_lock(),
+                Fault::observe_with(|_, _| panic!("registry claim stopped")),
+                When::OnCall(2),
+            ),
+        )),
+        &root,
+    );
+    let _ = participant.insert_test_lock(Box::new(PanickingLock));
+    let mut attachment = attach(&participant, Access::Read);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = attachment.register(b"never published");
+        }))
+        .is_err()
+    );
+    assert!(matches!(
+        attachment.register(b"refused"),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
+fn an_ordinary_panicking_lock_release_abandons_the_file_participant() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let participant = participant_on(
+        &crate::coord::file::FileFactory::new(),
+        Arc::new(mem.another_process()),
+        &root,
+    );
+    let sibling_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let held = participant.insert_test_lock(Box::new(PanickingLock));
+    let _ = participant.insert_test_lock(Box::new(ObservedLock(Arc::clone(&sibling_drops))));
+
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            participant.release_lock_safely(held)
+        }))
+        .is_ok()
+    );
+    assert!(matches!(participant.sample(), Err(CoordError::Abandoned)));
+    assert_eq!(sibling_drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn a_panicking_claim_destructor_does_not_return_a_registration() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let implementation = crate::coord::file::FileFactory::new();
+    let participant = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+    mem.panic_when_next_lock_drops(&participant.layout().registry_lock());
+    let mut attachment = attach(&participant, Access::Read);
+
+    assert!(matches!(
+        attachment.register(b"never live"),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
+fn a_panicking_unregister_claim_acquisition_releases_the_attachment() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let implementation = crate::coord::file::FileFactory::new();
+    let layout = implementation
+        .participant(Arc::new(mem.another_process()), &root)
+        .layout()
+        .clone();
+    let gate = crate::FaultGate::closed();
+    let participant = participant_on(
+        &implementation,
+        Arc::new(FaultyFs::new(
+            mem.another_process(),
+            FaultPolicy::new().inject_gated(
+                FaultOp::TryLock,
+                crate::PathMatcher::exact(layout.registry_lock()),
+                Fault::observe_with(|_, _| panic!("unregister claim stopped")),
+                When::Always,
+                gate.clone(),
+            ),
+        )),
+        &root,
+    );
+    let mut attachment = attach(&participant, Access::Read);
+    registered(&mut *attachment, b"live");
+    gate.open();
+
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(attachment))).is_ok());
+    assert!(matches!(participant.list(), Err(CoordError::Abandoned)));
+}
+
+#[test]
+fn a_panicking_unregistration_releases_its_claim() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let gate = crate::FaultGate::closed();
+    let implementation = crate::coord::file::FileFactory::new();
+    let layout = implementation
+        .participant(Arc::new(mem.another_process()), &root)
+        .layout()
+        .clone();
+    let participant = participant_on(
+        &implementation,
+        Arc::new(FaultyFs::new(
+            mem.another_process(),
+            FaultPolicy::new().inject_gated(
+                FaultOp::RemoveFile,
+                crate::PathMatcher::exact(layout.registry_entry(0)),
+                Fault::observe_with(|_, _| panic!("unregistration stopped")),
+                When::Always,
+                gate.clone(),
+            ),
+        )),
+        &root,
+    );
+    let mut attachment = attach(&participant, Access::Read);
+    registered(&mut *attachment, b"held");
+    gate.open();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(attachment))).is_ok());
+    assert!(matches!(participant.list(), Err(CoordError::Abandoned)));
+    let peer = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+    let mut peer_attachment = attach(&peer, Access::Read);
+    assert!(matches!(
+        peer_attachment.register(b"peer"),
+        Ok(Registration::Registered(_))
+    ));
+}
+
+#[test]
+fn a_panicking_file_listing_releases_its_claim() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let implementation = crate::coord::file::FileFactory::new();
+    let owner = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+    let mut attachment = attach(&owner, Access::Read);
+    let token = registered(&mut *attachment, b"original");
+    let entry = owner.layout().registry_entry(0);
+    let lister = participant_on(
+        &implementation,
+        Arc::new(FaultyFs::new(
+            mem.another_process(),
+            FaultPolicy::new().inject(
+                FaultOp::Read,
+                entry,
+                Fault::observe_with(|_, _| panic!("listing stopped")),
+                When::Once,
+            ),
+        )),
+        &root,
+    );
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lister.list())).is_err());
+    assert!(matches!(lister.list(), Err(CoordError::Abandoned)));
+    assert_eq!(registered(&mut *attachment, b"updated"), token);
+    let observer = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+    let listing = list(&observer);
+    assert_eq!(live_tokens(&listing), HashSet::from([token]));
+    assert_eq!(listing.live[0].payload, b"updated");
 }
 
 /// The token entry `index`'s record names, read without its claim lock, or `None` if it has none.

@@ -146,12 +146,12 @@ fn a_failed_write_is_finished_by_the_next_open() {
 fn a_failed_write_is_finished_after_a_power_loss() {
     // The record was durable before the first rename, so it survives whatever the renames'
     // parent syncs did or did not make durable.
-    let (faulty, vfs, store) = faulty_store("power-loss", v2_fails_at_replica_2());
+    let (faulty, _vfs, store) = faulty_store("power-loss", v2_fails_at_replica_2());
     let (node, d) = (name("tickets"), doc("record"));
     let root = store.root().to_path_buf();
     write_v2_short_of_replica_2(&store, &node, &d);
     drop(store);
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
 
     let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v2");
@@ -255,7 +255,7 @@ fn record_fsync_fails(
 
 #[test]
 fn a_record_that_did_not_reach_the_disk_moves_no_replica() {
-    let (faulty, vfs, store, gate) = record_fsync_fails("unrecorded", 1);
+    let (faulty, _vfs, store, gate) = record_fsync_fails("unrecorded", 1);
     let (node, d) = (name("tickets"), doc("record"));
     let root = store.root().to_path_buf();
     gate.open();
@@ -264,7 +264,7 @@ fn a_record_that_did_not_reach_the_disk_moves_no_replica() {
         .expect_err("the record's fsync fails");
     assert_settled_on(&store, &node, &d, b"v1");
     drop(store);
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
 
     let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v1");
@@ -312,7 +312,7 @@ fn a_settle_interrupted_by_a_power_loss_is_finished_by_the_reopen() {
             Fault::io_error(),
             When::Once,
         );
-    let (faulty, vfs, store) = faulty_store("interrupted-settle", policy);
+    let (faulty, _vfs, store) = faulty_store("interrupted-settle", policy);
     let (node, d) = (name("tickets"), doc("record"));
     let root = store.root().to_path_buf();
     store
@@ -326,7 +326,7 @@ fn a_settle_interrupted_by_a_power_loss_is_finished_by_the_reopen() {
         .recover()
         .expect_err("the roll-forward fails at replica 1");
     drop(store);
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
 
     let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v2");
@@ -337,7 +337,7 @@ fn a_clear_that_did_not_reach_the_disk_cannot_roll_a_later_write_back() {
     // T25: the clear's truncation is live but not durable, and the write fails unresolved.
     // Recovery and a later transaction move on; unless a settle syncs the empty file, a crash
     // restores the record and the reopen rolls the document back to the version it names.
-    let (faulty, vfs, store, gate) = record_fsync_fails("unsynced-clear", 2);
+    let (faulty, _vfs, store, gate) = record_fsync_fails("unsynced-clear", 2);
     let (node, d) = (name("tickets"), doc("record"));
     let root = store.root().to_path_buf();
     gate.open();
@@ -355,7 +355,7 @@ fn a_clear_that_did_not_reach_the_disk_cannot_roll_a_later_write_back() {
         .update_document_as(Swap::new(&node, d.clone(), body(b"v3")), &nonce("t3"))
         .unwrap();
     drop(store);
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
 
     let reopened = open_resolved(vfs, root).unwrap();
     assert_settled_on(&reopened, &node, &d, b"v3");

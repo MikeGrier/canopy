@@ -356,14 +356,14 @@ fn v7_migration_resumes_after_each_publication_and_cleanup_failure() {
                 when,
                 gate.clone(),
             );
-            let (faulty, vfs, root) = old_root(COORDINATED_FORMAT_VERSION, policy);
+            let (faulty, mut vfs, root) = old_root(COORDINATED_FORMAT_VERSION, policy);
             let reservation = vfs.read(&root.join(RESERVATION)).unwrap();
             gate.open();
             Store::migrate(Arc::clone(&vfs), root.clone(), &options())
                 .expect_err("injected interruption");
             gate.close();
             if crash {
-                faulty.inner().simulate_crash();
+                vfs = Arc::new(faulty.simulate_restart());
             }
             Store::migrate(Arc::clone(&vfs), root.clone(), &options()).unwrap();
             assert_metadata(&vfs, &root, &test_agent());

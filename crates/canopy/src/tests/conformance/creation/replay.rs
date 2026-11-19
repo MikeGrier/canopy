@@ -164,7 +164,7 @@ impl<'t> Replay<'t> {
         self.mem
             .fsync(root())
             .map_err(|error| format!("the crash's sync failed: {error}"))?;
-        self.mem.simulate_crash();
+        self.mem = self.mem.simulate_restart();
         Ok(())
     }
 

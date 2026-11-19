@@ -63,14 +63,13 @@ mod sealed {
 ///
 /// # Ordering
 ///
-/// Each of [`raise`](Signal::raise), [`lower`](Signal::lower) and [`wait`](Signal::wait) is
-/// ordered with the calling thread's own memory accesses as an acquire-release read-modify-write of
-/// the signal's level would be: what the thread did before the call happens before the call's
-/// effect on the level, and the call's effect, and what a raise it observed was preceded by,
-/// happen before what the thread does after it. A protocol over a signal may therefore reason
-/// about the level as one more atomic location, ordered with its own atomics by acquire and
-/// release (acadia's design notes, "A signal's operations are ordered as acquire-release
-/// operations").
+/// [`raise`](Signal::raise) publishes the calling thread's prior accesses to a successful
+/// [`wait`](Signal::wait) that observes that raise. [`lower`](Signal::lower) completes the reset
+/// before it returns, but is not an independent acquire or release edge on every platform:
+/// Windows implements it with `ResetEvent`. A protocol that needs such an edge performs an
+/// explicit release/acquire on one of its own atomic values. The platform-level behavior and the
+/// doorbell's ordering argument are recorded in the design notes' "A signal's synchronization
+/// edges" decision.
 pub trait Signal: sealed::Sealed + Send + Sync + fmt::Debug + Sized {
     /// A new signal, lowered.
     fn new() -> io::Result<Self>;

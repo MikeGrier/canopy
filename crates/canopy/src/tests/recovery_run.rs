@@ -823,7 +823,7 @@ fn an_open_after_a_host_restart_needs_recovery_and_loses_nothing_that_was_durabl
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     write_one(&writer);
     drop(writer);
-    mem.simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(mem.simulate_restart());
 
     let opened = Store::open_unsourced(Arc::clone(&vfs), root).unwrap();
 

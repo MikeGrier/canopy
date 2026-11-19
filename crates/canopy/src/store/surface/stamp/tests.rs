@@ -320,9 +320,9 @@ fn a_directory_sync_failure_after_the_stamp_rename_keeps_the_cache_retryable() {
     );
     write(&store, false, b"next").unwrap().agent_stamp.unwrap();
     drop(store);
-    fs.inner().simulate_crash();
+    let fs = Arc::new(fs.simulate_restart());
     let marker: serde_json::Value = serde_json::from_slice(
-        &vfs.read(&PathBuf::from("stamp-store").join(MARKER_NAME))
+        &fs.read(&PathBuf::from("stamp-store").join(MARKER_NAME))
             .unwrap(),
     )
     .unwrap();

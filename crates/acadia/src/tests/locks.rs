@@ -354,7 +354,7 @@ fn a_crash_loses_storage_and_releases_every_lock() {
     let lost = fs
         .try_lock(Path::new("/d/lost.lock"), EXCLUSIVE, LockSpan::File)
         .unwrap();
-    fs.simulate_crash();
+    let fs = fs.simulate_restart();
     drop(
         fs.try_lock(Path::new("/d/kept.lock"), EXCLUSIVE, LockSpan::File)
             .expect("the old lock was released"),

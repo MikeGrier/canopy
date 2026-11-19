@@ -151,11 +151,12 @@ pub struct StateSnapshot {
 pub struct SharedState {
     vfs: Arc<dyn Vfs>,
     directory: PathBuf,
+    live: Arc<Mutex<Option<Box<dyn VfsLock>>>>,
     words: Arc<Words>,
     boot: Option<Vec<u8>>,
-    live: Arc<Mutex<Option<Box<dyn VfsLock>>>>,
     abandoned: Arc<AtomicBool>,
     holds: Arc<Mutex<HashMap<u64, Box<dyn VfsLock>>>>,
+    creation: Weak<Mutex<HashMap<u64, Box<dyn VfsLock>>>>,
     #[cfg(any(test, feature = "test-support"))]
     hook: Option<Arc<dyn StepHook>>,
 }
@@ -246,7 +247,7 @@ impl SharedState {
         if let Some(expected) = renewing
             && previous != expected
         {
-            if expected.checked_add(format::GENERATION_BLOCK) != Some(previous) {
+            if expected.saturating_add(format::GENERATION_BLOCK) != previous {
                 return Err(CoordError::Malformed {
                     what: "generation reservation",
                 });
@@ -558,6 +559,7 @@ impl SharedState {
                 |gate| Arc::clone(&gate.abandoned),
             ),
             holds: Arc::new(Mutex::new(HashMap::new())),
+            creation: Weak::new(),
             #[cfg(any(test, feature = "test-support"))]
             hook: None,
         };
@@ -566,6 +568,14 @@ impl SharedState {
     }
 
     /// This participant, announcing each later step that changes the shared words to `hook`.
+    pub(super) fn with_creation(
+        mut self,
+        creation: Weak<Mutex<HashMap<u64, Box<dyn VfsLock>>>>,
+    ) -> Self {
+        self.creation = creation;
+        self
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn with_hook(mut self, hook: Option<Arc<dyn StepHook>>) -> Self {
         self.hook = hook;
@@ -650,15 +660,30 @@ impl SharedState {
     /// Releases this participant's liveness without clearing ownership or other shared records.
     pub fn abandon(&self) {
         self.abandoned.store(true, Ordering::Release);
-        self.holds
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        drop(
-            self.live
+        let creation = self.creation.upgrade().map(|creation| {
+            let mut creation = creation
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take(),
-        );
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *creation)
+        });
+        let holds = {
+            let mut holds = self
+                .holds
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *holds)
+        };
+        let live = {
+            let mut live = self
+                .live
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            live.take()
+        };
+        if let Some(creation) = creation {
+            crate::coord::discard(creation.into_values());
+        }
+        crate::coord::discard(holds.into_values());
+        crate::coord::discard(live);
     }
 }

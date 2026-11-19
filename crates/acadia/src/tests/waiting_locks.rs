@@ -111,6 +111,20 @@ fn a_waiter_for_bytes_nobody_holds_does_not_wait() {
 }
 
 #[test]
+fn an_ended_raw_memfs_process_precedes_other_operation_errors() {
+    let fs = MemFs::new();
+    let ended = fs.another_process();
+    ended.abandon();
+
+    assert_kind(ended.read(Path::new("")), VfsErrorKind::ProcessEnded);
+    assert_kind(
+        ended.try_lock(Path::new(""), EXCLUSIVE, range(0, 0)),
+        VfsErrorKind::ProcessEnded,
+    );
+    assert_kind(ended.open_output(Path::new("")), VfsErrorKind::ProcessEnded);
+}
+
+#[test]
 fn an_invalid_span_is_refused_before_any_wait() {
     on_both("wait-invalid", |fs, root| {
         let path = root.join("invalid.lock");
@@ -131,16 +145,30 @@ fn a_crash_ends_old_waiters_and_a_new_process_locks_the_recreated_file() {
     let holder = before.another_process();
     let waiter = before.another_process();
     let path = Path::new("/d/crash.lock");
-    let held = holder.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap();
+    let mut held = Some(holder.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap());
     std::thread::scope(|scope| {
+        let (entered, entered_rx) = mpsc::channel();
+        waiter.before_lock_wait(move || {
+            let _ = entered.send(());
+        });
         let (done, finished) = mpsc::channel();
         let waiter_view = &waiter;
         scope.spawn(move || {
             let _ = done.send(waiter_view.lock(path, EXCLUSIVE, LockSpan::File));
         });
+        if let Err(error) = test_timers::mpsc::recv_timeout(&entered_rx, GRANTED) {
+            drop(held.take());
+            panic!("waiter entered the wait: {error:?}");
+        }
         assert_still_waiting_result(&finished);
-        before.simulate_crash();
-        let result = test_timers::mpsc::recv_timeout(&finished, GRANTED).expect("wait ends");
+        let before = before.simulate_restart();
+        let result = match test_timers::mpsc::recv_timeout(&finished, GRANTED) {
+            Ok(result) => result,
+            Err(error) => {
+                drop(held.take());
+                panic!("wait ends: {error:?}");
+            }
+        };
         assert_kind(result, VfsErrorKind::ProcessEnded);
         let successor = before.another_process();
         let taken = successor
@@ -157,16 +185,30 @@ fn an_abandoned_process_refuses_later_operations_and_a_wait_in_progress() {
     survivor.create_dir_all(Path::new("/d")).unwrap();
     let ended = survivor.another_process();
     let path = Path::new("/d/writer.lock");
-    let held = survivor.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap();
+    let mut held = Some(survivor.try_lock(path, EXCLUSIVE, LockSpan::File).unwrap());
     std::thread::scope(|scope| {
+        let (entered, entered_rx) = mpsc::channel();
+        ended.before_lock_wait(move || {
+            let _ = entered.send(());
+        });
         let (done, finished) = mpsc::channel();
         let waiting = &ended;
         scope.spawn(move || {
             let _ = done.send(waiting.lock(path, EXCLUSIVE, LockSpan::File));
         });
+        if let Err(error) = test_timers::mpsc::recv_timeout(&entered_rx, GRANTED) {
+            drop(held.take());
+            panic!("waiter entered the wait: {error:?}");
+        }
         assert_still_waiting_result(&finished);
         ended.abandon();
-        let result = test_timers::mpsc::recv_timeout(&finished, GRANTED).expect("wait ends");
+        let result = match test_timers::mpsc::recv_timeout(&finished, GRANTED) {
+            Ok(result) => result,
+            Err(error) => {
+                drop(held.take());
+                panic!("wait ends: {error:?}");
+            }
+        };
         assert_kind(result, VfsErrorKind::ProcessEnded);
     });
     assert_kind(
@@ -192,7 +234,7 @@ fn repeated_crashes_keep_one_ended_prefix_and_bound_individual_abandons() {
         let abandoned = fs.another_process();
         abandoned.abandon();
         assert_eq!(fs.ended_process_bookkeeping().1, 1);
-        fs.simulate_crash();
+        let fs = fs.simulate_restart();
         let (prefix, individual) = fs.ended_process_bookkeeping();
         assert!(prefix.is_some_and(|prefix| prefix > previous_prefix));
         previous_prefix = prefix.expect("a crash records the ended prefix");

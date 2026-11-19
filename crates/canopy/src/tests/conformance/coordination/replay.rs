@@ -356,7 +356,7 @@ impl<'t> Replay<'t> {
             let kept = projection::model(after);
             projection::settle_crash(&self.mem, kept.owner, kept.fence);
         }
-        self.mem.simulate_crash();
+        self.mem = self.mem.simulate_restart();
         let observer = acadia::coord::file::FileFactory::new();
         self.observer = Arc::from(
             acadia::coord::CoordinationFactory::open(

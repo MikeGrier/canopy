@@ -4,7 +4,27 @@
 use super::*;
 
 impl Vfs for MemFs {
+    fn check_process(&self, op: &'static str, path: &Path) -> VfsResult<()> {
+        let table = self.table();
+        table.running(self.process.load(Ordering::Acquire), op, path)
+    }
+
+    fn commit_process(
+        &self,
+        op: &'static str,
+        path: &Path,
+        commit: &mut dyn FnMut(),
+    ) -> VfsResult<()> {
+        let table = self.table();
+        table.running(self.process.load(Ordering::Acquire), op, path)?;
+        #[cfg(test)]
+        self.run_after_check();
+        commit();
+        Ok(())
+    }
+
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
+        self.check_process("read", path)?;
         let parts = split_path(path, "read")?;
         let holds = self.holds("read", path)?;
         let guard = self.tree();
@@ -28,6 +48,7 @@ impl Vfs for MemFs {
     }
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
+        self.check_process("read_at", path)?;
         let parts = split_path(path, "read_at")?;
         let holds = self.holds("read_at", path)?;
         let guard = self.tree();
@@ -56,6 +77,7 @@ impl Vfs for MemFs {
     }
 
     fn write(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        self.check_process("write", path)?;
         let parts = split_path(path, "write")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(VfsErrorKind::InvalidInput, "write", path, "empty path"));
@@ -100,6 +122,7 @@ impl Vfs for MemFs {
     }
 
     fn append(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        self.check_process("append", path)?;
         let parts = split_path(path, "append")?;
         let Some((name, parents)) = parts.split_last() else {
             return Err(err(
@@ -150,6 +173,7 @@ impl Vfs for MemFs {
     }
 
     fn truncate(&self, path: &Path, len: u64) -> VfsResult<()> {
+        self.check_process("truncate", path)?;
         let new_len = usize::try_from(len).map_err(|_| {
             err(
                 VfsErrorKind::InvalidInput,

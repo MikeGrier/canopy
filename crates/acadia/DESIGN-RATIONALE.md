@@ -466,3 +466,202 @@ renewal, participant boundaries and platform capabilities". All seven findings h
 - **A crash-ended prefix represents an invariant of monotonically allocated process identities.**
   It keeps crash cost independent of how many boots preceded this one; a per-identity set is still
   needed only for death within the current boot.
+
+## The eleventh review, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Eleventh review fixes: immutable
+process views and unwind-safe native boundaries". All nine findings held.
+
+- **A crash controller cannot change identity in place.** A mutable identity made correctness depend
+  on how many `Arc` aliases happened to exist. Returning a distinct successor makes the process
+  boundary explicit at the type boundary and leaves every pre-crash capability refused.
+- **Fault decorators restart as decorated process views.** A fresh `MemFs` alone would lose the
+  policy state that a test or witness uses, so the specialized successor copies the immutable rules
+  and deterministic counters before changing only the wrapped process value.
+- **Shared-state abandonment owns creation cleanup through a weak edge.** A strong edge from state
+  to participant would create a cycle; a weak edge is enough because an active state always has a
+  live public participant while it can own creation resources.
+- **Panic cleanup lives at the guard that owns the numeric claim.** A local cleanup catch would
+  serialize only one operation and still leave another path possible; the guard makes every unwind
+  through registry inspection obey one release/abandonment rule.
+- **Callback containment is at the native boundary.** The dependency's foreign trampoline cannot
+  let user unwinds cross it, so acadia must both catch at its own scope and treat sample failure as
+  a notification outcome. Merely catching the ring callback is too late.
+- **A thread-pool wait remains a capability operation on the sealed value.** Exposing a raw or
+  reset-mode-blind conversion would preserve less information than acadia owns. Consuming the
+  sealed value into a sealed dependency target preserves its manual-reset provenance.
+- **Bounded range results come from a bounded slice, not a post-allocation truncation.** Borrowing
+  the selected rule removes the policy clone, and slicing the replacement before `to_vec` makes
+  the result's allocation proportional to the bytes requested by the undecorated read.
+- **Concurrency tests synchronize on entry, not elapsed silence.** A timeout can bound failure;
+  it cannot prove that a worker crossed the contested branch whose post-wake behavior is under
+  test.
+- **Retry arithmetic is identical to publication arithmetic.** The retry path recognizes durable
+  evidence using the same saturating operation, so the final representable block is not a special
+  malformed state.
+
+## The eleventh review follow-up, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Eleventh review follow-up: teardown
+ownership and unwind containment". All eight findings held.
+
+- **Cleanup ownership precedes user destruction.** A native callback cannot safely drop or wait on
+  its own I/O object; transferring the complete bundle first removes that stack from the callback
+  before a destructor can panic.
+- **Claim ownership is operation-wide, not list-wide.** Registration, update and unregistration call
+  the same user-controlled VFS boundary as listing, so the guard belongs to acquisition rather
+  than to one caller.
+- **Poller survival includes destructors, not only callbacks and samples.** The participant is an
+  arbitrary dependency capability, and its `Drop` is part of the worker's reachable user state.
+- **Shared opening avoids an interval with live liveness but no discoverable words.** The owner
+  fields are ordered so the last state releases live liveness before its model can disappear to a
+  weak-cache lookup.
+- **Every native sample failure uses one policy.** Initial validation and settling are the same
+  logical decision: a count that cannot be sampled must ring through a fallback path, never unwind
+  through the caller or callback.
+- **A test of native behavior needs a native-only observation.** A deadline or panic result alone is
+  shared with the poller; the count-read absence and thread source distinguish the backend.
+- **A synchronization test fails by releasing resources, not by timing out inside a scope.** The
+  positive signal remains the proof, while cleanup makes a missing signal diagnostic.
+- **A test fixture's reachability edge is weak when it exists only during a call.** This preserves
+  re-entrancy while allowing the test to prove destruction rather than retaining it permanently.
+
+## The final eleventh review follow-up, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Final eleventh review fixes:
+temporary ownership and layer precedence". All five findings held.
+
+- **Temporary ownership is treated as user code, even on success paths.** Moving destruction to
+  a helper used only for retired registrations would have preserved the remaining early-exit
+  routes. The per-value discard operation belongs to every worker-owned clone and is applied at
+  each ownership transfer, rather than inferred from which branch is currently visible.
+- **Destruction is sequenced after lock ownership, not wrapped around it.** Catching a panic would
+  not solve a destructor that blocks trying to re-enter the same mutex. Taking values and dropping
+  the guard first preserves abandonment's state transition while separating arbitrary destruction
+  from participant synchronization.
+- **Fault precedence belongs at the wrapped capability boundary.** A loop that replicated
+  `ProcessEnded` checks in every faulted method would drift as operations were added. One hook on
+  `Vfs` lets `MemFs` own its process identity and makes every decorator ask that owner before
+  applying behavior of its own.
+- **Native teardown and user teardown are one ordered transaction.** Running a withdrawn ring
+  under native ownership relied on the publisher not meeting the registration it is withdrawing.
+  Releasing native resources first lets normal and callback teardown share the same safety
+  property, with callback work still transferred off its own thread.
+- **Post-install sample failure is distinct from install failure.** Treating both as polling
+  fallback loses the notification fact when a transient failure occurs before a one-shot fault is
+  consumed. Returning to the poller is still correct when no native registration was established;
+  once one exists, cleanup followed by one ring preserves the count-sampling contract and cannot
+  wait silently until the deadline.
+
+## The final review follow-up, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Final review fixes: asynchronous
+delivery, complete cleanup and restart ordering". All seven findings held.
+
+- **A completion result is not permission to run on the caller.** Native validation finishing on
+  the registering stack is an installation fact only; the notification contract still owns the
+  callback thread. Transferring the complete cleanup object retains one owner and chooses the
+  callback environment where both native and user cleanup happen in the required order.
+- **Abandonment detaches before it destructs, including during another unwind.** Catching one
+  panic is insufficient if the value is still under a mutex. Ownership is first moved to detached
+  locals, then each destructor runs inside an independent `catch_unwind` on the current thread.
+  Rust contains that nested panic before it can escape the original unwind, so cleanup needs no
+  executor startup and no ordinary ownership value is leaked.
+- **A hostile panic payload belongs to the failed closure.** Rust's panic machinery owns the
+  payload, but its `Drop` is arbitrary user code. Forgetting it after the invocation is caught is
+  a bounded leak at a fault boundary and is preferable to letting payload destruction kill a
+  process-wide worker or cross a native callback boundary.
+- **Process precedence is a backend fact before argument precedence.** Raw operations check the
+  process first because `FaultyFs` cannot be the first place the contract becomes true. The
+  backend performs its ordinary validation afterward, so an ended view is indistinguishable to a
+  caller whether it is decorated or not.
+- **A restart retains one logical fault schedule, not a copied schedule.** Counters shared by the
+  predecessor and successor have one total ordering. A second liveness check after arbitrary
+  matching makes the counter consumption the fault operation's linearization point; an old view
+  paused before it returns `ProcessEnded` and leaves the successor budget untouched.
+- **A concurrency regression must clean up before proving it failed.** Waiting on a condition with
+  the blocker still in scope turns a diagnostic timeout into a test deadlock. Error branches
+  release that blocker first, while positive entry signals remain the proof that the tested wait
+  was reached.
+
+## Teardown availability and restart commit ordering, 2026-11-18
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Teardown availability and restart
+commit ordering". All four findings held.
+
+- **A detached map still has to be destroyed value by value.** The file registry's normal
+  participant abandonment is entered from a guard's `Drop`, and may already be unwinding. Dropping
+  the whole map as one expression couples all values' destructor glue. The contained per-value
+  path preserves the participant's original unwind and prevents any one backend destructor from
+  skipping the remaining resources.
+- **A cleanup dependency discovered during unwind is already too late.** Ordinary lock values
+  cannot be forgotten: they are live process-exclusion capabilities. A per-destructor
+  `catch_unwind` on the existing thread handles the nested panic without allocating a new
+  execution resource, so release availability is independent of thread limits and runtime
+  shutdown state.
+- **A liveness check is not a commit.** Running it before acquiring the fault counter permits
+  restart in the gap. `commit_process` gives the backend the narrow critical section needed to
+  validate process identity and consume the scheduled count as one ordered decision, while the
+  predicate and observer remain outside it to preserve re-entrancy.
+- **A teardown test must observe the side effect it promises.** Empty tables are not evidence
+  that destructors ran, because a faulty implementation can leak values while emptying maps.
+  Per-category counters prove cleanup was attempted even when each destructor then panics, and
+  the test's final scrub exists only to make a failure diagnostic clean.
+
+## The merge review follow-up, 2026-11-19
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Merge review fixes: ordinary
+release and native notification hints". Both findings held.
+
+- **Abandonment is selected by destructor failure, not only by a prior unwind.** A `VfsLock`
+  destructor can be the operation that starts a panic. Its guard must therefore remove the lock,
+  contain destruction, and abandon from that result; checking `thread::panicking` before the
+  destructor cannot detect it. Central release helpers keep file and shared participants on the
+  same rule and let multi-lock owners continue until every detached value has been attempted.
+- **Native hints cannot be tested as poller deadlines.** A Windows oplock is broken by access to
+  the native file, not only by the publication this crate performs. The public notification
+  contract deliberately makes the notification a hint, so the native test resamples and verifies
+  the count did not move. The non-early deadline assertion belongs to the polled path, whose
+  only wake sources are its sample result and deadline.
+
+## The full review follow-up, 2026-11-19
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Full review fixes: admission
+liveness and worker-owned capture destruction". Both findings held.
+
+- **A release is part of the capability transition.** Removing a gate from a participant table
+  and containing its destructor can still abandon that participant. Returning the attachment or
+  upgrade before observing that state would publish a capability whose claimed tiers no longer
+  exist. Every transition therefore checks liveness after releasing temporary or retiring state,
+  while initial acquisition errors and waiting behavior remain unchanged.
+- **Callback-return containment ends at callback-owned state destruction.** A Linux worker retains
+  the final entry Arc after the callback returns. If self-withdrawal removed the service's other
+  references, dropping that Arc destroys user captures on the worker. Containing that final drop
+  preserves the service worker; only a panic from the callback body itself follows Signal's
+  existing abort policy.
+
+## The corrected full-review follow-up, 2026-11-19
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Corrected full review fixes:
+durability, cleanup and contract alignment".
+
+- **Reviewer error and contract drift are different.** An early count hint is explicitly permitted,
+  so its appearance in a review as an implementation defect was wrong. The first sentence of the
+  public trigger text still implied exact causation; clarifying that sentence prevents the same
+  correlation failure without changing the behavior.
+- **Implicit-root file sync is a name exception with no caller action.** The model's ordinary
+  file-sync rule stores bytes, while directory sync publishes names. The implicit root is special
+  because the API refuses syncing it; direct children must therefore be named by their own file
+  fsync.
+- **A current liveness observation owns its dependent decision.** Reading boot identity and then
+  consulting captured opening state splits one question into two different moments. Sampling uses
+  the boot read it just made, just as snapshot does.
+- **Cleanup outcome is part of registry and admission success.** A contained destructor panic is
+  still abandonment. Capability-returning operations must observe it before returning, and
+  destructor paths that cannot return errors must continue releasing every remaining owned lock.
+- **Allocation policy is part of resource good citizenship.** `read_at` returns one owned buffer;
+  reserving a file-sized sparse range through allocator overcommit is not a dependable error path.
+  A stated ceiling gives callers a deterministic chunking rule.
+- **A public ordering promise must be provable on every platform.** `ResetEvent` guarantees the
+  reset but not a general acquire/release RMW for arbitrary consumers. The contract narrows to
+  raise/wait synchronization and requires the protocol's own atomic edge where one is needed.

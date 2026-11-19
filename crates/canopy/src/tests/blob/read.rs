@@ -371,12 +371,12 @@ fn a_sequestered_copy_survives_a_crash() {
         .unwrap();
     assert_eq!(outcome.sequestered(), [1]);
 
-    mem.simulate_crash();
+    let mem = mem.simulate_restart();
     let quarantine = root
         .join(BLOB_TREE_DIR)
         .join("p1")
         .join(crate::store::QUARANTINE_DIR);
-    let kept = vfs.read_dir(&quarantine).expect("the quarantine survived");
+    let kept = mem.read_dir(&quarantine).expect("the quarantine survived");
     assert_eq!(kept.len(), 1);
 }
 

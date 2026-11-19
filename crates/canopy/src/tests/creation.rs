@@ -79,7 +79,7 @@ fn a_crash_at_any_step_of_creation_leaves_a_creation_an_identical_creator_finish
             let cut = Store::init_unsourced(faulty, root.clone(), test_config());
             let finished = cut.is_ok();
             drop(cut);
-            mem.simulate_crash();
+            let mem = mem.simulate_restart();
             // A store whose marker survived the crash is a store that crashed, so its writers
             // recover first; before the marker, the resuming creator vouches for the root itself.
             let made = mem.exists(&root.join(MARKER_NAME)).unwrap();
@@ -100,7 +100,7 @@ fn a_crash_at_any_step_of_creation_leaves_a_creation_an_identical_creator_finish
                 )
                 .unwrap_or_else(|error| panic!("{op:?} call {n}: {error:?}"));
             drop(store);
-            mem.simulate_crash();
+            let mem = mem.simulate_restart();
             let reopened = Store::open_unsourced(Arc::new(mem.another_process()), root).unwrap();
             assert_eq!(
                 reopened.read_body(name("after"), &doc("crash")).unwrap(),

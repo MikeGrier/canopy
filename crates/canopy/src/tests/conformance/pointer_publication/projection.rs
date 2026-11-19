@@ -205,7 +205,7 @@ pub(super) fn model(world: &World, state: &Map<String, Value>) -> Projection {
 /// The projection of what `mem` holds: live as it stands, durable as a crash now would leave it.
 pub(super) fn observe(world: &World, mem: &MemFs) -> Projection {
     let durable = mem.fork();
-    durable.simulate_crash();
+    let durable = durable.simulate_restart();
     let (ptr_dur, blob_dur, record_dur) = view(world, &durable);
     let mut projection = Projection {
         ptr_live: Vec::new(),

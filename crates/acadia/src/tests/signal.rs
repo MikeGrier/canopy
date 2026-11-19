@@ -558,6 +558,52 @@ fn a_watch_dropped_by_its_own_callback_returns_and_is_not_run_again() {
     });
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_self_withdrawn_callback_capture_cannot_stop_the_linux_service() {
+    use crate::{EventFdSignal, Signal};
+
+    #[derive(Debug)]
+    struct PanickingCapture(Arc<AtomicUsize>);
+    impl Drop for PanickingCapture {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            panic!("self-withdrawn callback capture stopped");
+        }
+    }
+
+    let signal = Arc::new(EventFdSignal::new().unwrap());
+    let slot: Arc<Mutex<Option<Watch>>> = Arc::default();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let (entered, entries) = mpsc::channel();
+    let first = {
+        let slot = Arc::clone(&slot);
+        let dropped = Arc::clone(&dropped);
+        let capture = PanickingCapture(dropped);
+        Signal::watch(signal.as_ref(), move || {
+            let _ = &capture;
+            drop(slot.lock().unwrap().take());
+            let _ = entered.send(());
+        })
+        .unwrap()
+    };
+    *slot.lock().unwrap() = Some(first);
+    Signal::raise(signal.as_ref()).unwrap();
+    recv_timeout(&entries, LONG).unwrap();
+    sleep(SETTLE);
+    assert_eq!(dropped.load(Ordering::Acquire), 1);
+
+    let second_signal = Arc::clone(&signal);
+    let (ran, runs) = mpsc::channel();
+    let _second = Signal::watch(signal.as_ref(), move || {
+        Signal::lower(second_signal.as_ref()).unwrap();
+        let _ = ran.send(());
+    })
+    .unwrap();
+    Signal::raise(signal.as_ref()).unwrap();
+    recv_timeout(&runs, LONG).expect("the Linux service stopped");
+}
+
 #[test]
 fn many_watches_of_many_signals_each_run() {
     const SIGNALS: usize = 16;

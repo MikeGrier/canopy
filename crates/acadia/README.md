@@ -18,11 +18,13 @@ under [`canopy`](https://crates.io/crates/canopy).
   `NotFound`), never as a panic.
 - **Durability is explicit.** `write`, `append`, and `truncate` change contents but
   promise nothing about durability; bytes are durable only once `fsync` returns.
-- **Rename is atomic, not durable.** `rename` replaces the destination atomically,
-  and the rename itself becomes durable only after the containing directory is
-  `fsync`'d.
+- **Rename is atomic, not durable.** `rename` replaces the destination atomically.
+  The destination parent must be `fsync`'d to make the new name durable; a
+  cross-directory move also requires the source parent to be synced to make the old
+  name's removal durable.
 - **Exclusive locks are owned.** `lock_exclusive` returns a guard whose lifetime is
-  the lock, so the OS releases it if the owning process dies.
+  the lock. Process death releases it once no inherited Unix open-description remains;
+  callers that fork must close or `exec` away descriptors inherited by the child.
 - **Range locks never wait.** `try_lock` takes a shared or exclusive lock on a whole
   file or a byte range, refuses a conflict at once with `Locked`, and is released when
   its guard drops or its process dies. Every guard is its own holder. Keep data out of
@@ -44,7 +46,7 @@ platform's own wait, without lowering it.
 | Type | Purpose |
 |---|---|
 | `OsFs` | Passthrough to the operating system; it maps `std::io::Error` onto `VfsErrorKind`. |
-| `MemFs` | A complete in-memory filesystem with separate *live* and *durable* states. `fsync` of a file makes its bytes durable; `fsync` of a directory makes its entries durable. `simulate_crash` discards everything not yet durable. `another_process` gives a second simulated process over the same tree, and `abandon` releases a process's locks as its death would. |
+| `MemFs` | A complete in-memory filesystem with separate *live* and *durable* states. `fsync` of a file makes its bytes durable; `fsync` of a directory makes its entries durable. `simulate_crash` ends this process view and discards everything not yet durable; `simulate_restart` also returns a distinct successor view. `another_process` gives a second simulated process over the same tree, and `abandon` releases a process's locks as its death would. |
 | `FaultyFs<V>` | Wraps any backend and applies a `FaultPolicy`: fail an operation, tear a write, corrupt a read, or observe a call, on chosen paths at chosen moments. No randomness -- every fault fires on a declared schedule. |
 
 `read_root` additionally provides `ReadRoot`/`OsReadRoot`, read access anchored to a
@@ -63,16 +65,16 @@ let file = dir.join("record");
 fs.create_dir_all(dir).unwrap();
 fs.fsync(dir).unwrap(); // make the directory itself durable
 
-// Written but not yet durable: a crash loses it.
+// Written but not yet durable: a crash loses it. The old view is ended.
 fs.write(&file, b"v1").unwrap();
-fs.simulate_crash();
+let fs = fs.simulate_restart();
 assert!(!fs.exists(&file).unwrap());
 
 // Durable once the file and its directory entry are fsync'd.
 fs.write(&file, b"v1").unwrap();
 fs.fsync(&file).unwrap();
 fs.fsync(dir).unwrap();
-fs.simulate_crash();
+let fs = fs.simulate_restart();
 assert_eq!(fs.read(&file).unwrap(), b"v1");
 
 // Scripted fault: the first fsync of `record` fails.

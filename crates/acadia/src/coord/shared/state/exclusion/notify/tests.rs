@@ -3,6 +3,14 @@
 use super::*;
 use crate::coord::{ModificationEnd, Purpose, WriterExclusion};
 
+struct PanickingPayload;
+
+impl Drop for PanickingPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destruction stopped");
+    }
+}
+
 fn state() -> SharedState {
     let fs = Arc::new(crate::MemFs::new());
     fs.create_dir_all(Path::new("/notify")).unwrap();
@@ -97,6 +105,75 @@ fn cancellation_withdraws_the_callback_and_a_panicking_one_does_not_stop_others(
     receiver.recv().unwrap();
     drop(panic_notice);
     drop(good);
+}
+
+#[test]
+fn a_panicking_ring_payload_does_not_stop_the_shared_poller() {
+    let state = state();
+    let failing = state
+        .notify(
+            state.sample().unwrap(),
+            Instant::now(),
+            Box::new(|| std::panic::panic_any(PanickingPayload)),
+        )
+        .unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let good = state
+        .notify(
+            state.sample().unwrap(),
+            Instant::now(),
+            Box::new(move || {
+                let _ = sender.send(());
+            }),
+        )
+        .unwrap();
+    test_timers::mpsc::recv_timeout(&receiver, Duration::from_secs(10))
+        .expect("the shared poller stopped");
+    drop(failing);
+    drop(good);
+}
+
+#[test]
+fn a_panicking_retired_vfs_does_not_stop_the_poller() {
+    let fs = Arc::new(crate::MemFs::new());
+    fs.create_dir_all(Path::new("/notify-panic-drop")).unwrap();
+    let faulty = Arc::new(crate::FaultyFs::new(
+        fs.another_process(),
+        crate::FaultPolicy::new(),
+    ));
+    faulty.panic_when_dropped();
+    let failing = SharedState::open(faulty.clone(), Path::new("/notify-panic-drop")).unwrap();
+    let sampled = failing.sample().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let notice = failing
+        .notify(
+            sampled,
+            Instant::now(),
+            Box::new(move || {
+                let _ = sender.send(());
+            }),
+        )
+        .unwrap();
+    drop(faulty);
+    drop(failing);
+    test_timers::mpsc::recv_timeout(&receiver, Duration::from_secs(10))
+        .expect("the retiring registration rang");
+    drop(notice);
+
+    let good = state();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let notice = good
+        .notify(
+            good.sample().unwrap(),
+            Instant::now(),
+            Box::new(move || {
+                let _ = sender.send(());
+            }),
+        )
+        .unwrap();
+    test_timers::mpsc::recv_timeout(&receiver, Duration::from_secs(10))
+        .expect("the shared poller stopped");
+    drop(notice);
 }
 
 #[test]

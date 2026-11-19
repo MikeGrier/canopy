@@ -607,3 +607,149 @@ sender between callers.
 ### <a id="m49-6"></a>M49-6 -- The callback panic contract states the behavior of unwind and abort strategies. *(completed 2026-11-18 17:25:01 -05:00)*
 
 ### <a id="m49-7"></a>M49-7 -- MemFs crash identity storage uses an ended prefix and a bounded current-boot abandon set. *(completed 2026-11-18 17:25:01 -05:00)*
+
+## Moved 2026-11-18 -- Eleventh review: immutable process views and unwind-safe native boundaries
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Eleventh review fixes: immutable process views and
+unwind-safe native boundaries". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md)
+"The eleventh review, 2026-11-18".
+
+### <a id="m50-1"></a>M50-1 -- MemFs crash simulation leaves every existing process view ended and returns a distinct successor. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-2"></a>M50-2 -- Shared-state panic cleanup releases the public participant's in-progress creation lock. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-3"></a>M50-3 -- File-registry listing claims are unwind guards. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-4"></a>M50-4 -- Windows oplock ring withdrawal drops user code outside the registration mutex. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-5"></a>M50-5 -- Native oplock callbacks contain sample panics and restore callback scope. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-6"></a>M50-6 -- Acadia's public sealed Windows event makes a sealed thread-pool wait. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-7"></a>M50-7 -- FaultyFs read_at copies replacement bytes only through the undecorated result bound. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-8"></a>M50-8 -- Crash and abandonment lock tests prove the waiter entered the conflicting wait. *(completed 2026-11-18 20:06:49 -05:00)*
+
+### <a id="m50-9"></a>M50-9 -- Interrupted generation renewal adopts the saturated final limit. *(completed 2026-11-18 20:06:49 -05:00)*
+
+## Moved 2026-11-18 -- Eleventh review follow-up: teardown ownership and unwind containment
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Eleventh review follow-up: teardown ownership and
+unwind containment". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "The eleventh
+review follow-up, 2026-11-18".
+
+### <a id="m51-1"></a>M51-1 -- Oplock teardown transfers native resources before discarded ring destruction. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-2"></a>M51-2 -- File registry claim guards cover registration, update and unregistration. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-3"></a>M51-3 -- Both process-wide notification pollers contain destructor panic. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-4"></a>M51-4 -- Shared model liveness is released before its discoverable words disappear. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-5"></a>M51-5 -- Native registration-time sample panic preserves a poller ring. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-6"></a>M51-6 -- Windows notification tests prove native callback and withdrawal paths. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-7"></a>M51-7 -- Wait-entry assertion failure releases its blocker before scope join. *(completed 2026-11-18 20:48:32 -05:00)*
+
+### <a id="m51-8"></a>M51-8 -- The re-entrant predicate test retains no strong fixture cycle. *(completed 2026-11-18 20:48:32 -05:00)*
+
+## Moved 2026-11-18 -- Final eleventh review: temporary ownership and layer precedence
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Final eleventh review fixes: temporary ownership and
+layer precedence". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "The final
+eleventh review follow-up, 2026-11-18".
+
+### <a id="m52-1"></a>M52-1 -- Temporary participant owners in both notification pollers are destroyed with per-value panic containment. *(completed 2026-11-18 21:23:34 -05:00)*
+
+### <a id="m52-2"></a>M52-2 -- Shared coordination lock values are removed from participant mutexes before their destructors run. *(completed 2026-11-18 21:23:34 -05:00)*
+
+### <a id="m52-3"></a>M52-3 -- FaultyFs checks ended-process precedence before fault selection and observer execution. *(completed 2026-11-18 21:23:34 -05:00)*
+
+### <a id="m52-4"></a>M52-4 -- Every non-callback oplock withdrawal releases native I/O before destroying the withdrawn ring. *(completed 2026-11-18 21:23:34 -05:00)*
+
+### <a id="m52-5"></a>M52-5 -- A one-shot native registration sample failure rings exactly once instead of waiting for its deadline. *(completed 2026-11-18 21:23:34 -05:00)*
+
+## Moved 2026-11-18 -- Final review: asynchronous delivery, cleanup and restart ordering
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Final review fixes: asynchronous delivery,
+complete cleanup and restart ordering". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md)
+"The final review follow-up, 2026-11-18".
+
+### <a id="m53-1"></a>M53-1 -- A failed native registration sample rings only on an implementation thread, after native I/O is released. *(completed 2026-11-18 22:06:27 -05:00)*
+
+### <a id="m53-2"></a>M53-2 -- Shared abandonment removes the liveness lock before its destructor can call back. *(completed 2026-11-18 22:06:27 -05:00)*
+
+### <a id="m53-3"></a>M53-3 -- Shared abandonment attempts every cleanup category and contains lock-destructor panics. *(completed 2026-11-18 22:06:27 -05:00)*
+
+### <a id="m53-4"></a>M53-4 -- Poller containment includes destruction of a panic payload, so one ring cannot stop a worker. *(completed 2026-11-18 22:06:27 -05:00)*
+
+### <a id="m53-5"></a>M53-5 -- Raw MemFs operations apply ended-process precedence before invalid-input or unsupported results. *(completed 2026-11-18 22:06:27 -05:00)*
+
+### <a id="m53-6"></a>M53-6 -- Fault restart state cannot duplicate a one-shot rule or run fault effects after the old process ends. *(completed 2026-11-18 22:06:27 -05:00)*
+
+### <a id="m53-7"></a>M53-7 -- Lock wait timeout tests release their blocker before an assertion can join the scoped waiter. *(completed 2026-11-18 22:06:27 -05:00)*
+
+## Moved 2026-11-18 -- Teardown availability and restart commit ordering
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Teardown availability and restart commit
+ordering". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "Teardown availability and
+restart commit ordering, 2026-11-18".
+
+### <a id="m54-1"></a>M54-1 -- File-participant unwind cleanup contains each detached lock destructor before notifying watchers. *(completed 2026-11-18 22:24:36 -05:00)*
+
+### <a id="m54-2"></a>M54-2 -- Unwind destruction never depends on spawning a cleanup thread after panic. *(completed 2026-11-18 22:24:36 -05:00)*
+
+### <a id="m54-3"></a>M54-3 -- Fault counter commitment and process-end transition use one ordering with restart. *(completed 2026-11-18 22:24:36 -05:00)*
+
+### <a id="m54-4"></a>M54-4 -- The shared-abandonment regression observes every lock destructor, so a no-op cleanup fails. *(completed 2026-11-18 22:24:36 -05:00)*
+
+## Moved 2026-11-19 -- Merge review: ordinary release and native hints
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Merge review fixes: ordinary release and native
+notification hints". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "The merge review
+follow-up, 2026-11-19".
+
+### <a id="m55-1"></a>M55-1 -- Every ordinary participant lock release contains a destructor panic and abandons the participant without stranding sibling locks. *(completed 2026-11-19 07:23:17 -05:00)*
+
+### <a id="m55-2"></a>M55-2 -- Native Windows early hints do not make the deadline-only conformance test flaky. *(completed 2026-11-19 07:23:17 -05:00)*
+
+## Moved 2026-11-19 -- Full review: admission liveness and worker teardown
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Full review fixes: admission liveness and
+worker-owned capture destruction". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md)
+"The full review follow-up, 2026-11-19".
+
+### <a id="m56-1"></a>M56-1 -- Admission and upgrade transitions refuse success after any released lock destructor abandons the participant. *(completed 2026-11-19 07:53:37 -05:00)*
+
+### <a id="m56-2"></a>M56-2 -- Linux self-withdrawal cannot strand the epoll service when callback-capture destruction panics. *(completed 2026-11-19 07:53:37 -05:00)*
+
+## Moved 2026-11-19 -- Corrected full review: implementation and contract alignment
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Corrected full review fixes: durability, cleanup
+and contract alignment". Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) "The corrected
+full-review follow-up, 2026-11-19".
+
+### <a id="m57-1"></a>M57-1 -- MemFs fsync of a direct implicit-root file makes its name and bytes durable. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-2"></a>M57-2 -- Shared sampling uses the current boot-liveness result and samples odd when identity becomes unavailable. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-3"></a>M57-3 -- File registration never returns a token after claim release abandons the participant. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-4"></a>M57-4 -- Unregister cleanup contains acquisition and destructor panics and releases all participant-owned locks. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-5"></a>M57-5 -- OsFs read_at rejects ranges above a bounded allocation ceiling before reserving or filling memory. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-6"></a>M57-6 -- File hold and upgrade operations return Abandoned before unrelated local-state errors. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-7"></a>M57-7 -- The Canopy recorder forwards process-liveness and commit hooks. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-8"></a>M57-8 -- Admission tests exercise the public transition whose own gate release abandons. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-9"></a>M57-9 -- CountNotification distinguishes an exact trigger from a permitted early platform hint. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-10"></a>M57-10 -- Rename docs require syncing each parent changed by a cross-directory move. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-11"></a>M57-11 -- Unix lock docs state the inherited-descriptor fork boundary. *(completed 2026-11-19 09:08:23 -05:00)*
+
+### <a id="m57-12"></a>M57-12 -- Signal::lower's public ordering contract matches Windows ResetEvent semantics. *(completed 2026-11-19 09:08:23 -05:00)*

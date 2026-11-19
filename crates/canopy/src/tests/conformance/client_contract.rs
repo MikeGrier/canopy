@@ -530,7 +530,7 @@ fn an_after_prepare_failure_completes_as_uncertain_and_stays_uncertain_after_rec
     drop(submissions);
     drop(session);
     drop(store);
-    faulty.inner().simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.simulate_restart());
     let (reopened, _) = Store::open(
         vfs,
         root,

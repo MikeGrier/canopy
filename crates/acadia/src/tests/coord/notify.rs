@@ -66,6 +66,35 @@ fn rings_within(rings: &mpsc::Receiver<Instant>, within: Duration) -> bool {
     recv_timeout(rings, within).is_ok()
 }
 
+struct PanickingPayload;
+
+impl Drop for PanickingPayload {
+    fn drop(&mut self) {
+        panic!("panic payload destruction stopped");
+    }
+}
+
+#[test]
+fn a_panicking_ring_payload_does_not_stop_the_file_poller() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let participant = participant_on(
+        &FileFactory::new().polled(),
+        Arc::new(mem.another_process()),
+        &root,
+    );
+    let failing = participant
+        .notify(
+            participant.sample().unwrap(),
+            Instant::now(),
+            Box::new(|| std::panic::panic_any(PanickingPayload)),
+        )
+        .unwrap();
+    let (_good, rings) = registered(&participant, participant.sample().unwrap(), Instant::now());
+    assert!(rings_within(&rings, LONG), "the file poller stopped");
+    drop(failing);
+}
+
 #[test]
 fn a_registration_rings_when_the_count_moves() {
     on_every_implementation("coord-notify-moves", &|implementation, backend| {
@@ -93,14 +122,37 @@ fn a_registration_whose_count_already_differs_rings_at_once() {
 }
 
 #[test]
-fn a_registration_rings_when_its_deadline_passes_and_not_before() {
-    on_every_implementation("coord-notify-deadline", &|implementation, backend| {
+fn a_polled_registration_rings_when_its_deadline_passes_and_not_before() {
+    for implementation in super::implementations() {
+        let implementation = implementation.polled();
+        super::on_every_backend("coord-notify-deadline-polled", &|backend| {
+            let waiter = participant(&implementation, backend);
+            publish(&waiter, 2);
+            let deadline = Instant::now() + Duration::from_millis(60);
+            let (_notice, rings) = registered(&waiter, ModCount::new(2), deadline);
+            let rang = recv_timeout(&rings, LONG).expect("the deadline rings it");
+            assert!(rang >= deadline, "{}: rang early", backend.name());
+        });
+    }
+}
+
+#[test]
+fn an_early_native_hint_is_safe_after_resampling() {
+    on_every_implementation("coord-notify-early-hint", &|implementation, backend| {
         let waiter = participant(implementation, backend);
         publish(&waiter, 2);
+        let sampled = ModCount::new(2);
         let deadline = Instant::now() + Duration::from_millis(60);
-        let (_notice, rings) = registered(&waiter, ModCount::new(2), deadline);
-        let rang = recv_timeout(&rings, LONG).expect("the deadline rings it");
-        assert!(rang >= deadline, "{}: rang early", backend.name());
+        let (_notice, rings) = registered(&waiter, sampled, deadline);
+        let rang = recv_timeout(&rings, LONG).expect("the hint or deadline rings it");
+        if rang < deadline {
+            assert_eq!(
+                waiter.sample().unwrap(),
+                sampled,
+                "{}: early hint",
+                backend.name()
+            );
+        }
     });
 }
 
@@ -379,6 +431,75 @@ mod os {
     }
 
     #[test]
+    fn a_panicking_native_sample_rings_and_leaves_later_registrations_live() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-panic");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let gate = crate::FaultGate::closed();
+        let (callback_tx, callback_rx) = mpsc::channel();
+        let callback_tx = Arc::new(Mutex::new(Some(callback_tx)));
+        let observed = Arc::clone(&callback_tx);
+        let policy = FaultPolicy::new().inject_gated(
+            FaultOp::Read,
+            crate::PathMatcher::exact(writer.layout().count()),
+            Fault::observe_with(move |_, _| {
+                if let Some(tx) = observed.lock().unwrap().take() {
+                    let _ = tx.send(thread::current().name().map(str::to_owned));
+                }
+                panic!("the native sample stopped")
+            }),
+            When::Always,
+            gate.clone(),
+        );
+        let waiter = participant_on(
+            &implementation,
+            Arc::new(FaultyFs::new(OsFs::new(), policy)),
+            dir.path(),
+        );
+        let (first, first_ring) = registered(&waiter, waiter.sample().expect("sample"), far());
+        gate.open();
+        writer.publish_count(4, Standing::Vouched).expect("publish");
+        let callback_name = recv_timeout(&callback_rx, LONG).expect("the native sample ran");
+        assert_ne!(callback_name.as_deref(), Some("acadia-coord-poller"));
+        assert!(rings_within(&first_ring, LONG), "the panicking sample rang");
+        gate.close();
+        let (_second, second_ring) = registered(&waiter, waiter.sample().expect("sample"), far());
+        writer.publish_count(6, Standing::Vouched).expect("publish");
+        assert!(
+            rings_within(&second_ring, LONG),
+            "the callback thread stayed usable"
+        );
+        drop(first);
+    }
+
+    #[test]
+    fn a_registration_time_sample_panic_falls_back_to_a_ring() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-register-panic");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let gate = crate::FaultGate::closed();
+        let policy = FaultPolicy::new().inject_gated(
+            FaultOp::Read,
+            crate::PathMatcher::exact(writer.layout().count()),
+            Fault::observe_with(|_, _| panic!("the registration sample stopped")),
+            When::Always,
+            gate.clone(),
+        );
+        let waiter = participant_on(
+            &implementation,
+            Arc::new(FaultyFs::new(OsFs::new(), policy)),
+            dir.path(),
+        );
+        let sampled = waiter.sample().expect("sample before arming");
+        gate.open();
+        let (_notice, rings) = registered(&waiter, sampled, far());
+        assert!(
+            rings_within(&rings, LONG),
+            "the failed registration sample rang"
+        );
+    }
+
+    #[test]
     fn a_registration_before_any_count_is_published_is_rung_by_the_poller() {
         let (dir, implementation) = on_the_os("coord-notify-oplock-fallback");
         let writer = os_participant(&implementation, &dir);
@@ -454,6 +575,50 @@ mod os {
     }
 
     #[test]
+    fn withdrawing_an_oplock_drops_its_ring_outside_the_registration_mutex() {
+        struct AbandonOnDrop {
+            participant: Arc<FileCoordination>,
+        }
+        impl Drop for AbandonOnDrop {
+            fn drop(&mut self) {
+                self.participant.abandon();
+                panic!("withdrawn ring destruction stopped");
+            }
+        }
+
+        let (dir, implementation) = on_the_os("coord-notify-oplock-withdraw");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let (waiter, reads) = counting(&implementation, &dir, &writer);
+        let waiter = Arc::new(waiter);
+        let notice = waiter
+            .notify(
+                waiter.sample().expect("sample"),
+                far(),
+                Box::new({
+                    let guard = AbandonOnDrop {
+                        participant: Arc::clone(&waiter),
+                    };
+                    move || drop(guard)
+                }),
+            )
+            .expect("notify");
+        let sampled = reads.load(Ordering::Acquire);
+        sleep(Duration::from_millis(50));
+        assert_eq!(
+            reads.load(Ordering::Acquire),
+            sampled,
+            "the poller took over"
+        );
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            drop(notice);
+            let _ = done.send(());
+        });
+        recv_timeout(&finished, LONG).expect("notice withdrawal did not deadlock");
+    }
+
+    #[test]
     fn a_notice_dropped_by_its_own_ring_does_not_wait_for_itself() {
         let (dir, implementation) = on_the_os("coord-notify-oplock-self");
         let writer = os_participant(&implementation, &dir);
@@ -518,6 +683,24 @@ fn a_registration_whose_retirement_withdraws_another_notice_does_not_stall_the_p
         rings_within(&rings, LONG),
         "the poller keeps serving registrations"
     );
+}
+
+#[test]
+fn a_panicking_retired_vfs_does_not_stop_the_poller() {
+    let mem = Backend::mem();
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    let faulty = Arc::new(FaultyFs::new(mem.another_process(), FaultPolicy::new()));
+    faulty.panic_when_dropped();
+    let implementation = FileFactory::new().polled();
+    let participant = participant_on(&implementation, faulty.clone(), &root);
+    drop(faulty);
+    let (notice, rings) = registered(&participant, participant.sample().unwrap(), Instant::now());
+    assert!(rings_within(&rings, LONG));
+    drop(notice);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(participant))).is_err());
+    let other = participant_on(&implementation, Arc::new(mem.another_process()), &root);
+    let (_notice, rings) = registered(&other, other.sample().unwrap(), Instant::now());
+    assert!(rings_within(&rings, LONG), "the file poller stopped");
 }
 
 /// A panic while the poller samples one participant is that sample failing: the poller rings the

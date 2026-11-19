@@ -443,7 +443,7 @@ impl<'trace> Replay<'trace> {
                         after["fence"].as_bool().expect("the fence is boolean"),
                     );
                 }
-                self.mem.simulate_crash();
+                self.mem = Arc::new(self.mem.simulate_restart());
                 self.observer_process = Arc::new(self.mem.another_process());
                 self.observer = process::factory(self.implementation, None)
                     .open(self.observer_process.clone(), &self.world.root)

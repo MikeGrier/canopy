@@ -36,7 +36,7 @@ fn mem_a_fork_reads_what_its_original_reads() {
 #[test]
 fn mem_a_fork_keeps_the_durable_line_of_its_original() {
     let fork = half_durable().fork();
-    fork.simulate_crash();
+    let fork = fork.simulate_restart();
     assert_eq!(fork.read(p("/d/kept")).unwrap(), b"durable");
     assert!(!fork.exists(p("/d/pending")).unwrap());
     fork.audit_refs();
@@ -64,7 +64,7 @@ fn mem_changes_to_the_original_do_not_reach_a_fork() {
     fs.fsync(p("/d")).unwrap();
     fs.remove_file(p("/d/kept")).unwrap();
     assert_eq!(fork.read(p("/d/kept")).unwrap(), b"durable");
-    fork.simulate_crash();
+    let fork = fork.simulate_restart();
     assert!(!fork.exists(p("/d/pending")).unwrap());
     fork.audit_refs();
 }
@@ -116,7 +116,7 @@ fn mem_a_fork_carries_the_pending_change_records() {
     let fork = fs.fork();
     fork.fsync(p("/d/pending")).unwrap();
     fork.fsync(p("/d")).unwrap();
-    fork.simulate_crash();
+    let fork = fork.simulate_restart();
     assert_eq!(fork.read(p("/d/pending")).unwrap(), b"pending");
 }
 

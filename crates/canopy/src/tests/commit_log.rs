@@ -259,7 +259,8 @@ fn a_newly_created_log_survives_a_crash() {
 
     let record = begin(&nonce("tx1"));
     log.append(&record).unwrap();
-    mem.simulate_crash();
+    let vfs: Arc<dyn Vfs> = Arc::new(mem.simulate_restart());
+    let log = CommitLog::new(vfs, &root);
     assert_eq!(log.read().unwrap(), vec![record]);
 }
 
@@ -281,7 +282,9 @@ fn a_failed_root_sync_is_retried_by_the_next_append() {
     let record = begin(&nonce("tx2"));
     log.append(&record).unwrap();
 
-    faulty.inner().simulate_crash();
+    let faulty = Arc::new(faulty.simulate_restart());
+    let vfs: Arc<dyn Vfs> = faulty;
+    let log = CommitLog::new(vfs, &root);
     assert_eq!(log.read().unwrap(), vec![record]);
 }
 
@@ -346,7 +349,9 @@ fn a_truncation_whose_flush_failed_is_flushed_by_the_next_reset() {
     log.reset().expect_err("the truncation's flush fails");
     log.reset().expect("the empty log is flushed this time");
 
-    faulty.inner().simulate_crash();
+    let faulty = Arc::new(faulty.simulate_restart());
+    let vfs: Arc<dyn Vfs> = faulty;
+    let log = CommitLog::new(vfs, &root);
     assert!(log.read().unwrap().is_empty(), "the old record came back");
 }
 

@@ -26,6 +26,27 @@ fn attach(participant: &FileCoordination, access: Access) -> Box<dyn Attachment>
 }
 
 #[test]
+fn an_abandoned_unsafe_upgrade_refuses_reader_admission() {
+    let mem = super::Backend::mem();
+    let root = std::path::PathBuf::from(super::Backend::MEM_ROOT);
+    let participant = super::participant_on(
+        &crate::coord::file::FileFactory::new(),
+        std::sync::Arc::new(mem.another_process()),
+        &root,
+    );
+    let mut upgrade = participant
+        .attach(Access::Write, Waiting::Never)
+        .unwrap()
+        .upgrade(ReaderSafety::Unsafe, Waiting::Never)
+        .unwrap();
+    participant.abandon();
+    assert!(matches!(
+        upgrade.admit_readers(),
+        Err(CoordError::Abandoned)
+    ));
+}
+
+#[test]
 fn incremental_conversion_keeps_the_gate_until_reader_admission_is_explicit() {
     on_every_implementation("coord-conversion-gate", &|implementation, backend| {
         let owner = participant(implementation, backend);

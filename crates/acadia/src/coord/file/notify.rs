@@ -12,7 +12,6 @@
 //! and the poller survives it, as it survives a sample that panics. An abort-strategy binary ends
 //! on the panic before containment can run.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -118,7 +117,7 @@ impl Poller {
             let position = state.registrations.iter().position(|r| r.id == id);
             position.map(|position| state.registrations.swap_remove(position))
         };
-        drop(withdrawn);
+        crate::coord::discard(withdrawn);
     }
 
     fn run(&self) {
@@ -139,7 +138,8 @@ impl Poller {
                 .collect();
             if !due.is_empty() {
                 drop(state);
-                let (ringing, quiet) = sample(due);
+                let (ringing, quiet, samples) = sample(due);
+                crate::coord::discard(samples);
                 // Sets, so the passes under the lock below cost one lookup per registration.
                 let ringing: std::collections::HashSet<u64> = ringing.into_iter().collect();
                 let quiet: std::collections::HashSet<u64> = quiet.into_iter().collect();
@@ -160,9 +160,9 @@ impl Poller {
                 if !retired.is_empty() {
                     drop(state);
                     let rings: Vec<_> = retired.iter_mut().filter_map(|r| r.ring.take()).collect();
-                    drop(retired);
+                    crate::coord::discard(retired);
                     for ring in rings {
-                        let _ = catch_unwind(AssertUnwindSafe(ring));
+                        crate::coord::run_contained(ring);
                     }
                     state = self.state();
                 }
@@ -192,7 +192,7 @@ impl Poller {
 /// Samples the registrations that are due, returning those to ring -- their deadline has passed,
 /// or their participant's count differs from what they sampled or cannot be sampled, so that the
 /// caller samples again and meets the failure itself -- and those that stay quiet.
-fn sample(due: Vec<Due>) -> (Vec<u64>, Vec<u64>) {
+fn sample(due: Vec<Due>) -> (Vec<u64>, Vec<u64>, Vec<FileCoordination>) {
     let now = Instant::now();
     let mut samples: Vec<(FileCoordination, Option<ModCount>)> = Vec::new();
     let mut ringing = Vec::new();
@@ -200,6 +200,7 @@ fn sample(due: Vec<Due>) -> (Vec<u64>, Vec<u64>) {
     for registration in due {
         if registration.deadline <= now {
             ringing.push(registration.id);
+            crate::coord::discard([registration.participant]);
             continue;
         }
         let participant = registration.participant;
@@ -210,9 +211,8 @@ fn sample(due: Vec<Due>) -> (Vec<u64>, Vec<u64>) {
             Some((_, current)) => *current,
             None => {
                 // A sample that panics is one that failed, and the poller survives it.
-                let current = catch_unwind(AssertUnwindSafe(|| participant.sample()))
-                    .ok()
-                    .and_then(Result::ok);
+                let current =
+                    crate::coord::catch_contained(|| participant.sample()).and_then(Result::ok);
                 samples.push((participant, current));
                 current
             }
@@ -223,7 +223,11 @@ fn sample(due: Vec<Due>) -> (Vec<u64>, Vec<u64>) {
             ringing.push(registration.id);
         }
     }
-    (ringing, quiet)
+    let samples = samples
+        .into_iter()
+        .map(|(participant, _)| participant)
+        .collect();
+    (ringing, quiet, samples)
 }
 
 /// A registration with this process's poller, withdrawn when dropped.

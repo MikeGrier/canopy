@@ -103,6 +103,137 @@ fn fault_write_error_persists_nothing() {
 }
 
 #[test]
+fn an_ended_process_precedes_fault_matching_and_observation() {
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let action = Arc::clone(&observed);
+    let policy = FaultPolicy::new()
+        .inject(FaultOp::Read, "/data/file", Fault::missing(), When::Always)
+        .inject(
+            FaultOp::Write,
+            "/data/file",
+            Fault::observe_with(move |_, _| action.store(true, Ordering::Release)),
+            When::Always,
+        );
+    let successor_policy = policy.clone();
+    let fs = faulty(policy);
+    let restarted = fs.inner().simulate_restart();
+
+    assert_kind(fs.read(Path::new("/data/file")), VfsErrorKind::ProcessEnded);
+    assert_kind(
+        fs.exists(Path::new("/data/file")),
+        VfsErrorKind::ProcessEnded,
+    );
+    assert_kind(
+        fs.write(Path::new("/data/file"), b"after"),
+        VfsErrorKind::ProcessEnded,
+    );
+    assert!(!observed.load(Ordering::Acquire));
+
+    let successor = FaultyFs::new(restarted, successor_policy);
+    successor.create_dir_all(Path::new("/data")).unwrap();
+    assert_kind(
+        successor.read(Path::new("/data/file")),
+        VfsErrorKind::NotFound,
+    );
+    successor
+        .write(Path::new("/data/file"), b"successor")
+        .unwrap();
+    assert!(observed.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_paused_old_fault_predicate_cannot_cross_restart_or_consume_its_successor_rule() {
+    let mem = MemFs::new();
+    mem.create_dir_all(Path::new("/data")).unwrap();
+    mem.write(Path::new("/data/file"), b"durable").unwrap();
+    mem.fsync(Path::new("/data/file")).unwrap();
+    mem.fsync(Path::new("/data")).unwrap();
+
+    let (entered, predicate_entered) = std::sync::mpsc::channel();
+    let (resume, predicate_resumed) = std::sync::mpsc::channel();
+    let predicate_resumed = Arc::new(std::sync::Mutex::new(Some(predicate_resumed)));
+    let policy = FaultPolicy::new().inject_matching(
+        FaultOp::Read,
+        PathMatcher::predicate(move |_| {
+            if let Some(resume) = predicate_resumed.lock().unwrap().take() {
+                let _ = entered.send(());
+                let _ = resume.recv();
+            }
+            true
+        }),
+        Fault::missing(),
+        When::Once,
+    );
+    let old = Arc::new(FaultyFs::new(mem, policy));
+    let reading = Arc::clone(&old);
+    let worker = std::thread::spawn(move || reading.read(Path::new("/data/file")));
+    test_timers::mpsc::recv_timeout(&predicate_entered, std::time::Duration::from_secs(10))
+        .expect("the old predicate entered");
+    let successor = old.simulate_restart();
+    let _ = resume.send(());
+    assert_kind(worker.join().unwrap(), VfsErrorKind::ProcessEnded);
+    assert_kind(
+        successor.read(Path::new("/data/file")),
+        VfsErrorKind::NotFound,
+    );
+    assert_eq!(successor.read(Path::new("/data/file")).unwrap(), b"durable");
+}
+
+#[test]
+fn fault_counter_commit_is_ordered_with_process_restart() {
+    let mem = MemFs::new();
+    mem.create_dir_all(Path::new("/data")).unwrap();
+    mem.write(Path::new("/data/file"), b"durable").unwrap();
+    mem.fsync(Path::new("/data/file")).unwrap();
+    mem.fsync(Path::new("/data")).unwrap();
+    let policy = FaultPolicy::new().inject(
+        FaultOp::Read,
+        "/data/file",
+        Fault::io_error(),
+        When::OnCall(2),
+    );
+    let old = Arc::new(FaultyFs::new(mem, policy));
+    assert_eq!(old.read(Path::new("/data/file")).unwrap(), b"durable");
+
+    let (entered, commit_entered) = std::sync::mpsc::channel();
+    let (resume, commit_resumed) = std::sync::mpsc::channel();
+    let commit_resumed = Arc::new(std::sync::Mutex::new(Some(commit_resumed)));
+    old.inner().after_lock_check(move || {
+        let Some(resume) = commit_resumed.lock().unwrap().take() else {
+            return;
+        };
+        let _ = entered.send(());
+        let _ = resume.recv();
+    });
+
+    let reading = Arc::clone(&old);
+    let reader = std::thread::spawn(move || reading.read(Path::new("/data/file")));
+    test_timers::mpsc::recv_timeout(&commit_entered, std::time::Duration::from_secs(10))
+        .expect("the old fault commit entered");
+
+    let restarting = Arc::clone(&old);
+    let (restart_started, started) = std::sync::mpsc::channel();
+    let (restart_done, restarted) = std::sync::mpsc::channel();
+    let restart = std::thread::spawn(move || {
+        let _ = restart_started.send(());
+        let _ = restart_done.send(restarting.simulate_restart());
+    });
+    test_timers::mpsc::recv_timeout(&started, std::time::Duration::from_secs(10))
+        .expect("restart started");
+    assert!(
+        test_timers::mpsc::recv_timeout(&restarted, std::time::Duration::from_millis(50)).is_err(),
+        "restart must wait for fault commitment"
+    );
+    let _ = resume.send(());
+
+    assert_kind(reader.join().unwrap(), VfsErrorKind::Other);
+    let successor = test_timers::mpsc::recv_timeout(&restarted, std::time::Duration::from_secs(10))
+        .expect("restart completed after fault commitment");
+    restart.join().unwrap();
+    assert_eq!(successor.read(Path::new("/data/file")).unwrap(), b"durable");
+}
+
+#[test]
 fn fault_fsync_failure_does_not_advance_durability() {
     let fs = faulty(FaultPolicy::new().inject(
         FaultOp::Fsync,
@@ -113,8 +244,8 @@ fn fault_fsync_failure_does_not_advance_durability() {
     fs.write(Path::new("/data/f"), b"payload").unwrap();
     assert_kind(fs.fsync(Path::new("/data/f")), VfsErrorKind::Other);
     // Durability never advanced, so a crash loses the write.
-    fs.inner().simulate_crash();
-    assert!(!fs.exists(Path::new("/data/f")).unwrap());
+    let restarted = fs.inner().simulate_restart();
+    assert!(!restarted.exists(Path::new("/data/f")).unwrap());
 }
 
 #[test]
