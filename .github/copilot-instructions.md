@@ -101,7 +101,9 @@ edits (`tpu_replace_in_file` / `tpu_edit_file`), not only to PowerShell/shell.
   `git --no-pager <subcommand>`. The list below is illustrative, not exhaustive:
   `diff`, `show`, `log`, `blame`, `reflog`, `stash list`, `branch -v`,
   `shortlog`, `tag -n`, `whatchanged`, `grep`. **If unsure whether a `git`
-  subcommand may page, use `--no-pager`.**
+  subcommand may page, use `--no-pager`.** `git fetch` is an explicit exception:
+  it does not invoke a pager and does not accept `--no-pager`, so run it as plain
+  `git fetch`.
 - Never run `git commit` without `-m "…"`. Commit messages must be a **single
   line** when supplied via `-m`. For longer messages write the message to a
   file under `.scratch/` and use `git commit -F .scratch/<file>`. Never use
