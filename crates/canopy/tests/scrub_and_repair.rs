@@ -43,7 +43,7 @@ fn counting_nonces() -> impl FnMut() -> Nonce + Send + 'static {
 /// A store holding one committed document, plus the backend for raw corruption.
 fn seeded(text: &str) -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),

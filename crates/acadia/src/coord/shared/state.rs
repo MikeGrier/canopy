@@ -149,6 +149,7 @@ pub struct StateSnapshot {
 /// belong exclusively to this implementation and must not be truncated or removed while live.
 /// A file-backed mapping avoids Windows session-local names and global mapping privileges.
 pub struct SharedState {
+    release: Arc<crate::coord::ReleaseGate>,
     vfs: Arc<dyn Vfs>,
     directory: PathBuf,
     live: Arc<Mutex<Option<Box<dyn VfsLock>>>>,
@@ -547,6 +548,7 @@ impl SharedState {
             LockSpan::File,
         )?;
         let state = Self {
+            release: Arc::default(),
             vfs,
             directory,
             words,
@@ -566,6 +568,11 @@ impl SharedState {
     }
 
     /// This participant, announcing each later step that changes the shared words to `hook`.
+    pub(super) fn with_release(mut self, release: Arc<crate::coord::ReleaseGate>) -> Self {
+        self.release = release;
+        self
+    }
+
     pub(super) fn with_creation(
         mut self,
         creation: Weak<Mutex<HashMap<u64, Box<dyn VfsLock>>>>,
@@ -657,6 +664,7 @@ impl SharedState {
 
     /// Releases this participant's liveness without clearing ownership or other shared records.
     pub fn abandon(&self) {
+        let _turn = self.release.enter();
         self.abandoned.store(true, Ordering::Release);
         let creation = self.creation.upgrade().map(|creation| {
             let mut creation = creation

@@ -91,7 +91,7 @@ impl DiagnosticView {
         root: impl Into<PathBuf>,
         factory: Arc<dyn CoordinationFactory>,
     ) -> Result<Self, StoreError> {
-        let root = root.into();
+        let root = Store::absolute_root(root)?;
         Store::read_genesis(&vfs, &root)?;
         let participant = factory.open(Arc::clone(&vfs), &root)?;
         participant.confirm_created(MARKER_NAME)?;

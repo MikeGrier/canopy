@@ -33,6 +33,7 @@ impl SharedState {
             boot: self.boot.clone(),
             live: Arc::clone(&self.live),
             abandoned: Arc::clone(&self.abandoned),
+            release: Arc::clone(&self.release),
             holds: Arc::clone(&self.holds),
             creation: self.creation.clone(),
             #[cfg(any(test, feature = "test-support"))]
@@ -113,6 +114,7 @@ impl Drop for Kept {
             self.participant.abandon();
             return;
         }
+        let _turn = self.participant.release.enter();
         let lock = self
             .participant
             .holds_guard()

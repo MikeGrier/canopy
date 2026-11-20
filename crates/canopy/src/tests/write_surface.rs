@@ -15,7 +15,7 @@ use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When
 
 /// A store on `vfs` at a fresh root, drawing actor 0's stream under [`TEST_SEED`].
 fn seeded_store_on(vfs: Arc<dyn Vfs>, root: &str) -> Store {
-    let root = PathBuf::from(root);
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join(root);
     vfs.create_dir_all(&root).unwrap();
     let options = StoreOptions::with_nonce_source(test_agent(), seeded_source(TEST_SEED, 0));
     Store::init(vfs, root, test_config(), options).unwrap()

@@ -11,6 +11,11 @@ use crate::transaction::SwapSetError;
 /// A failure from a [`Store`] layout operation ([`Store::init`] / [`Store::open`]).
 #[derive(Debug)]
 pub enum StoreError {
+    /// Store roots must be absolute in the host's path syntax.
+    RootNotAbsolute {
+        /// The supplied root locator.
+        root: PathBuf,
+    },
     /// An underlying filesystem error from the [`Vfs`] seam.
     Vfs(VfsError),
     /// The genesis marker could not be serialized or was not valid genesis JSON.
@@ -351,6 +356,9 @@ impl fmt::Display for StoreError {
                     "cannot initialize a store: {} does not exist",
                     root.display()
                 )
+            }
+            StoreError::RootNotAbsolute { root } => {
+                write!(f, "store root must be absolute: {}", root.display())
             }
             StoreError::RootNotADirectory { root } => {
                 write!(

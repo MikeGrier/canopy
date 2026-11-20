@@ -17,6 +17,99 @@
 //! - **Fault** tests drive [`FaultyFs`] over the mock and assert every fault
 //!   mode surfaces as the expected typed [`VfsError`] -- never a panic.
 
+#[derive(Debug)]
+struct PausedRelease {
+    entered: std::sync::mpsc::Sender<()>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl crate::VfsLock for PausedRelease {}
+
+impl Drop for PausedRelease {
+    fn drop(&mut self) {
+        self.entered.send(()).unwrap();
+        let _ = self.resume.get_mut().unwrap().recv();
+    }
+}
+
+pub(crate) fn assert_abandon_waits_for_release<Release: FnOnce() + Send>(
+    install: impl FnOnce(Box<dyn crate::VfsLock>, std::sync::mpsc::Sender<()>) -> Release,
+    abandon: impl Fn() + Sync,
+) {
+    use std::{sync::mpsc, time::Duration};
+    let (entered, dropping) = mpsc::channel();
+    let (resume, paused) = mpsc::channel();
+    let (waiting, arrived) = mpsc::channel();
+    let release = install(
+        Box::new(PausedRelease {
+            entered,
+            resume: paused.into(),
+        }),
+        waiting,
+    );
+    std::thread::scope(|scope| {
+        let resume = resume;
+        let timeout = Duration::from_secs(5);
+        scope.spawn(release);
+        test_timers::mpsc::recv_timeout(&dropping, timeout).unwrap();
+        let (done, finished) = mpsc::channel();
+        let abandon = &abandon;
+        scope.spawn(move || {
+            abandon();
+            done.send(()).unwrap();
+        });
+        test_timers::mpsc::recv_timeout(&arrived, timeout)
+            .expect("second caller reached active release");
+        assert!(finished.try_recv().is_err());
+        resume.send(()).unwrap();
+        test_timers::mpsc::recv_timeout(&finished, timeout).unwrap();
+    });
+}
+
+pub(crate) fn assert_selected_notices_ring(participant: &dyn crate::coord::CountNotification) {
+    use crate::coord::{ModCount, Notice};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now();
+    let sampled = ModCount::new(0);
+    let (entered, started) = mpsc::channel();
+    let (resume, paused) = mpsc::channel();
+    let _gate = participant
+        .notify(
+            sampled,
+            deadline,
+            Box::new(move || {
+                entered.send(()).unwrap();
+                let _ = paused.recv();
+            }),
+        )
+        .unwrap();
+    let timeout = Duration::from_secs(10);
+    test_timers::mpsc::recv_timeout(&started, timeout).unwrap();
+    let notices = Arc::new(Mutex::new(Vec::<Box<dyn Notice>>::new()));
+    let (rang, rings) = mpsc::channel();
+    for _ in 0..2 {
+        let both = notices.clone();
+        let rang = rang.clone();
+        let notice = participant
+            .notify(
+                sampled,
+                deadline,
+                Box::new(move || {
+                    both.lock().unwrap().clear();
+                    rang.send(()).unwrap();
+                }),
+            )
+            .unwrap();
+        notices.lock().unwrap().push(notice);
+    }
+    resume.send(()).unwrap();
+    for _ in 0..2 {
+        test_timers::mpsc::recv_timeout(&rings, timeout).unwrap();
+    }
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -87,7 +180,7 @@ fn on_os(tag: &str, body: &dyn Fn(&dyn Vfs, &Path)) {
 
 /// Runs the same closure against both backends. `tag` names the scratch
 /// directory for the [`OsFs`] pass.
-fn on_both(tag: &str, body: impl Fn(&dyn Vfs, &Path)) {
+pub(crate) fn on_both(tag: &str, body: impl Fn(&dyn Vfs, &Path)) {
     on_mem(&body);
     on_os(tag, &body);
 }

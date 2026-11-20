@@ -48,6 +48,25 @@ fn a_path_component_must_not_contain_nul() {
 }
 
 #[test]
+fn process_commit_validates_its_path_before_running_the_callback() {
+    on_both("commit_component", |fs, root| {
+        let mut commits = 0;
+        for component in [non_utf8_component(), OsString::from("bad\0name")] {
+            for path in [root.join(&component), root.join(&component).join("leaf")] {
+                assert_kind(
+                    fs.commit_process("commit", &path, &mut || commits += 1),
+                    VfsErrorKind::InvalidInput,
+                );
+            }
+        }
+        assert_eq!(commits, 0);
+        fs.commit_process("commit", &root.join("valid"), &mut || commits += 1)
+            .unwrap();
+        assert_eq!(commits, 1);
+    });
+}
+
+#[test]
 fn write_then_read_roundtrips() {
     on_both("write_then_read_roundtrips", |fs, root| {
         let f = root.join("file.bin");

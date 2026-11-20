@@ -3,6 +3,13 @@
 @{
     Mutants = @(
         @{
+            Name = 'rename-ignores-source-kind'
+            Base = 'MemFsScenarios-RenameOverFile'
+            Kind = 'INVARIANTS'
+            Property = 'ScenarioExpected'
+            Overrides = @{ Control = '"rename-ignores-kind"' }
+        }
+        @{
             Name = 'file-fsync-does-not-persist-data'
             Base = 'MemFsScenarios-ReplaceFile'
             Kind = 'INVARIANTS'

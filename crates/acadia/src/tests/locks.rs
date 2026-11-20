@@ -36,6 +36,36 @@ fn a_lock_creates_its_file_and_keeps_what_is_already_there() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn native_lock_open_does_not_follow_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    on_os("lock-no-symlink", &|fs: &dyn Vfs, root: &Path| {
+        for exclusive in [false, true] {
+            let target = root.join(if exclusive {
+                "exclusive-target.lock"
+            } else {
+                "range-target.lock"
+            });
+            let link = root.join(if exclusive {
+                "exclusive-link.lock"
+            } else {
+                "range-link.lock"
+            });
+            symlink(&target, &link).unwrap();
+            let result = if exclusive {
+                fs.lock_exclusive(&link)
+            } else {
+                fs.try_lock(&link, EXCLUSIVE, LockSpan::File)
+            };
+            assert!(result.is_err());
+            assert!(!target.exists(), "locking a symlink created its target");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        }
+    });
+}
+
 #[test]
 fn a_lock_follows_its_file_through_a_rename() {
     on_both("lock-follows-the-file", |fs, root| {

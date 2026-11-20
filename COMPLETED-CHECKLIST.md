@@ -271,3 +271,11 @@ witnesses, a main and the Acquisition item tier.
 
 - [x] <a id="path-5"></a>**PATH-5** -- Hostile-name, creation-separator, decorator-precedence,
   end-to-end, Windows, Linux, formatting, Clippy, documentation, and debug/release checks pass.
+
+## Moved 2026-11-19 -- M4: store and coordination review
+
+- [x] <a id="root-1"></a>**ROOT-1** -- All Canopy store entry points require absolute roots; Acadia creation plans reject drive-qualified artifacts independently of the host.
+- [x] <a id="reg-1"></a>**REG-1** -- Overflow writers claim staging names exclusively and retry occupied names without modifying them.
+- [x] <a id="move-1"></a>**MOVE-1** -- Windows publication prepares long paths for a no-replace move, leaving the published file immediately replaceable.
+- [x] <a id="notice-1"></a>**NOTICE-1** -- Both pollers distinguish withdrawal before selection from dropping a notice while its batch is being delivered.
+- [x] <a id="link-1"></a>**LINK-1** -- The VFS contract distinguishes referent metadata from a listed, renamed or unlinked final entry.

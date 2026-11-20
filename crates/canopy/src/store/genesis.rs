@@ -20,6 +20,14 @@ use acadia::coord::{
 use super::coordinated::Coordinated;
 
 impl Store {
+    pub(super) fn absolute_root(root: impl Into<PathBuf>) -> Result<PathBuf, StoreError> {
+        let root = root.into();
+        if root.is_absolute() {
+            Ok(root)
+        } else {
+            Err(StoreError::RootNotAbsolute { root })
+        }
+    }
     /// Rechecks admission under the tiers before registering or taking writer exclusion.
     fn attach_store(
         vfs: &Arc<dyn Vfs>,
@@ -67,7 +75,7 @@ impl Store {
     /// creation time and the agent's version, description and schema are the provenance of
     /// whichever call makes the marker, and are not compared.
     ///
-    /// `root` must already exist as a directory, holding nothing but what a creation of this
+    /// `root` must be an absolute path to an existing directory, holding nothing but what a creation of this
     /// store makes: a root holding anything else, dotfiles included, is [`StoreError::NotEmpty`],
     /// and one that is another store is [`StoreError::AlreadyInitialized`]. The creation goes
     /// through the coordination implementation `options` names, which records itself and the
@@ -116,7 +124,7 @@ impl Store {
         factory: &dyn CoordinationFactory,
         agent: &Agent,
     ) -> Result<Self, StoreError> {
-        let root = root.into();
+        let root = Self::absolute_root(root)?;
 
         match vfs.metadata(&root) {
             Ok(meta) if meta.is_dir() => {}
@@ -254,7 +262,7 @@ impl Store {
         root: impl Into<PathBuf>,
         options: StoreOptions,
     ) -> Result<Self, StoreError> {
-        let root = root.into();
+        let root = Self::absolute_root(root)?;
         // Validation first, so a directory that is not a store is refused as one rather than as
         // an implementation mismatch.
         Self::read_genesis(&vfs, &root)?
@@ -291,7 +299,7 @@ impl Store {
         factory: &dyn CoordinationFactory,
         agent: &Agent,
     ) -> Result<Self, StoreError> {
-        let root = root.into();
+        let root = Self::absolute_root(root)?;
 
         // Validation before attachment leaves a non-store untouched; admission rechecks under its tiers.
         Self::read_genesis(&vfs, &root)?
@@ -346,7 +354,7 @@ impl Store {
         root: impl Into<PathBuf>,
         options: &StoreOptions,
     ) -> Result<Migration, StoreError> {
-        let root = root.into();
+        let root = Self::absolute_root(root)?;
         let factory = options.coordination();
         if let Found::Current(bytes) = Self::find(&vfs, &root)? {
             Self::parse_genesis(&vfs, &root, &bytes)?

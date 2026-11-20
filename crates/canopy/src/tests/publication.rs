@@ -14,7 +14,7 @@ pub(super) fn faulty_store(
     label: &str,
     policy: FaultPolicy,
 ) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, Store) {
-    let root = PathBuf::from(label);
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join(label);
     let faulty = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
@@ -235,7 +235,9 @@ fn record_fsync_fails(
     call: u32,
 ) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, Store, FaultGate) {
     let gate = FaultGate::closed();
-    let record = PathBuf::from(label).join(PUBLICATION_RECORD_NAME);
+    let record = PathBuf::from(crate::tests::MEM_ROOT)
+        .join(label)
+        .join(PUBLICATION_RECORD_NAME);
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::Fsync,
         PathMatcher::exact(record),

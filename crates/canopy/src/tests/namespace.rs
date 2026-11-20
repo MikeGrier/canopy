@@ -653,7 +653,7 @@ fn first_replica_per_read(rounds: usize) -> Vec<usize> {
     );
 
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     vfs.create_dir_all(&root).expect("create root");
     let store = Store::init_unsourced(vfs.clone(), root, test_config()).expect("init");
     let node = node_of("TICKETS/A");
@@ -823,7 +823,7 @@ fn a_writer_paused_between_replicas_is_never_mistaken_for_no_writer() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("paused");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("paused");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
     let node = name("tickets");
@@ -1083,7 +1083,7 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
     // crash able to resurrect a pointer whose blob no longer exists.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("removal-sync");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("removal-sync");
     let parent = root
         .join(crate::store::NAMESPACE_TREE_DIR)
         .join("p0")
@@ -1183,7 +1183,7 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
     // durable first, a crash restores a pointer to the blob just deleted.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("collect-durable");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("collect-durable");
     let parent = root
         .join(crate::store::NAMESPACE_TREE_DIR)
         .join("p0")

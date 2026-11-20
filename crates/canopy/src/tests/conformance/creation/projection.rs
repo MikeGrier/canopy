@@ -9,7 +9,7 @@ use acadia::{MemFs, Vfs};
 use serde_json::{Map, Value};
 
 /// The root the processes create.
-pub(super) const ROOT: &str = "/store";
+pub(super) const ROOT: &str = if cfg!(windows) { "C:/store" } else { "/store" };
 
 /// The reservation's name under the root, which both implementations use.
 pub(super) const RESERVATION: &str = ".coord-reservation";

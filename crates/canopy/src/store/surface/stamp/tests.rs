@@ -18,7 +18,7 @@ fn options(version: &str) -> StoreOptions {
 fn fixture(policy: FaultPolicy) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, Store) {
     let fs = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let vfs: Arc<dyn Vfs> = fs.clone();
-    let root = PathBuf::from("stamp-store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("stamp-store");
     vfs.create_dir_all(&root).unwrap();
     let config = GenesisConfig::new(StoreId::new("stamping").unwrap(), 123);
     let store = Store::init(Arc::clone(&vfs), root, config, options("A")).unwrap();
@@ -322,8 +322,12 @@ fn a_directory_sync_failure_after_the_stamp_rename_keeps_the_cache_retryable() {
     drop(store);
     let fs = Arc::new(fs.simulate_restart());
     let marker: serde_json::Value = serde_json::from_slice(
-        &fs.read(&PathBuf::from("stamp-store").join(MARKER_NAME))
-            .unwrap(),
+        &fs.read(
+            &PathBuf::from(crate::tests::MEM_ROOT)
+                .join("stamp-store")
+                .join(MARKER_NAME),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(marker["metadata"]["agent_version"], "B");

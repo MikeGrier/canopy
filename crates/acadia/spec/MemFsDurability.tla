@@ -25,7 +25,7 @@ ASSUME MaxSteps \in Nat
 ASSUME Control \in {"none", "file-fsync-skips-data", "dir-fsync-fails-to-name",
                     "rename-loses-carried", "crash-keeps-live",
                     "removal-keeps-carried", "remove-tree-leaves-descendants",
-                    "remove-tree-is-durable", "removal-keeps-the-path"}
+                    "remove-tree-is-durable", "removal-keeps-the-path", "rename-ignores-kind"}
 
 Absent == [kind |-> "absent", inode |-> 0]
 Directory == [kind |-> "dir", inode |-> 0]
@@ -293,6 +293,10 @@ AvailableMoves == {move \in Moves :
     /\ move.to \in Paths
     /\ \A pair \in move.pairs : pair.old \in Paths /\ pair.new \in Paths}
 
+CompatibleDestination(source, destination) ==
+    IF Control = "rename-ignores-kind" THEN destination \in {Absent, Directory}
+    ELSE destination = Absent \/ destination.kind = source.kind
+
 Move(move) ==
     /\ steps < MaxSteps
     /\ move \in Moves
@@ -301,7 +305,7 @@ Move(move) ==
     /\ ParentLive(Parent(move.to))
     /\ \A pair \in move.pairs : Parent(pair.new) = Parent(move.to)
         \/ \E ancestor \in move.pairs : ancestor.new = Parent(pair.new)
-    /\ live[move.to] \in {Absent, Directory}
+    /\ CompatibleDestination(live[move.from], live[move.to])
     /\ live[move.to] = Directory => \A q \in DirectChildren(move.to) : live[q] = Absent
     /\ LET captured == MoveSnapshot(move.from, move)
        IN /\ live' = [p \in Paths |->

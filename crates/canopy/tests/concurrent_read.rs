@@ -50,7 +50,7 @@ use canopy::{
 };
 
 /// The store root these tests build under.
-const ROOT: &str = "store";
+const ROOT: &str = if cfg!(windows) { "C:/store" } else { "/store" };
 
 /// How long a test waits for the parked applier before calling the matcher broken.
 ///

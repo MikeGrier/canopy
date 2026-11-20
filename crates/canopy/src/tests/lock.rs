@@ -22,7 +22,7 @@ fn a_second_writer_opens_beside_an_attached_writer() {
 #[test]
 fn opening_does_not_take_the_legacy_root_lock() {
     let gate = acadia::FaultGate::closed();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::LockExclusive,
         acadia::PathMatcher::exact(root.join(LOCK_NAME)),
@@ -56,7 +56,7 @@ fn creation_uses_coordination_rather_than_the_legacy_root_lock() {
 #[test]
 fn init_over_an_occupied_root_leaves_no_lock_file() {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("/occupied");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("occupied");
     vfs.create_dir_all(&root).unwrap();
     vfs.write(&root.join("data.txt"), b"not a store").unwrap();
 
@@ -140,7 +140,7 @@ fn cloning_a_store_does_not_re_acquire() {
 #[test]
 fn distinct_roots_are_independently_locked() {
     let (vfs, first) = fresh_store();
-    let second_root = PathBuf::from("another-store");
+    let second_root = PathBuf::from(crate::tests::MEM_ROOT).join("another-store");
     vfs.create_dir_all(&second_root).expect("create root");
 
     let second = Store::init_unsourced(Arc::clone(&vfs), second_root, test_config())

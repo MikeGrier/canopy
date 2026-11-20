@@ -61,3 +61,11 @@ bridge unit-test entry point are in [.github/copilot-instructions.md](.github/co
 "Running tests on Linux via WSL". This tooling supports the process-level kernel checks[^m9-2].
 
 [^m9-2]: `M9-2` in [COMPLETED-CHECKLIST.md](crates/canopy/COMPLETED-CHECKLIST.md#m9-2) [completed 2026-11-14; `bb46904`]
+
+## Store roots and artifact names, 2026-11-19
+
+A Canopy store root is an absolute host path, including for diagnostics and migration. A
+change of working directory must not redirect an attachment's subsequent I/O. This is a
+locator rule, not canonicalization: it neither resolves symbolic links nor makes all Acadia
+VFS paths absolute. An Acadia creation artifact is independently a single plain child name
+on every host. An absolute parent does not contain a drive-qualified right operand on Windows.

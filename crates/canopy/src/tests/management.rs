@@ -194,7 +194,7 @@ fn a_description_retry_syncs_a_rename_that_was_visible_but_not_durable() {
                 ),
         ));
         let vfs: Arc<dyn Vfs> = fs.clone();
-        let root = PathBuf::from("description-sync");
+        let root = PathBuf::from(crate::tests::MEM_ROOT).join("description-sync");
         vfs.create_dir_all(&root).unwrap();
         let mut writer = Store::init(
             Arc::clone(&vfs),
@@ -239,7 +239,7 @@ fn a_description_retry_syncs_a_rename_that_was_visible_but_not_durable() {
 fn description_writes_are_durable_and_version_stamps_preserve_the_description() {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("description");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("description");
     vfs.create_dir_all(&root).unwrap();
     drop(
         Store::init(
@@ -290,7 +290,7 @@ fn an_unchanged_description_does_not_publish_or_stamp() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("no-description-change");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("no-description-change");
     vfs.create_dir_all(&root).unwrap();
     drop(
         Store::init(
@@ -329,7 +329,7 @@ fn description_failure_returns_an_error_without_hiding_readable_properties() {
                 gate.clone(),
             ),
         ));
-        let root = PathBuf::from("description-failure");
+        let root = PathBuf::from(crate::tests::MEM_ROOT).join("description-failure");
         vfs.create_dir_all(&root).unwrap();
         let writer = Store::init(
             Arc::clone(&vfs),
@@ -367,7 +367,7 @@ fn a_recovery_required_handle_can_diagnose_but_cannot_set_description() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("management-recovery");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("management-recovery");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init(
         Arc::clone(&vfs),
@@ -444,7 +444,7 @@ fn description_and_properties_are_fresh_through_every_read_surface() {
 fn management_listings_preserve_registry_incompleteness() {
     let mem = MemFs::new();
     let base: Arc<dyn Vfs> = Arc::new(mem.another_process());
-    let root = PathBuf::from("management-full-registry");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("management-full-registry");
     base.create_dir_all(&root).unwrap();
     let writer = Store::init(
         Arc::clone(&base),
@@ -492,7 +492,7 @@ fn description_success_is_independent_of_a_failed_agent_stamp() {
             active.clone(),
         ),
     ));
-    let root = PathBuf::from("description-stamp-failure");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("description-stamp-failure");
     vfs.create_dir_all(&root).unwrap();
     drop(
         Store::init(

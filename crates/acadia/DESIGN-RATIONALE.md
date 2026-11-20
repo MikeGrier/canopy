@@ -686,3 +686,42 @@ injected I/O result or consume a deterministic fault schedule. A backend must al
 directory entry it cannot encode rather than silently replace bytes. This preserves one observable
 contract on MemFs and OsFs while leaving any shortening, hashing or authoritative per-directory
 mapping policy to a deliberate higher layer.
+
+## Creation marker size includes staging headroom
+
+Hashing or truncating a marker's staging name would change how recovery associates an interrupted
+publication with its target. A portable limit at plan validation keeps that association intact and
+lets the caller correct an oversized marker without leaving a reservation behind.
+
+## Extended component identity
+
+Case folding would merge distinct caller names; normalization would do the same for a
+precomposed character and its decomposed spelling. Comparing the original UTF-8 bytes keeps
+both distinctions without consulting a Unicode table or the host filesystem. For example,
+U+00C9, U+00E9 and the sequence U+0065 U+0301 are three independent sibling names.
+
+## Extended component storage format v1
+
+A deterministic lowercase direct subset keeps ordinary names readable without a first-writer
+exception for case variants. Keeping the store marker literal preserves its native spelling;
+other dotted names take the encoded path so they cannot impersonate control or staging files.
+Full-length SHA-256 bounds the physical length without truncation. It is not a reversible
+encoding or proof of ownership. Recording even direct bindings gives listing, collision
+detection and interrupted creation one authority. Hex costs space compared with raw CSV text,
+but makes every logical byte sequence valid field data for text readers without relying on
+their handling of embedded NULs or newlines. Versioning the header lets readers refuse a
+format they do not understand before mutating anything.
+
+## Explicit selection of managed creation
+
+An absent CSV cannot distinguish a valid raw store from lost managed metadata. Falling back
+to a raw name would let managed confirmation succeed without proof of ownership. Separate
+entry points avoid that inference and preserve the raw reservation and migration protocols
+without changing their disk format or requiring existing stores to migrate. Raw names must
+therefore be spellings Win32 returns unchanged; accepting a trailing dot, reserved device or
+stream separator would let reservation, publication and confirmation disagree before any
+managed mapper is involved. Managed makers cannot receive final paths because abandonment is
+allowed to release their locks before an arbitrary callback returns. Attempt-private siblings
+are the only isolation boundary that lets a live replacement finish without trusting stale
+code to stop writing. Publication siblings and uncertain CSV entry durability are recovered
+by explicit grammar and ordering, never by treating presence as ownership.

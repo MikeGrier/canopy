@@ -57,7 +57,7 @@ fn watched(root: &str) -> (Store, Store, FaultGate, Arc<Mutex<Vec<u64>>>) {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from(root);
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join(root);
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let reading = open_reader(&vfs, &root);
@@ -200,7 +200,7 @@ fn a_snapshot_taken_inside_a_write_is_contended() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("snapshot-inside");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("snapshot-inside");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let _ = reader_cell.set(open_reader_with_timeout(
@@ -319,7 +319,7 @@ fn a_reader_does_not_recover_what_an_unresolved_transaction_left() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("unresolved-reader");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("unresolved-reader");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let swaps = SwapSet::new([Swap::new(name("alpha"), doc("pin"), body(b"committed"))]).unwrap();
@@ -507,7 +507,7 @@ fn a_write_whose_opening_raise_fails_changes_nothing() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("opening-fails");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("opening-fails");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let reader = open_reader(&vfs, &root);
@@ -561,7 +561,7 @@ fn a_write_whose_closing_raise_fails_leaves_the_count_odd_until_recovery() {
                 armed.clone(),
             ),
     ));
-    let root = PathBuf::from("closing-fails");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("closing-fails");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let reader = open_reader(&vfs, &root);

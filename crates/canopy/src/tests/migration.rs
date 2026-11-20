@@ -28,7 +28,7 @@ fn options() -> StoreOptions {
 /// implementation record -- holding one document, with no handle open on it. Faults in `policy`
 /// are armed once `gate` opens.
 fn legacy_root(version: u32, policy: FaultPolicy) -> (Arc<FaultyFs<MemFs>>, Arc<dyn Vfs>, PathBuf) {
-    let root = PathBuf::from("migrating");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("migrating");
     let faulty = Arc::new(FaultyFs::new(MemFs::new(), policy));
     let vfs: Arc<dyn Vfs> = faulty.clone();
     vfs.create_dir_all(&root).unwrap();
@@ -123,7 +123,7 @@ fn init_records_the_implementation_before_it_makes_anything_else() {
         When::Once,
         gate.clone(),
     );
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     vfs.create_dir_all(&root).unwrap();
     gate.open();
@@ -143,7 +143,7 @@ fn an_interrupted_init_is_finished_by_an_identical_init_and_refused_to_any_other
         When::Once,
         gate.clone(),
     );
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
     vfs.create_dir_all(&root).unwrap();
     gate.open();
@@ -607,7 +607,7 @@ fn during_the_operation(
 
 #[test]
 fn a_migration_reads_the_root_again_under_the_lock() {
-    let root = PathBuf::from("raced");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("raced");
     let at = root.clone();
     let (faulty, armed) = during_the_lock(move |vfs| {
         assert_eq!(
@@ -631,7 +631,7 @@ fn a_migration_reads_the_root_again_under_the_lock() {
 
 #[test]
 fn an_open_reads_the_marker_again_under_the_attachment() {
-    let root = PathBuf::from("raced");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("raced");
     let at = root.clone();
     let (faulty, armed) = during_the_operation(
         FaultOp::Read,

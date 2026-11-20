@@ -16,6 +16,7 @@ impl Vfs for MemFs {
         path: &Path,
         commit: &mut dyn FnMut(),
     ) -> VfsResult<()> {
+        validate_path_components(path, op)?;
         let table = self.table();
         table.running(self.process.load(Ordering::Acquire), op, path)?;
         #[cfg(test)]

@@ -30,7 +30,7 @@ fn sampling_store(root: &str) -> (Store, FaultGate, Arc<std::sync::Mutex<Vec<u64
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from(root);
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join(root);
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs, root, test_config()).unwrap();
     let _ = handle.set(store.clone());
@@ -170,7 +170,7 @@ fn a_transaction_that_ends_unresolved_leaves_the_count_odd() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("unresolved");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("unresolved");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs, root, test_config()).unwrap();
     let swaps = SwapSet::new([Swap::new(name("alpha"), doc("pin"), body(b"committed"))]).unwrap();

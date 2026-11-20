@@ -262,7 +262,7 @@ fn init_refuses_a_root_holding_a_dotfile_creation_does_not_make() {
 #[test]
 fn a_marker_publication_cut_short_leaves_a_creation_the_next_init_finishes() {
     let mem = MemFs::new();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     mem.create_dir_all(&root).unwrap();
     let vfs: Arc<dyn Vfs> = Arc::new(mem.another_process());
     let faulty: Arc<dyn Vfs> = Arc::new(acadia::FaultyFs::new(
@@ -285,25 +285,59 @@ fn a_marker_publication_cut_short_leaves_a_creation_the_next_init_finishes() {
 }
 
 #[test]
+fn store_entry_points_reject_relative_locators_before_looking_up_the_root() {
+    let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
+    let options = || StoreOptions::without_nonce_source(test_agent());
+    for path in ["", ".", "..", "relative", "nested/relative", "C:relative"] {
+        for error in [
+            Store::init(vfs.clone(), path, test_config(), options()).unwrap_err(),
+            Store::open(vfs.clone(), path, options()).unwrap_err(),
+            Store::open_read_only(vfs.clone(), path, options()).unwrap_err(),
+            Store::migrate(vfs.clone(), path, &options()).unwrap_err(),
+            crate::DiagnosticView::open(vfs.clone(), path).unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, StoreError::RootNotAbsolute { root } if root == std::path::Path::new(path))
+            );
+        }
+    }
+}
+
+#[test]
 fn init_requires_the_root_to_exist() {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let err = Store::init_unsourced(vfs, "nope", test_config()).expect_err("absent root");
+    let err = Store::init_unsourced(
+        vfs,
+        PathBuf::from(crate::tests::MEM_ROOT).join("nope"),
+        test_config(),
+    )
+    .expect_err("absent root");
     assert!(matches!(err, StoreError::RootNotFound { .. }));
 }
 
 #[test]
 fn init_refuses_a_root_path_that_is_a_file() {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    vfs.write(PathBuf::from("store").as_path(), b"not a directory")
-        .unwrap();
+    vfs.write(
+        PathBuf::from(crate::tests::MEM_ROOT)
+            .join("store")
+            .as_path(),
+        b"not a directory",
+    )
+    .unwrap();
 
-    let err = Store::init_unsourced(vfs, "store", test_config()).expect_err("root is a file");
+    let err = Store::init_unsourced(
+        vfs,
+        PathBuf::from(crate::tests::MEM_ROOT).join("store"),
+        test_config(),
+    )
+    .expect_err("root is a file");
     assert!(matches!(err, StoreError::RootNotADirectory { .. }));
 }
 
 #[test]
 fn init_propagates_root_metadata_errors() {
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     let policy =
         FaultPolicy::new().inject(FaultOp::Metadata, &root, Fault::io_error(), When::Always);
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
@@ -335,7 +369,7 @@ fn open_refuses_a_directory_that_is_not_a_store() {
 #[test]
 fn open_propagates_marker_read_errors() {
     let gate = FaultGate::closed();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::Read,
         PathMatcher::exact(root.join(MARKER_NAME)),
@@ -526,7 +560,7 @@ fn open_refuses_a_namespace_replica_path_that_is_a_file() {
 #[test]
 fn open_propagates_namespace_replica_metadata_errors() {
     let gate = FaultGate::closed();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     let replica = root.join(NAMESPACE_TREE_DIR).join("p1");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::Metadata,

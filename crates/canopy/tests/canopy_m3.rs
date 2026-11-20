@@ -34,7 +34,7 @@ use canopy::{
 };
 
 /// The store root, created before init like the LAY-8 harness.
-const ROOT: &str = "store";
+const ROOT: &str = if cfg!(windows) { "C:/store" } else { "/store" };
 /// The single document name every node in these tests carries.
 const DOC: &str = "d.json";
 /// The commit log's on-disk name at the store root (D53), read directly to prove the

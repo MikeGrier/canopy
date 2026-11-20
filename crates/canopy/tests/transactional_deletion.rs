@@ -66,7 +66,7 @@ fn store_on(vfs: &Arc<dyn Vfs>, root: &Path) -> Store {
 
 fn fresh() -> (Arc<dyn Vfs>, PathBuf, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     let store = store_on(&vfs, &root);
     (vfs, root, store)
 }
@@ -219,7 +219,7 @@ fn a_crash_between_end_and_the_collection_is_finished_by_recovery() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     let store = store_on(&vfs, &root);
 
     write(&store, "v1");
@@ -270,12 +270,14 @@ fn replaying_two_completed_writes_does_not_collect_the_live_blob() {
         MemFs::new(),
         FaultPolicy::new().inject(
             FaultOp::Truncate,
-            PathBuf::from("store").join(".commit-log"),
+            PathBuf::from(if cfg!(windows) { "C:/" } else { "/" })
+                .join("store")
+                .join(".commit-log"),
             Fault::io_error(),
             When::Always,
         ),
     ));
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     let store = store_on(&vfs, &root);
     write(&store, "v1");
     write(&store, "v2");
@@ -322,7 +324,7 @@ fn a_rolled_back_transaction_leaves_the_previous_body_readable() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     let store = store_on(&vfs, &root);
 
     write(&store, "v1");

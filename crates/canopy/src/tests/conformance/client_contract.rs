@@ -493,7 +493,7 @@ fn an_after_prepare_failure_completes_as_uncertain_and_stays_uncertain_after_rec
         ),
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
-    let root = PathBuf::from("client-contract-fault");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("client-contract-fault");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         Arc::clone(&vfs),
@@ -585,7 +585,7 @@ fn independent_store_views_contending_on_appends_keep_every_byte() {
     use acadia::MemFs;
 
     let mem = MemFs::new();
-    let root = PathBuf::from("client-contract-multi-store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("client-contract-multi-store");
     mem.create_dir_all(&root).unwrap();
     let init_vfs: Arc<dyn Vfs> = Arc::new(mem.another_process());
     let first = Store::init(
@@ -653,7 +653,7 @@ fn independent_store_views_contending_on_appends_keep_every_byte() {
 fn store_handle(mem: &MemFs, root: &str) -> Store {
     Store::open(
         Arc::new(mem.another_process()),
-        PathBuf::from(root),
+        PathBuf::from(crate::tests::MEM_ROOT).join(root),
         StoreOptions::with_nonce_source(test_agent(), counting_nonce_source()),
     )
     .unwrap()
@@ -664,7 +664,7 @@ fn store_handle(mem: &MemFs, root: &str) -> Store {
 fn a_failure_before_prepare_completes_with_definite_no_effect() {
     use acadia::{Fault, FaultOp, FaultPolicy, FaultyFs, MemFs, When};
 
-    let root = PathBuf::from("client-contract-before-prepare");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("client-contract-before-prepare");
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(
         MemFs::new(),
         FaultPolicy::new().inject(

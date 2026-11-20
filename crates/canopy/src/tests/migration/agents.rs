@@ -169,7 +169,7 @@ fn interrupted_creation() -> (Arc<dyn Vfs>, PathBuf) {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("agent-creation");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("agent-creation");
     vfs.create_dir_all(&root).unwrap();
     gate.open();
     assert!(Store::init(Arc::clone(&vfs), root.clone(), test_config(), options()).is_err());

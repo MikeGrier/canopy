@@ -426,6 +426,31 @@ fn releasing_a_hold_drops_its_lock_after_unlocking_the_hold_table() {
 }
 
 #[test]
+fn concurrent_abandon_waits_for_shared_guard_release() {
+    for ordinary_release in [false, true] {
+        let (_, state, _) = participants();
+        crate::tests::assert_abandon_waits_for_release(
+            |lock, waiting| {
+                state.release.on_wait.set(waiting).unwrap();
+                state.holds.lock().unwrap().insert(1, lock);
+                let state = state.same_participant();
+                move || {
+                    if ordinary_release {
+                        drop(super::Kept {
+                            participant: state,
+                            id: 1,
+                        });
+                    } else {
+                        state.abandon();
+                    }
+                }
+            },
+            || state.abandon(),
+        );
+    }
+}
+
+#[test]
 fn abandonment_drops_shared_locks_after_unlocking_the_hold_table() {
     let (_, first, second) = participants();
     first.holds.lock().unwrap().insert(

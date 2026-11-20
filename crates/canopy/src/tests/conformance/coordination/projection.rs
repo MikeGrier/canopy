@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use super::process::Implementation;
 
 /// The root the processes coordinate.
-const ROOT: &str = "/store";
+const ROOT: &str = if cfg!(windows) { "C:/store" } else { "/store" };
 
 pub(in crate::tests::conformance) fn root() -> &'static Path {
     Path::new(ROOT)

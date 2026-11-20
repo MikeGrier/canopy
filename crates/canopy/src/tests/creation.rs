@@ -15,7 +15,7 @@ const CREATION_LOCK: &str = ".coord-creation.lock";
 
 /// A root on `mem` whose own name is durable, so only what creation makes is at stake.
 fn durable_root(mem: &MemFs) -> PathBuf {
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     mem.create_dir_all(&root).unwrap();
     mem.fsync(&root).unwrap();
     root

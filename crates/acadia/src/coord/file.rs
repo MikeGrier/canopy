@@ -150,6 +150,7 @@ impl Coordination for FileCoordination {
 
 impl FileCoordination {
     pub(crate) fn abandon_participant(&self) {
+        let turn = self.holds.release.enter();
         let (released, watchers) = {
             let mut table = self.holds.table_recovering();
             self.holds.abandoned.store(true, Ordering::Release);
@@ -159,14 +160,14 @@ impl FileCoordination {
             )
         };
         crate::coord::discard(released.into_values());
+        drop(turn);
         for watcher in watchers.iter().filter_map(Weak::upgrade) {
             watcher.abandoned();
         }
     }
 }
 
-/// A suffix no other staged file of the state has, in any process, for a file renamed over a
-/// record once written.
+/// A staging candidate distinguished by process identifier and process-local sequence.
 fn staging_suffix() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!(
@@ -182,6 +183,7 @@ pub(crate) struct HoldId(u64);
 
 #[derive(Default)]
 struct Holds {
+    release: super::ReleaseGate,
     table: Mutex<HoldTable>,
     /// Set only while the table is held, so a check made under the table is serialized with the
     /// abandonment; read without it where an operation must not wait for one in progress.
@@ -242,6 +244,11 @@ impl FileCoordination {
 
     pub(crate) fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_release_wait(&self, sender: std::sync::mpsc::Sender<()>) {
+        self.holds.release.on_wait.set(sender).unwrap();
     }
 
     #[cfg(test)]
@@ -309,6 +316,7 @@ impl FileCoordination {
     }
 
     pub(crate) fn release_lock_safely(&self, id: HoldId) {
+        let _turn = self.holds.release.enter();
         if let Some(lock) = self.release_lock(id)
             && crate::coord::catch_contained(|| drop(lock)).is_none()
         {

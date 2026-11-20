@@ -255,7 +255,7 @@ fn recovery_surfaces_a_corrupt_log_as_a_typed_error() {
 fn a_committed_write_into_new_directories_survives_a_crash() {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
 

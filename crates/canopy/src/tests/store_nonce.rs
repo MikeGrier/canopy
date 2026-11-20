@@ -23,7 +23,7 @@ fn counted(prefix: &'static str) -> (StoreOptions, Arc<AtomicUsize>) {
 
 /// A store over `mem` at a fresh root, made through one process's view of it.
 fn store_on(mem: &MemFs, prefix: &'static str) -> (Store, PathBuf) {
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     mem.create_dir_all(&root).unwrap();
     let store = Store::init(
         Arc::new(mem.another_process()),
@@ -120,7 +120,7 @@ fn a_read_only_handle_is_refused() {
 #[test]
 fn a_nonce_whose_record_was_not_made_durable_is_not_returned_and_a_crash_unsets_it() {
     let mem = MemFs::new();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     mem.create_dir_all(&root).unwrap();
     let gate = FaultGate::closed();
     let policy = FaultPolicy::new().inject_gated(
@@ -156,7 +156,7 @@ fn a_nonce_whose_record_was_not_made_durable_is_not_returned_and_a_crash_unsets_
 #[test]
 fn a_record_left_undurable_is_made_durable_by_the_next_call() {
     let mem = MemFs::new();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     mem.create_dir_all(&root).unwrap();
     let gate = FaultGate::closed();
     let policy = FaultPolicy::new().inject_gated(

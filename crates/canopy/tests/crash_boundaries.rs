@@ -126,7 +126,7 @@ fn store_faulting(op: FaultOp, k: u32) -> (Arc<FaultyFs<MemFs>>, PathBuf, Store,
         ),
     ));
     let vfs: Arc<dyn Vfs> = faulty.clone();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),

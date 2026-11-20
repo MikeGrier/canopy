@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use crate::coord::creation::{
-    is_publication_staging_of_folded, make_artifacts, names_equal, validate_artifact_name,
-    validate_plan,
+    ManagedFence, is_publication_staging_of_folded, make_artifacts, names_equal,
+    validate_artifact_name, validate_plan,
 };
 use crate::coord::{
     ArtifactMaker, CoordError, CoordResult, Created, Creation, CreationNonce, CreationPlan,
@@ -70,6 +70,7 @@ impl FileCoordination {
     /// Refuses a root whose reservation names another implementation, whose participants would
     /// not see the locks this one takes.
     pub(super) fn check_implementation(&self) -> CoordResult<()> {
+        self.alive()?;
         match self.read_reservation()? {
             Some(reservation) if reservation.implementation != self.id => {
                 Err(CoordError::ImplementationMismatch {
@@ -216,7 +217,77 @@ impl FileCoordination {
     }
 }
 
+impl crate::coord::creation::ManagedFence for FileCoordination {
+    fn alive(&self) -> CoordResult<()> {
+        FileCoordination::alive(self)
+    }
+
+    fn fenced<T>(&self, operation: impl FnOnce() -> crate::VfsResult<T>) -> CoordResult<T> {
+        self.publishing(|_| operation())
+    }
+}
+
 impl Creation for FileCoordination {
+    fn create_managed(
+        &self,
+        plan: &CreationPlan<'_>,
+        maker: &mut dyn crate::coord::ManagedArtifactMaker,
+    ) -> CoordResult<Created> {
+        let managed =
+            crate::coord::creation::ManagedPlan::new(plan, self.vfs(), self.layout().root())?;
+        self.alive()?;
+        let _hold = self.keep(&self.layout().creation_lock(), LockMode::Exclusive)?;
+        let reservation = self.read_reservation()?;
+        let compatible = reservation
+            .as_ref()
+            .map(|record| record.implementation == self.id && record.inputs == plan.inputs);
+        managed.preflight(compatible)?;
+        let _resolver = self.keep(
+            &crate::names::lock_path(self.layout().root()),
+            LockMode::Exclusive,
+        )?;
+        let mut directory = self.fenced(|| {
+            crate::names::ComponentDirectory::open_held(self.vfs(), self.layout().root())
+        })?;
+        managed.run_held(
+            &mut directory,
+            self,
+            maker,
+            compatible,
+            || {
+                self.settle_reservation(
+                    reservation.map_or(Course::Create, |record| Course::Resume(record.nonce)),
+                    plan.inputs,
+                    plan.nonce,
+                )
+            },
+            |path, bytes| self.publishing(|fs| fs.publish_new(path, bytes)),
+        )
+    }
+
+    fn confirm_managed_created(&self, marker: &str) -> CoordResult<()> {
+        let _hold = self.keep(&self.layout().creation_lock(), LockMode::Shared)?;
+        self.check_implementation()?;
+        self.read_reservation()?.ok_or(CoordError::NotCreated)?;
+        if !crate::names::has_map(&self.vfs().read_dir(self.layout().root())?) {
+            return Err(CoordError::NotCreated);
+        }
+        let _resolver = self.keep(
+            &crate::names::lock_path(self.layout().root()),
+            LockMode::Shared,
+        )?;
+        let directory = self.fenced(|| {
+            crate::names::ComponentDirectory::open_held(self.vfs(), self.layout().root())
+        })?;
+        crate::coord::creation::confirm_managed_held(
+            self.vfs(),
+            self.layout().root(),
+            marker,
+            &directory,
+            self,
+        )
+    }
+
     fn create(
         &self,
         plan: &CreationPlan<'_>,

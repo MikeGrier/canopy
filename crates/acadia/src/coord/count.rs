@@ -30,7 +30,9 @@ pub trait ModificationCount {
     fn sample(&self) -> CoordResult<ModCount>;
 }
 
-/// A notification's registration, withdrawn when it is dropped.
+/// A pending registration is withdrawn on drop. A callback already selected for delivery may
+/// start after drop returns, including one selected in the same batch as the current callback.
+/// Dropping the notice does not wait for callback completion.
 ///
 /// Like [`VfsLock`](crate::VfsLock) it has no methods: its whole behaviour is its lifetime.
 pub trait Notice: Send + Sync + fmt::Debug {}
@@ -38,7 +40,7 @@ pub trait Notice: Send + Sync + fmt::Debug {}
 /// Being told when the modification count moves, so that work waiting on a change holds no thread.
 pub trait CountNotification {
     /// Runs `ring` once when the notification mechanism decides the caller should sample, unless
-    /// the returned [`Notice`] is dropped first. A changed published count and the deadline are
+    /// the returned [`Notice`] is dropped before selection for delivery. A changed published count and the deadline are
     /// required triggers; an implementation may also deliver earlier hints, including a native
     /// event whose cause is not a count publication by this process.
     ///

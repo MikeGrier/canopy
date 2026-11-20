@@ -60,7 +60,7 @@ mod types;
 
 pub use admission::{Admission, Attachment, Registrant, Upgrade, UpgradeConversion};
 pub use count::{CountNotification, ModificationCount, Notice};
-pub use creation::{ArtifactMaker, Creation, CreationPlan};
+pub use creation::{ArtifactMaker, Creation, CreationPlan, ManagedArtifactMaker};
 pub use discovery::RecoveryDiscovery;
 pub use error::{CoordError, CoordResult};
 pub use exclusion::{ExclusionHold, WriterExclusion};
@@ -89,6 +89,50 @@ pub(crate) fn run_contained(work: impl FnOnce()) {
 pub(crate) fn discard<T>(values: impl IntoIterator<Item = T>) {
     for value in values {
         run_contained(|| drop(value));
+    }
+}
+
+#[derive(Default)]
+struct ReleaseGate {
+    #[cfg(test)]
+    on_wait: std::sync::OnceLock<std::sync::mpsc::Sender<()>>,
+    owner: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    idle: std::sync::Condvar,
+}
+
+struct ReleaseTurn<'a>(&'a ReleaseGate);
+
+impl ReleaseGate {
+    fn enter(&self) -> Option<ReleaseTurn<'_>> {
+        let current = std::thread::current().id();
+        let recover = std::sync::PoisonError::into_inner;
+        let owner = self.owner.lock().unwrap_or_else(recover);
+        if *owner == Some(current) {
+            return None;
+        }
+        #[cfg(test)]
+        if owner.is_some()
+            && let Some(sender) = self.on_wait.get()
+        {
+            let _ = sender.send(());
+        }
+        let mut owner = self
+            .idle
+            .wait_while(owner, |owner| owner.is_some())
+            .unwrap_or_else(recover);
+        *owner = Some(current);
+        Some(ReleaseTurn(self))
+    }
+}
+
+impl Drop for ReleaseTurn<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.0.idle.notify_all();
     }
 }
 

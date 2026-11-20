@@ -212,7 +212,7 @@ fn an_opener_rechecks_identity_and_schemas_after_waiting_for_attachment() {
         for change_identity in [false, true] {
             let mem = MemFs::new();
             let vfs: Arc<dyn Vfs> = Arc::new(mem.another_process());
-            let root = PathBuf::from("admission-recheck");
+            let root = PathBuf::from(crate::tests::MEM_ROOT).join("admission-recheck");
             vfs.create_dir_all(&root).unwrap();
             drop(Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap());
             let probe = participant(&vfs, &root);
@@ -257,7 +257,7 @@ fn an_opener_rechecks_identity_and_schemas_after_waiting_for_attachment() {
 
 #[test]
 fn a_failure_to_acquire_attachment_is_not_treated_as_best_effort() {
-    let root = PathBuf::from("attachment-failure");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("attachment-failure");
     let mem = MemFs::new();
     let base: Arc<dyn Vfs> = Arc::new(mem.another_process());
     base.create_dir_all(&root).unwrap();
@@ -286,7 +286,7 @@ fn a_full_registry_does_not_prevent_attachment_and_keeps_listings_incomplete() {
         let gate = FaultGate::closed();
         let mem = MemFs::new();
         let base: Arc<dyn Vfs> = Arc::new(mem.another_process());
-        let root = PathBuf::from("full-registry");
+        let root = PathBuf::from(crate::tests::MEM_ROOT).join("full-registry");
         base.create_dir_all(&root).unwrap();
         drop(Store::init_unsourced(Arc::clone(&base), root.clone(), test_config()).unwrap());
         assert!(!listing(&base, &root).may_be_incomplete);
@@ -322,7 +322,7 @@ fn a_full_registry_does_not_prevent_attachment_and_keeps_listings_incomplete() {
 fn a_registry_write_failure_does_not_refuse_an_admitted_reader() {
     let mem = MemFs::new();
     let base: Arc<dyn Vfs> = Arc::new(mem.another_process());
-    let root = PathBuf::from("registry-write-failure");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("registry-write-failure");
     base.create_dir_all(&root).unwrap();
     drop(Store::init_unsourced(Arc::clone(&base), root.clone(), test_config()).unwrap());
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(
@@ -362,7 +362,7 @@ fn reads_and_writes_do_not_rewrite_a_live_registration() {
             When::Always,
         ),
     ));
-    let root = PathBuf::from("stable-registration");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("stable-registration");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     assert_eq!(written.load(Ordering::Relaxed), 1);
@@ -392,7 +392,7 @@ fn reads_and_writes_do_not_rewrite_a_live_registration() {
 fn unregistering_a_store_still_holds_its_reader_tier() {
     let mem = MemFs::new();
     let base: Arc<dyn Vfs> = Arc::new(mem.another_process());
-    let root = PathBuf::from("unregister-order");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("unregister-order");
     base.create_dir_all(&root).unwrap();
     let probe = participant(&base, &root);
     let seen = Arc::new(AtomicBool::new(false));

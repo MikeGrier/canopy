@@ -3,8 +3,8 @@
 use super::*;
 use crate::VfsErrorKind;
 use crate::coord::creation::{
-    is_publication_staging_of_folded, make_artifacts, names_equal, validate_artifact_name,
-    validate_plan,
+    ManagedFence, is_publication_staging_of_folded, make_artifacts, names_equal,
+    validate_artifact_name, validate_plan,
 };
 use crate::coord::{
     ArtifactMaker, Created, Creation, CreationNonce, CreationPlan, RESERVED_PREFIX,
@@ -99,6 +99,7 @@ impl Drop for CreationHold {
             self.inner.abandon();
             return;
         }
+        let _turn = self.inner.release.enter();
         let lock = self
             .inner
             .lock(&self.inner.creation)
@@ -118,11 +119,12 @@ fn reserved(name: &str) -> bool {
 
 impl SharedParticipant {
     fn creation_hold(&self, mode: LockMode) -> CoordResult<CreationHold> {
+        self.creation_hold_at(&self.inner.root.join(format::LOCK), mode)
+    }
+
+    fn creation_hold_at(&self, path: &Path, mode: LockMode) -> CoordResult<CreationHold> {
         self.alive()?;
-        let lock =
-            self.inner
-                .vfs
-                .lock(&self.inner.root.join(format::LOCK), mode, LockSpan::File)?;
+        let lock = self.inner.vfs.lock(path, mode, LockSpan::File)?;
         let mut owned = self.inner.lock(&self.inner.creation)?;
         self.alive()?;
         let id = self
@@ -292,7 +294,80 @@ impl SharedParticipant {
     }
 }
 
+impl ManagedFence for SharedParticipant {
+    fn alive(&self) -> CoordResult<()> {
+        SharedParticipant::alive(self)
+    }
+
+    fn fenced<T>(&self, operation: impl FnOnce() -> crate::VfsResult<T>) -> CoordResult<T> {
+        let owned = self.inner.lock(&self.inner.creation)?;
+        self.alive()?;
+        let result = operation();
+        drop(owned);
+        Ok(result?)
+    }
+}
+
 impl Creation for SharedParticipant {
+    fn create_managed(
+        &self,
+        plan: &CreationPlan<'_>,
+        maker: &mut dyn crate::coord::ManagedArtifactMaker,
+    ) -> CoordResult<Created> {
+        let managed =
+            crate::coord::creation::ManagedPlan::new(plan, &*self.inner.vfs, &self.inner.root)?;
+        let hold = self.creation_hold(LockMode::Exclusive)?;
+        let reservation = self.reservation()?;
+        let compatible = reservation
+            .as_ref()
+            .map(|record| record.implementation == IMPLEMENTATION && record.inputs == plan.inputs);
+        managed.preflight(compatible)?;
+        let _resolver = self.creation_hold_at(
+            &crate::names::lock_path(&self.inner.root),
+            LockMode::Exclusive,
+        )?;
+        let mut directory = self.fenced(|| {
+            crate::names::ComponentDirectory::open_held(&*self.inner.vfs, &self.inner.root)
+        })?;
+        managed.run_held(
+            &mut directory,
+            self,
+            maker,
+            compatible,
+            || {
+                self.settle(
+                    &hold,
+                    reservation.map_or(Found::Empty, |record| Found::Reserved(record.nonce)),
+                    plan.inputs,
+                    plan.nonce,
+                )
+            },
+            |path, bytes| self.publish_held(&hold, path, bytes),
+        )
+    }
+
+    fn confirm_managed_created(&self, marker: &str) -> CoordResult<()> {
+        let _hold = self.creation_hold(LockMode::Shared)?;
+        self.alive()?;
+        self.check_implementation()?;
+        self.reservation()?.ok_or(CoordError::NotCreated)?;
+        if !crate::names::has_map(&self.inner.vfs.read_dir(&self.inner.root)?) {
+            return Err(CoordError::NotCreated);
+        }
+        let _resolver =
+            self.creation_hold_at(&crate::names::lock_path(&self.inner.root), LockMode::Shared)?;
+        let directory = self.fenced(|| {
+            crate::names::ComponentDirectory::open_held(&*self.inner.vfs, &self.inner.root)
+        })?;
+        crate::coord::creation::confirm_managed_held(
+            &*self.inner.vfs,
+            &self.inner.root,
+            marker,
+            &directory,
+            self,
+        )
+    }
+
     fn create(
         &self,
         plan: &CreationPlan<'_>,

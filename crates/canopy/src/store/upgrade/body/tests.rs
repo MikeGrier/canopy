@@ -17,7 +17,7 @@ fn options(schema: u32, prefix: &str) -> StoreOptions {
 
 fn fixture(policy: FaultPolicy) -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("body-store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("body-store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         Arc::clone(&vfs),

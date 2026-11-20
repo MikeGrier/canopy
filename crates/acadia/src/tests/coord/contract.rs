@@ -50,6 +50,35 @@ fn public_count_and_generation_contract_on_every_implementation_and_backend() {
 }
 
 #[test]
+fn dead_file_participants_do_not_read_the_reservation() {
+    let root = PathBuf::from(Backend::MEM_ROOT);
+    for factory in implementations() {
+        let reservation = root.join(".coord-reservation");
+        let policy = FaultPolicy::new().inject(
+            crate::FaultOp::Read,
+            &reservation,
+            crate::Fault::io_error(),
+            crate::When::Once,
+        );
+        let fs = Arc::new(FaultyFs::new(Backend::mem(), policy));
+        let dead = factory.open(fs.clone(), &root).unwrap();
+        dead.abandon();
+        assert!(matches!(
+            dead.attach(Access::Read, crate::coord::Waiting::Never),
+            Err(CoordError::Abandoned)
+        ));
+        assert!(matches!(
+            dead.acquire(crate::coord::Waiting::Never),
+            Err(CoordError::Abandoned)
+        ));
+        assert_eq!(
+            fs.read(&reservation).unwrap_err().kind(),
+            crate::VfsErrorKind::Other
+        );
+    }
+}
+
+#[test]
 fn a_poisoned_file_participant_mutex_ends_the_participant() {
     on_every_implementation("coord-contract-poison-file", &|implementation, backend| {
         let participant = participant(implementation, backend);
@@ -380,9 +409,19 @@ fn a_shared_participant_abandoned_while_its_first_use_waits_changes_nothing_afte
             crate::LockSpan::File,
         )
         .unwrap();
+    let (attempt, attempted) = std::sync::mpsc::channel();
+    let policy = FaultPolicy::new().inject(
+        crate::FaultOp::Lock,
+        directory.join("setup.lock"),
+        crate::Fault::observe_with(move |_, _| attempt.send(()).unwrap()),
+        crate::When::Once,
+    );
     let participant: Arc<dyn Coordination> = Arc::from(
         crate::coord::shared::SharedFactory::new()
-            .open(Arc::new(mem.another_process()), &root)
+            .open(
+                Arc::new(FaultyFs::new(mem.another_process(), policy)),
+                &root,
+            )
             .unwrap(),
     );
     let sampler = Arc::clone(&participant);
@@ -390,10 +429,7 @@ fn a_shared_participant_abandoned_while_its_first_use_waits_changes_nothing_afte
     std::thread::spawn(move || {
         let _ = done.send(sampler.sample());
     });
-    assert!(
-        recv_timeout(&finished, Duration::from_millis(100)).is_err(),
-        "the first use waits for setup"
-    );
+    recv_timeout(&attempted, LONG).expect("first use reached the held setup lock");
     let (abandoned_tx, abandoned) = std::sync::mpsc::channel();
     let target = Arc::clone(&participant);
     std::thread::spawn(move || {

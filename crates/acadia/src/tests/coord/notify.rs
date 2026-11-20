@@ -75,6 +75,17 @@ impl Drop for PanickingPayload {
 }
 
 #[test]
+fn dropping_notices_inside_a_selected_batch_does_not_cancel_its_rings() {
+    let mem = Backend::mem();
+    let waiter = participant_on(
+        &FileFactory::new().polled(),
+        Arc::new(mem.another_process()),
+        &PathBuf::from(Backend::MEM_ROOT),
+    );
+    crate::tests::assert_selected_notices_ring(&waiter);
+}
+
+#[test]
 fn a_panicking_ring_payload_does_not_stop_the_file_poller() {
     let mem = Backend::mem();
     let root = PathBuf::from(Backend::MEM_ROOT);
@@ -616,6 +627,35 @@ mod os {
             let _ = done.send(());
         });
         recv_timeout(&finished, LONG).expect("notice withdrawal did not deadlock");
+    }
+
+    #[test]
+    fn notice_drop_returns_while_the_deadline_ring_is_running() {
+        let (dir, implementation) = on_the_os("coord-notify-oplock-drop-running");
+        let writer = os_participant(&implementation, &dir);
+        publish(&writer, 2);
+        let waiter = os_participant(&implementation, &dir);
+        let (entered, running) = mpsc::channel();
+        let (resume, paused) = mpsc::channel::<()>();
+        let notice = waiter
+            .notify(
+                waiter.sample().unwrap(),
+                Instant::now() + Duration::from_millis(100),
+                Box::new(move || {
+                    let _ = entered.send(());
+                    let _ = paused.recv();
+                }),
+            )
+            .unwrap();
+        recv_timeout(&running, LONG).expect("deadline ring started");
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            drop(notice);
+            let _ = done.send(());
+        });
+        let dropped = recv_timeout(&finished, LONG);
+        drop(resume);
+        dropped.expect("withdrawal waited for the running ring");
     }
 
     #[test]

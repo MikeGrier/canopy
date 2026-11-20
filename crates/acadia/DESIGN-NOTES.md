@@ -1732,6 +1732,10 @@ Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The fourth 2026-11-
 
 ## Fifth review fixes: recovery's commit point, restart repair, foreign roots and the marker under abandonment, 2026-11-18
 
+> **Corrected in part, 2026-11-19:** The final-link rule below applies to `metadata` and
+> `exists`, not every path operation. A listing describes the link entry; on Unix `rename`
+> and `remove_file` act on the final entry without following the link.
+
 A fifth review of the crate, made on 2026-11-18, raised ten findings and two suspicions, five of
 them against fixes of the fourth. Each one that held was shown by a failing test before it was
 fixed, except where noted; the work is milestones M28 to M31 in [CHECKLIST.md](CHECKLIST.md). What
@@ -2372,3 +2376,94 @@ The contract separates storage mechanics from name policy. A future Acadia name 
 map arbitrary UTF-8 components, but the mapping would be an explicit higher layer with authoritative
 metadata, recovery and collision rules; `OsFs` and `MemFs` do not implement one implicitly. The
 current `Vfs` and creation contracts preserve caller component spelling after validation.
+
+## Creation marker size includes staging headroom
+
+Creation rejects a marker exceeding `CreationPlan::MAX_MARKER_BYTES` before reservation on every
+backend. The UTF-8 byte budget leaves room in a 255-byte component for the full publication
+suffix, independent of the current process id and sequence number. This limit applies to the
+marker, not to the other artifact names.
+
+## Extended component identity
+
+Two logical components name the same sibling if and only if their UTF-8 byte sequences are
+equal. For valid UTF-8 this is also equality of Unicode scalar sequences. The storage-name
+hash takes those exact bytes. Neither lookup nor hashing folds case or normalizes Unicode.
+Distinct spellings may coexist under one parent even when the backing filesystem would treat
+them as one name. The CSV mapping preserves each original spelling; equality of storage
+hashes alone never establishes equality of logical names.
+
+## Extended component storage format v1
+
+This is the persistent contract for a directory managed by the extended-name resolver, not
+the grammar of native VFS paths. Supply one logical component as valid UTF-8 data, before
+path parsing. Empty input, dot components, separators, NUL and noncharacters are data too.
+Apply the following rules independently to each sibling; insertion order and host OS do not
+affect its physical spelling.
+
+1. Use the original spelling directly only for 1 through 212 bytes matching the entire ASCII
+  expression `[a-z0-9_-]+`, or for the literal `.store`. Exclude the DOS device names `con`,
+  `prn`, `aux`, `nul`, `com0` through `com9`, and `lpt0` through `lpt9` from the direct set.
+  The length ceiling leaves room for target-prefixed publication staging. `.store` is a
+  direct marker, not resolver metadata. All other dotted names are encoded, not rejected.
+2. Otherwise use `.acadia-h1-` followed by all 64 lowercase hexadecimal digits of SHA-256
+  over the exact component bytes. No length, delimiter, salt, BOM or terminator is added.
+  For example, `abc` stays `abc`; the empty component becomes
+  `.acadia-h1-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  The literal logical name of that generated file is itself encoded. Never use a collision
+  suffix: two different logical byte strings claiming one physical name are an error.
+3. Reserve the entire physical `.acadia-` prefix for the resolver, including its digest
+  namespace, `.names.csv`, `.names.lock` and `.names.stage`. No caller
+  gets a direct spelling in this namespace or in the `.coord` or dotted staging namespaces.
+  A pre-existing host alias (including a differently cased directory entry) is not proof
+  that a target belongs to the caller. Never overwrite or adopt an unowned alias.
+
+**Sidecar bytes.** Each managed parent stores its own regular file `.names.csv`.
+Version 1 is ASCII without BOM, comma-delimited, LF after every record including the last,
+no quoting, whitespace padding or blank records. Its exact first line is
+`acadia_names_v1,logical_utf8_hex`. Each subsequent row is `physical,logical_utf8_hex`:
+the actual physical component, then two lowercase hex digits per original UTF-8 byte in
+order (zero digits for empty). Hex makes NUL, CR, LF, commas and quotes round-trip without
+CSV parser dialect assumptions. Include exactly one binding per registered logical name,
+direct names included. Sort rows by increasing unsigned physical ASCII bytes. For example,
+the complete contents for a directory containing just the logical name `abc` are:
+
+```csv
+acadia_names_v1,logical_utf8_hex
+abc,616263
+```
+
+**Ownership and recovery.** Absence of the sidecar means no registered bindings, not a
+license to infer logical names from disk. A header alone is a valid empty map. Unsupported
+headers, malformed rows, invalid UTF-8, duplicate or out-of-order keys, and any spelling
+that does not recompute from its recorded bytes fail closed. Never reconstruct the CSV by
+scanning hashes. Existing raw layouts require an explicit adoption or migration decision;
+opening a directory through the resolver does not silently convert it.
+
+Serialize binding changes per parent across processes. Publish a complete replacement CSV
+atomically and durably before publishing its new child. A binding without a child reserves
+the spelling for the same logical bytes; it is not a successful lookup or listing entry.
+An interrupted create may resume that binding. For removal, durably remove the child before
+releasing the binding. Uncommitted stages are not authoritative. Metadata and raw VFS
+internals are never returned as logical children. Readers must observe consistent binding
+and child ownership; a hash or native case-insensitive match alone is insufficient.
+
+## Explicit selection of managed creation
+
+The caller selects the namespace contract: `create_managed` and `confirm_managed_created`
+use exact logical names and the per-parent mapping, while `create` and `confirm_created`
+use raw artifact names. A [managed maker](src/coord/creation/managed.rs) receives the logical
+name for dispatch and an absent `artifact` leaf inside an attempt directory that coordination
+atomically claims. Claiming is exclusive across PID namespaces and the short name leaves room
+for a maker's own publication staging. Coordination accepts only an exact file or directory
+entry at that leaf and places it at the resolved final path while its participant is live; a
+stale maker may only finish its private attempt. Look up and list managed children through
+[ComponentDirectory](src/names.rs). The coordination reservation remains common to both APIs;
+it identifies the coordinating implementation, not a naming mode. Raw names use a portable
+Win32-safe component grammar, including the full byte ceiling and reserved device spellings,
+with space-padded DOS stems classified by their trimmed stem. Managed names accept arbitrary
+valid UTF-8 because native paths receive only resolver-owned physical spellings. Control
+entries, a present CSV, and every existing root child are validated without writes before the
+participant lock is acquired. A visible CSV entry is parent-synced before its fixed stage is
+reused. Native resolver locks open the final entry without following links or reparse points.
+A caller must consistently select the same namespace contract for its root.

@@ -78,7 +78,7 @@ fn store_faulting_log_append(k: u32) -> (Arc<dyn Vfs>, PathBuf, Store, FaultGate
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),

@@ -65,7 +65,7 @@ fn transformed_pairs_are_never_seen_torn_and_no_increment_is_lost() {
     println!("nonce seed: {seed:#018x}");
 
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("racing");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("racing");
     vfs.create_dir_all(&root).unwrap();
     let mut generator = SplitMix64(seed);
     let options = StoreOptions::with_nonce_source(

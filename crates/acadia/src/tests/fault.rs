@@ -328,6 +328,18 @@ fn on_both_faulty<S>(
     body(&FaultyFs::new(OsFs::new(), policy), &os_root, &state);
 }
 
+#[test]
+fn exact_match_requires_two_normalizable_paths() {
+    let valid = Path::new("target");
+    let invalid = valid.join(non_utf8_component());
+    let other = Path::new("other").join(non_utf8_component());
+    assert!(!PathMatcher::exact(&invalid).matches(&invalid));
+    assert!(!PathMatcher::exact(&invalid).matches(&other));
+    assert!(!PathMatcher::exact(&invalid).matches(valid));
+    assert!(!PathMatcher::exact(valid).matches(&invalid));
+    assert!(PathMatcher::exact(valid).matches(Path::new("dir/../target")));
+}
+
 fn non_utf8_component() -> std::ffi::OsString {
     #[cfg(unix)]
     {

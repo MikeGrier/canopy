@@ -22,7 +22,7 @@ fn bump(current: Option<&DocumentBody>) -> DocumentBody {
 
 /// A store on `vfs` at `root`, drawing from a counting source.
 fn sourced_store_on(vfs: Arc<dyn Vfs>, root: &str) -> Store {
-    let root = PathBuf::from(root);
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join(root);
     vfs.create_dir_all(&root).unwrap();
     let options = StoreOptions::with_nonce_source(test_agent(), counting_nonce_source());
     Store::init(vfs, root, test_config(), options).unwrap()

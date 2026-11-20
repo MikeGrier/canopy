@@ -93,7 +93,7 @@ fn store_faulting_rename(k: u32) -> (Arc<dyn Vfs>, Store, FaultGate) {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let config = GenesisConfig::new(StoreId::new("cvs14-store").unwrap(), 3);
     let store = Store::init(vfs.clone(), root, config, options()).expect("init");
@@ -192,7 +192,7 @@ fn a_committed_transaction_leaves_each_document_reachable_through_its_pointer() 
     // namespace entry, the entry names a blob, and the blob is the body that was written.
     // Without this, the test above is satisfied by a store that writes no pointers at all.
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs,
@@ -230,7 +230,7 @@ fn a_rejected_transaction_writes_neither_blob_nor_pointer() {
     // never happened. Nothing collects those blobs until `CVS-15`, so the cheap guarantee is
     // that they are never created.
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),

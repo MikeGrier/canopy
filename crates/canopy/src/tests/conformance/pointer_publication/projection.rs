@@ -66,7 +66,7 @@ impl World {
         let node = NodePath::parse("N").expect("a valid node");
         let document = DocumentName::new("D").expect("a valid document name");
         World {
-            root: PathBuf::from("store"),
+            root: PathBuf::from(crate::tests::MEM_ROOT).join("store"),
             path_hash: PathHash::of(&node, &document),
             node,
             document,

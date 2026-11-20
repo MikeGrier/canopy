@@ -58,7 +58,7 @@ use canopy::{
 };
 
 /// The store root every CHAOS test uses.
-pub const ROOT: &str = "store";
+pub const ROOT: &str = if cfg!(windows) { "C:/store" } else { "/store" };
 /// The reserved marker file name at the store root and mirrored in each partition
 /// (`D40`). Mirrors the store's specified layout.
 pub const MARKER_NAME: &str = ".store";

@@ -96,7 +96,7 @@ fn store_with_an_unresolved_transaction(label: &str) -> (Arc<dyn Vfs>, Store) {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from(label);
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join(label);
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
     let swaps = SwapSet::new([Swap::new(name("alpha"), doc("pin"), body(b"committed"))]).unwrap();
@@ -389,7 +389,7 @@ fn a_live_writers_transaction_is_not_reported_as_abandoned() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("live-writer");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("live-writer");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let _ = reader_cell.set(open_reader(&vfs, &root));
@@ -579,7 +579,7 @@ fn a_step_that_fails_is_retried_by_the_next() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("retry");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("retry");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root, test_config()).unwrap();
     logged(&store, "t1", "one", b"first", true);
@@ -818,7 +818,7 @@ fn an_open_does_not_recover_state_nothing_has_vouched_for() {
 fn an_open_after_a_host_restart_needs_recovery_and_loses_nothing_that_was_durable() {
     let mem = Arc::new(MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("restarted");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("restarted");
     vfs.create_dir_all(&root).unwrap();
     let writer = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     write_one(&writer);

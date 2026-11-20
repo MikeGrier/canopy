@@ -13,7 +13,7 @@ ASSUME Scenario \in {"double-name", "replace-file", "carried-move", "unnamed-chi
                      "remove-tree-recreate-in-place",
                      "remove-empty-recreate", "moved-descendant-sync",
                      "moved-unnamed-child", "file-over-unnamed-dir",
-                     "rename-over-stale-mark", "rename-keeps-old-dst"}
+                     "rename-over-stale-mark", "rename-keeps-old-dst", "rename-over-file"}
 
 MoveFromTo(from, to) == Move(CHOOSE move \in AvailableMoves :
     move.from = from /\ move.to = to)
@@ -46,6 +46,19 @@ ReplaceFileNext ==
       [] steps = 10 -> SyncDir(1)
       [] steps = 11 -> Crash
       [] OTHER -> UNCHANGED vars
+
+RenameOverFileNext ==
+    IF steps < 8 THEN DoubleNameNext
+    ELSE CASE steps = 8 -> CreateDir(5)
+           [] steps = 9 -> RemoveEmptyDir(5)
+           [] steps = 10 -> CreateFile(5, "B")
+           [] steps = 11 -> SyncFile(5)
+           [] steps = 12 -> SyncDir(3)
+           [] steps = 13 -> MoveFromTo(4, 5)
+           [] steps = 14 -> SyncDir(3)
+           [] steps = 15 -> SyncDir(2)
+           [] steps = 16 -> Crash
+           [] OTHER -> UNCHANGED vars
 
 CarriedMoveNext ==
     CASE steps = 0 -> CreateDir(1)
@@ -203,6 +216,7 @@ RemoveEmptyRecreateNext ==
 ScenarioNext ==
     CASE Scenario = "double-name" -> DoubleNameNext
       [] Scenario = "replace-file" -> ReplaceFileNext
+    [] Scenario = "rename-over-file" -> RenameOverFileNext
       [] Scenario = "carried-move" -> CarriedMoveNext
       [] Scenario = "unnamed-child" -> UnnamedChildNext
       [] Scenario = "remove-tree-unsynced" -> RemoveTreeUnsyncedNext
@@ -218,6 +232,11 @@ ScenarioNext ==
       [] OTHER -> UNCHANGED vars
 
 ScenarioSpec == Init /\ [][ScenarioNext]_vars
+
+SourceInodeSurvives == live[4] = Absent /\ live[5] = File(1) /\ liveData[1] = "A"
+
+\* Audience: internal.
+ScenarioWitness_RenameOverFile == ~(Scenario = "rename-over-file" /\ steps = 17 /\ SourceInodeSurvives)
 
 \* Audience: internal.
 ScenarioWitness_DoubleNameAfterCrash == ~(
@@ -358,6 +377,8 @@ ScenarioWitness_RenameKeepsOldDstChild == ~(
 
 \* Audience: internal.
 ScenarioExpected ==
+    /\ (Scenario = "rename-over-file" /\ steps = 9) => ~ENABLED MoveFromTo(4, 5)
+    /\ (Scenario = "rename-over-file" /\ steps = 17) => SourceInodeSurvives
     /\ (Scenario = "double-name" /\ steps = 11) =>
         /\ live[4] = live[5]
         /\ live[4].kind = "file"

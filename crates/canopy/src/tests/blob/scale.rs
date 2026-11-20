@@ -36,7 +36,7 @@ const DOCUMENTS: usize = 400;
 const VERSIONS: usize = 3;
 
 /// Where every store here is rooted.
-const ROOT: &str = "store";
+const ROOT: &str = if cfg!(windows) { "C:/store" } else { "/store" };
 
 /// A new store with `replicas` replicas on `vfs`.
 fn init(vfs: Arc<dyn Vfs>, replicas: usize) -> Store {

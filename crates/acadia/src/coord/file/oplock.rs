@@ -495,7 +495,11 @@ fn stop_then(shared: &Shared, ring_action: StopRing) {
         };
         (timer, io, sender, ring, withdrawn)
     };
-    if !IN_CALLBACK.get() && !matches!(ring_action, StopRing::Ring) {
+    if timer.is_none()
+        && io.is_none()
+        && !IN_CALLBACK.get()
+        && !matches!(ring_action, StopRing::Ring)
+    {
         crate::coord::run_contained(|| {
             drop(timer);
             drop(io);

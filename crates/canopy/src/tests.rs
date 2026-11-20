@@ -115,13 +115,15 @@ fn namespace_root(store: &Store, index: usize) -> PathBuf {
 }
 use acadia::{MemFs, Vfs};
 
+pub(crate) const MEM_ROOT: &str = if cfg!(windows) { "C:/" } else { "/" };
+
 /// A fresh in-memory filesystem with an existing (empty) store root directory.
 ///
 /// Store tests run disk-free and deterministically against the `acadia`
 /// `MemFs` backend (D55).
 fn fresh_root() -> (Arc<dyn Vfs>, PathBuf) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(MEM_ROOT).join("store");
     vfs.create_dir_all(&root).expect("create root");
     (vfs, root)
 }

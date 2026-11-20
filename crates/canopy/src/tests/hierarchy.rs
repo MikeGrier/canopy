@@ -219,7 +219,7 @@ fn a_collision_check_that_cannot_look_fails_rather_than_passing() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("collision-probe");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("collision-probe");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs, root, test_config()).unwrap();
     store
@@ -255,7 +255,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_by_the_next_write()
     // would never make the name durable, and a crash would drop the node from the replica.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("unsynced-node");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("unsynced-node");
     let partition = root.join(crate::store::NAMESPACE_TREE_DIR).join("p0");
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),
@@ -330,7 +330,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_after_a_reopen() {
     // sync its name on its own -- still discharges it.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("unsynced-reopen");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("unsynced-reopen");
     let partition = root.join(crate::store::NAMESPACE_TREE_DIR).join("p0");
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),
@@ -417,7 +417,7 @@ fn a_directory_whose_creation_cannot_be_recorded_is_not_created() {
     // a creation that cannot be recorded must not happen at all.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("unrecorded");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("unrecorded");
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),
         FaultPolicy::new().inject_gated(
@@ -529,7 +529,7 @@ fn an_unterminated_intent_tail_is_not_acted_on_at_reopen() {
     // created on its authority; a reopen discharges the whole records only.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("tail-intent");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("tail-intent");
     let namespace = root.join(crate::store::NAMESPACE_TREE_DIR);
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),
@@ -572,7 +572,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
     // the directory the retry actually created.
     use acadia::{Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, PathMatcher, When};
     let gate = FaultGate::closed();
-    let root = PathBuf::from("torn-intent");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("torn-intent");
     let partition = root.join(crate::store::NAMESPACE_TREE_DIR).join("p0");
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),

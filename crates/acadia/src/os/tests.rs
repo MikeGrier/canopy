@@ -122,6 +122,30 @@ fn a_published_file_can_be_replaced_by_a_rename_at_once() {
 }
 
 #[test]
+#[cfg(windows)]
+fn long_publication_paths_preserve_no_replace_and_allow_immediate_replacement() {
+    let dir = Scratch::new("long-publish");
+    let parent = dir
+        .0
+        .join("a".repeat(120))
+        .join("b".repeat(120))
+        .join("long-publication");
+    fs::create_dir_all(&parent).unwrap();
+    let target = parent.join("record");
+    let os = OsFs::new();
+    os.publish_new(&target, b"first").unwrap();
+    assert_eq!(
+        os.publish_new(&target, b"second").unwrap_err().kind(),
+        VfsErrorKind::AlreadyExists
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"first");
+    let replacement = parent.join("replacement");
+    fs::write(&replacement, b"replacement").unwrap();
+    fs::rename(replacement, &target).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"replacement");
+}
+
+#[test]
 fn a_publication_racing_a_directory_of_its_name_refuses() {
     let dir = Scratch::new("directory-taken");
     let target = dir.0.join("record");
@@ -136,8 +160,6 @@ fn a_publication_racing_a_directory_of_its_name_refuses() {
     );
 }
 
-/// `metadata` and `exists` follow a symbolic link, as every path operation does; a listing names
-/// the link itself.
 #[cfg(unix)]
 #[test]
 fn metadata_follows_a_link_and_a_listing_names_it() {
@@ -167,6 +189,12 @@ fn metadata_follows_a_link_and_a_listing_names_it() {
             ("target".to_owned(), FileType::File),
         ]
     );
+    let moved = dir.0.join("moved");
+    os.rename(&dir.0.join("link"), &moved).unwrap();
+    assert_eq!(fs::read_link(&moved).unwrap(), target);
+    os.remove_file(&moved).unwrap();
+    assert!(!moved.exists());
+    assert_eq!(fs::read(target).unwrap(), b"bytes");
 }
 
 /// A Unix entry that cannot cross the UTF-8 VFS contract makes the listing a typed refusal.

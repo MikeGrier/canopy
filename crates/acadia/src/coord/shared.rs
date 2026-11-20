@@ -78,6 +78,7 @@ impl CoordinationFactory for HookedSharedFactory {
 }
 
 struct ParticipantInner {
+    release: Arc<super::ReleaseGate>,
     vfs: Arc<dyn Vfs>,
     root: PathBuf,
     state: OnceLock<Arc<SharedState>>,
@@ -112,6 +113,7 @@ impl SharedParticipant {
     ) -> Self {
         SharedParticipant {
             inner: Arc::new(ParticipantInner {
+                release: Default::default(),
                 vfs,
                 root: root.to_path_buf(),
                 state: OnceLock::new(),
@@ -152,7 +154,9 @@ impl SharedParticipant {
                 &self.inner.root,
                 Some(&gate),
                 |state| {
-                    let state = state.with_creation(Arc::downgrade(&self.inner.creation));
+                    let state = state
+                        .with_creation(Arc::downgrade(&self.inner.creation))
+                        .with_release(Arc::clone(&self.inner.release));
                     #[cfg(any(test, feature = "test-support"))]
                     let state = state.with_hook(self.inner.hook.clone());
                     let _ = self.inner.state.set(Arc::new(state));
@@ -214,6 +218,11 @@ impl ParticipantInner {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
+        if let Some(state) = self.state.get() {
+            state.abandon();
+            return;
+        }
+        let _turn = self.release.enter();
         let creation = {
             let mut creation = self
                 .creation
@@ -222,9 +231,6 @@ impl ParticipantInner {
             std::mem::take(&mut *creation)
         };
         crate::coord::discard(creation.into_values());
-        if let Some(state) = self.state.get() {
-            state.abandon();
-        }
     }
 }
 

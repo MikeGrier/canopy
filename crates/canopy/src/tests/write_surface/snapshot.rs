@@ -141,7 +141,7 @@ fn store_with_held_transaction(timeout: Duration) -> HeldTransaction {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("snapshot-wait");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("snapshot-wait");
     vfs.create_dir_all(&root).unwrap();
     let options = StoreOptions::with_nonce_source(test_agent(), seeded_source(TEST_SEED, 0))
         .with_snapshot_timeout(timeout);
@@ -176,7 +176,7 @@ fn store_with_held_transaction(timeout: Duration) -> HeldTransaction {
 #[test]
 fn a_snapshot_disturbed_on_every_attempt_reports_contention() {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("disturbed-snapshot");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("disturbed-snapshot");
     vfs.create_dir_all(&root).unwrap();
     let options = StoreOptions::with_nonce_source(test_agent(), seeded_source(TEST_SEED, 0))
         .with_snapshot_timeout(Duration::from_millis(25));

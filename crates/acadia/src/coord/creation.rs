@@ -9,6 +9,10 @@ use super::RESERVED_PREFIX;
 use super::error::{CoordError, CoordResult};
 use super::types::{Created, CreationNonce};
 
+mod managed;
+pub use managed::ManagedArtifactMaker;
+pub(crate) use managed::{ManagedFence, ManagedPlan, confirm_managed_held};
+
 /// What a creation makes: the caller's inputs, the creator's nonce, and the artifacts in order.
 #[derive(Debug, Clone, Copy)]
 pub struct CreationPlan<'a> {
@@ -18,11 +22,24 @@ pub struct CreationPlan<'a> {
     /// This creator's nonce, recorded if it publishes the reservation.
     pub nonce: CreationNonce,
     /// The names, directly beneath the root, of what creation makes, in the order it makes them;
-    /// the last is the marker. The names are compared as a case-insensitive filesystem compares
+    /// the last is the marker. For [`Creation::create_managed`], these are arbitrary logical
+    /// strings compared by exact UTF-8 bytes; only duplicate names are forbidden. For raw
+    /// [`Creation::create`], the names are compared as a case-insensitive filesystem compares
     /// them: none begins with [`RESERVED_PREFIX`](super::RESERVED_PREFIX), which names the
     /// coordination's own entries, none names another, and none is a sibling a publication of
     /// another is staged in ([`is_publication_staging_of`](crate::is_publication_staging_of)).
+    /// The raw marker must fit [`Self::MAX_MARKER_BYTES`] UTF-8 bytes.
     pub artifacts: &'a [&'a str],
+}
+
+impl CreationPlan<'_> {
+    /// Maximum marker length leaving room in a 255-byte component for the staging infix,
+    /// decimal process id, hyphen, and decimal publication sequence.
+    pub const MAX_MARKER_BYTES: usize = 255
+        - crate::PUBLISHING_INFIX.len()
+        - (u32::MAX.ilog10() as usize + 1)
+        - 1
+        - (u64::MAX.ilog10() as usize + 1);
 }
 
 /// `name` as a case-insensitive filesystem compares it: a Unicode name by each character's simple
@@ -101,17 +118,58 @@ pub(crate) fn make_artifacts(
     Ok(())
 }
 
-/// Refuses a name that is not one plain name directly beneath the root, or that begins with the
-/// reserved prefix in any case.
+/// Refuses a raw name that is not one portable component directly beneath the root, or that
+/// begins with the reserved prefix in any case. Managed logical names do not use this grammar.
 pub(crate) fn validate_artifact_name(name: &str) -> CoordResult<()> {
-    if name.contains('\0') {
-        return Err(CoordError::InvalidPlan {
-            why: "an artifact's name contains NUL",
-        });
+    let bytes = name.as_bytes();
+    let invalid_byte = bytes.iter().any(|byte| {
+        *byte < b' '
+            || matches!(
+                byte,
+                b'<' | b'>' | b':' | b'"' | b'/' | b'\\' | b'|' | b'?' | b'*'
+            )
+    });
+    let stem = bytes.split(|byte| *byte == b'.').next().unwrap_or(bytes);
+    let mut device_stem = stem;
+    while device_stem.last() == Some(&b' ') {
+        device_stem = &device_stem[..device_stem.len() - 1];
     }
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+    let superscript_device = [
+        "com\u{b9}",
+        "com\u{b2}",
+        "com\u{b3}",
+        "lpt\u{b9}",
+        "lpt\u{b2}",
+        "lpt\u{b3}",
+    ]
+    .iter()
+    .any(|reserved| device_stem.eq_ignore_ascii_case(reserved.as_bytes()));
+    let device = device_stem.eq_ignore_ascii_case(b"con")
+        || device_stem.eq_ignore_ascii_case(b"prn")
+        || device_stem.eq_ignore_ascii_case(b"aux")
+        || device_stem.eq_ignore_ascii_case(b"nul")
+        || device_stem.eq_ignore_ascii_case(b"conin$")
+        || device_stem.eq_ignore_ascii_case(b"conout$")
+        || matches!(
+            device_stem,
+            [b'c' | b'C', b'o' | b'O', b'm' | b'M', b'0'..=b'9']
+        )
+        || matches!(
+            device_stem,
+            [b'l' | b'L', b'p' | b'P', b't' | b'T', b'0'..=b'9']
+        )
+        || superscript_device;
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || bytes.len() > 255
+        || invalid_byte
+        || bytes.ends_with(b".")
+        || bytes.ends_with(b" ")
+        || device
+    {
         return Err(CoordError::InvalidPlan {
-            why: "an artifact is one plain name directly beneath the root",
+            why: "an artifact is one portable name directly beneath the root",
         });
     }
     if folded(name).starts_with(RESERVED_PREFIX.to_ascii_uppercase().as_bytes()) {
@@ -132,6 +190,15 @@ pub(crate) fn validate_plan(plan: &CreationPlan<'_>) -> CoordResult<()> {
         });
     }
     let infix = crate::PUBLISHING_INFIX.to_ascii_uppercase();
+    if plan
+        .artifacts
+        .last()
+        .is_some_and(|marker| marker.len() > CreationPlan::MAX_MARKER_BYTES)
+    {
+        return Err(CoordError::InvalidPlan {
+            why: "the marker leaves insufficient room for its publication staging suffix",
+        });
+    }
     let names: Vec<Vec<u8>> = plan.artifacts.iter().map(|name| folded(name)).collect();
     for (i, name) in plan.artifacts.iter().enumerate() {
         validate_artifact_name(name)?;
@@ -189,6 +256,20 @@ pub trait ArtifactMaker {
 /// its marker is in place. Between implementations, whose creation exclusions need not exclude each
 /// other, the reservation arbitrates: whoever publishes it owns the creation.
 pub trait Creation {
+    /// Creates or resumes a resolver-managed layout. Artifact names are arbitrary UTF-8
+    /// data, compared exactly, not raw paths. The final logical component is the marker.
+    /// Select this API consistently for the root; it does not adopt raw artifacts. Use
+    /// [`ComponentDirectory::lookup`](crate::names::ComponentDirectory::lookup) and
+    /// [`ComponentDirectory::list`](crate::names::ComponentDirectory::list) for its children.
+    fn create_managed(
+        &self,
+        plan: &CreationPlan<'_>,
+        maker: &mut dyn ManagedArtifactMaker,
+    ) -> CoordResult<Created>;
+
+    /// Confirms a regular-file marker by exact logical identity and recorded ownership.
+    fn confirm_managed_created(&self, marker: &str) -> CoordResult<()>;
+
     /// Creates the store root, resumes a creation of it that was interrupted, or finds it made.
     ///
     /// The root is read: a regular-file marker under a reservation that names this implementation

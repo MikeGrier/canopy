@@ -108,6 +108,11 @@ fn cancellation_withdraws_the_callback_and_a_panicking_one_does_not_stop_others(
 }
 
 #[test]
+fn dropping_notices_inside_a_selected_batch_does_not_cancel_its_rings() {
+    crate::tests::assert_selected_notices_ring(&state());
+}
+
+#[test]
 fn a_panicking_ring_payload_does_not_stop_the_shared_poller() {
     let state = state();
     let failing = state

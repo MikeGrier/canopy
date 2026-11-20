@@ -14,6 +14,8 @@
 //! of tickets, IDs, or dispositions -- that domain belongs to the embedding application.
 //! The crate is transport-agnostic and proto-free (D51): no gRPC, tonic, or `.proto`.
 //!
+//! Store roots must be absolute in the host's path syntax. Relative locators are rejected
+//! with [`StoreError::RootNotAbsolute`], never interpreted against the working directory.
 //! A store is created with [`Store::init`] or opened with [`Store::open`], each taking
 //! [`StoreOptions`] that supply the [`NonceSource`] every write draws its [`Nonce`] from
 //! (`random-nonce` enables a ready-made random source). Content-verified blobs and the

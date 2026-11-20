@@ -289,11 +289,23 @@ impl FileCoordination {
         let mut record = format::OVERFLOW_MAGIC.to_vec();
         record.extend_from_slice(&self.current_boot()?.unwrap_or_default());
         let layout = self.layout();
-        self.replace_whole(
-            &layout.registry_overflow_staging(&super::staging_suffix()),
-            &layout.registry_overflow(),
-            &record,
-        )
+        self.publishing(|vfs| {
+            let mut staging = layout.registry_overflow_staging("pending");
+            loop {
+                match vfs.publish_new(&staging, &record) {
+                    Ok(()) => break,
+                    Err(error) if error.kind() == VfsErrorKind::AlreadyExists => {
+                        staging = layout.registry_overflow_staging(&super::staging_suffix());
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let result = vfs.rename(&staging, &layout.registry_overflow());
+            if result.is_err() {
+                let _ = vfs.remove_file(&staging);
+            }
+            result
+        })
     }
 
     /// Whether a participant attached unregistered since the host last restarted: there is an

@@ -200,7 +200,8 @@ impl PathMatcher {
     #[must_use]
     pub fn matches(&self, path: &Path) -> bool {
         match self {
-            PathMatcher::Exact(parts) => parts.as_ref() == normalize(path).as_ref(),
+            PathMatcher::Exact(Some(parts)) => normalize(path).as_ref() == Some(parts),
+            PathMatcher::Exact(None) => false,
             PathMatcher::FileName(name) => {
                 normalize(path).as_ref().and_then(|parts| parts.last()) == Some(name)
             }

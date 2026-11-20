@@ -179,6 +179,37 @@ fn release_unix_lock(file: &fs::File) {
     }
 }
 
+/// Opens or creates `path` without following a final symlink or reparse point, and refuses
+/// anything except a regular file. `exclusive_share` requests Windows handle exclusion.
+fn open_lock_file(path: &Path, exclusive_share: bool) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = exclusive_share;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        if exclusive_share {
+            options.share_mode(0);
+        }
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lock path is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 /// Opens `path` such that the returned handle holds an exclusive lock on it.
 ///
 /// Windows has no advisory-lock call to make here: the exclusion *is* the share
@@ -187,17 +218,7 @@ fn release_unix_lock(file: &fs::File) {
 /// operation and cannot race.
 #[cfg(windows)]
 fn open_exclusive(path: &Path) -> io::Result<fs::File> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        // Never truncate: the handle is wanted for its exclusivity alone, and the
-        // file may be held by an owner whose bytes are none of our business.
-        .truncate(false)
-        .share_mode(0)
-        .open(path)
+    open_lock_file(path, true)
 }
 
 /// Opens `path` and takes a non-blocking exclusive `flock` on the handle.
@@ -209,12 +230,7 @@ fn open_exclusive(path: &Path) -> io::Result<fs::File> {
 fn open_exclusive(path: &Path) -> io::Result<fs::File> {
     use std::os::unix::io::AsRawFd;
 
-    let handle = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
+    let handle = open_lock_file(path, false)?;
     // SAFETY: `handle` owns a valid open descriptor for the duration of the call.
     if unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(io::Error::last_os_error());
@@ -449,13 +465,7 @@ fn take_span_lock(
         )
         .with_path(path));
     };
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| err(op, path, &e))?;
+    let file = open_lock_file(path, false).map_err(|e| err(op, path, &e))?;
     match lock_span(&file, mode, span, wait) {
         Ok(()) => {
             #[cfg(not(windows))]
@@ -549,8 +559,28 @@ fn place_without_replacing(staging: &Path, path: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
-    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
-    let (from, to) = (wide(staging), wide(path));
+    let wide = |path: &Path| -> io::Result<Vec<u16>> {
+        use std::path::{Component, Prefix};
+        use windows_sys::Win32::Foundation::MAX_PATH;
+
+        let absolute = std::path::absolute(path)?;
+        let mut units: Vec<_> = absolute.as_os_str().encode_wide().chain(Some(0)).collect();
+        if units.len() > MAX_PATH as usize
+            && let Some(Component::Prefix(prefix)) = absolute.components().next()
+        {
+            match prefix.kind() {
+                Prefix::Disk(_) => {
+                    units.splice(..0, r"\\?\".encode_utf16());
+                }
+                Prefix::UNC(_, _) => {
+                    units.splice(..2, r"\\?\UNC\".encode_utf16());
+                }
+                _ => {}
+            }
+        }
+        Ok(units)
+    };
+    let (from, to) = (wide(staging)?, wide(path)?);
     // SAFETY: both are NUL-terminated wide strings that outlive the call.
     if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
         return Err(io::Error::last_os_error());

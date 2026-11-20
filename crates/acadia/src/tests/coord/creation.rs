@@ -106,6 +106,510 @@ impl ArtifactMaker for FileMaker {
     }
 }
 
+impl crate::coord::ManagedArtifactMaker for FileMaker {
+    fn make(&mut self, logical: &str, target: &Path, _: &[u8]) -> CoordResult<()> {
+        self.step()?;
+        assert_eq!(
+            target.parent().and_then(Path::parent),
+            Some(self.root.as_path())
+        );
+        assert_eq!(target.file_name().unwrap(), "artifact");
+        let physical = target.file_name().unwrap().to_str().unwrap();
+        assert!(
+            physical
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        );
+        self.vfs.write(target, logical.as_bytes())?;
+        self.vfs.fsync(target)?;
+        self.made.push(logical.to_owned());
+        Ok(())
+    }
+
+    fn marker(&mut self, logical: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        ArtifactMaker::marker(self, logical, inputs)
+    }
+}
+
+#[test]
+fn managed_creation_resumes_and_reopens_exact_names() {
+    super::on_every_contract("managed-names", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        let long = "\u{1f642}".repeat(256);
+        let names = [
+            "",
+            ".",
+            "..",
+            "a",
+            "A",
+            "\u{e9}",
+            "\u{c9}",
+            "e\u{301}",
+            "f:g",
+            "marker.",
+            "marker ",
+            "report:summary",
+            "CON",
+            "COM\u{b9}",
+            "COM\u{b2}.txt",
+            "LPT\u{b3}",
+            "NUL .txt",
+            "Con  .dat",
+            "COM\u{b9} .txt",
+            "lpt\u{b2} .log",
+            "bad?name",
+            "/",
+            "\\",
+            "\0\r\n,\"",
+            ".coord-reservation",
+            ".names.csv",
+            &long,
+        ];
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(1),
+            artifacts: &names,
+        };
+        let mut interrupted = FileMaker::new(fs.clone(), &root).failing_at(names.len() - 1);
+        assert!(participant.create_managed(&plan, &mut interrupted).is_err());
+        assert_eq!(interrupted.made, names[..names.len() - 1]);
+        assert!(matches!(
+            participant.confirm_managed_created(&long),
+            Err(CoordError::NotCreated)
+        ));
+        drop(participant);
+        let fs = backend.process();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert_eq!(
+            participant.create_managed(&plan, &mut maker).unwrap(),
+            Created::Resumed
+        );
+        assert_eq!(maker.made, names[names.len() - 1..]);
+        participant.confirm_managed_created(&long).unwrap();
+        assert_eq!(
+            participant.create_managed(&plan, &mut maker).unwrap(),
+            Created::Existing
+        );
+        assert_eq!(maker.made, names[names.len() - 1..]);
+        let dir = crate::names::ComponentDirectory::open(&*fs, &root).unwrap();
+        assert_eq!(
+            dir.list()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.file_name)
+                .collect::<std::collections::BTreeSet<_>>(),
+            names.iter().map(|name| name.to_string()).collect()
+        );
+        for logical in names {
+            let path = dir.lookup(logical).unwrap().unwrap();
+            assert_eq!(
+                fs.read(&path).unwrap(),
+                if logical == long {
+                    INPUTS
+                } else {
+                    logical.as_bytes()
+                }
+            );
+        }
+    });
+}
+
+#[test]
+fn managed_creation_serializes_competing_creators() {
+    super::on_every_contract("managed-creators", &|factory, backend| {
+        let gate = std::sync::Barrier::new(2);
+        let run = || {
+            let fs = backend.process();
+            let root = backend.root();
+            let participant = factory.open(fs.clone(), &root).unwrap();
+            let mut maker = FileMaker::new(fs, &root);
+            gate.wait();
+            participant
+                .create_managed(
+                    &CreationPlan {
+                        inputs: INPUTS,
+                        nonce: nonce(2),
+                        artifacts: &["A:B", "m/arker"],
+                    },
+                    &mut maker,
+                )
+                .unwrap()
+        };
+        std::thread::scope(|scope| {
+            let peer = scope.spawn(run);
+            let results = [run(), peer.join().unwrap()];
+            assert!(results.contains(&Created::Created) && results.contains(&Created::Existing));
+        });
+    });
+}
+
+#[test]
+fn managed_creation_recovers_csv_publication_siblings() {
+    super::on_every_contract("managed-csv-stage-unowned", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        let stage = root.join(format!(".names.csv{}interrupted", crate::PUBLISHING_INFIX));
+        fs.write(&stage, b"unowned").unwrap();
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert!(matches!(
+            participant.create_managed(
+                &CreationPlan {
+                    inputs: INPUTS,
+                    nonce: nonce(8),
+                    artifacts: &["data", "marker"],
+                },
+                &mut maker,
+            ),
+            Err(CoordError::Occupied { .. })
+        ));
+        assert_eq!(fs.read(&stage).unwrap(), b"unowned");
+    });
+
+    for (tag, with_map) in [
+        ("managed-csv-stage-only", false),
+        ("managed-csv-and-stage", true),
+    ] {
+        super::on_every_contract(tag, &|factory, backend| {
+            let fs = backend.process();
+            let root = backend.root();
+            let participant = factory.open(fs.clone(), &root).unwrap();
+            assert_eq!(
+                participant.reserve(INPUTS, nonce(8)).unwrap(),
+                Created::Created
+            );
+            if with_map {
+                fs.write(
+                    &root.join(".names.csv"),
+                    b"acadia_names_v1,logical_utf8_hex\n",
+                )
+                .unwrap();
+            }
+            let stage = root.join(format!(".names.csv{}interrupted", crate::PUBLISHING_INFIX));
+            fs.write(&stage, b"complete or partial publication bytes")
+                .unwrap();
+            let plan = CreationPlan {
+                inputs: INPUTS,
+                nonce: nonce(9),
+                artifacts: &["data", "marker"],
+            };
+            let mut maker = FileMaker::new(fs.clone(), &root);
+            assert_eq!(
+                participant.create_managed(&plan, &mut maker).unwrap(),
+                Created::Resumed
+            );
+            participant.confirm_managed_created("marker").unwrap();
+        });
+    }
+}
+
+#[test]
+fn abandoning_managed_creation_releases_the_resolver_lock() {
+    struct Paused {
+        fs: Arc<dyn Vfs>,
+        entered: std::sync::mpsc::Sender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl crate::coord::ManagedArtifactMaker for Paused {
+        fn make(&mut self, _: &str, target: &Path, _: &[u8]) -> CoordResult<()> {
+            self.entered.send(()).unwrap();
+            self.resume.recv().unwrap();
+            self.fs.write(target, b"stale after abandonment")?;
+            self.fs.fsync(target)?;
+            Ok(())
+        }
+
+        fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+            Ok(inputs.to_vec())
+        }
+    }
+
+    super::on_every_contract("managed-abandon", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let mut maker = Paused {
+            fs: fs.clone(),
+            entered: entered_tx,
+            resume: resume_rx,
+        };
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(7),
+            artifacts: &["data", "marker"],
+        };
+        std::thread::scope(|scope| {
+            let creator = scope.spawn(|| participant.create_managed(&plan, &mut maker));
+            test_timers::mpsc::recv_timeout(&entered_rx, std::time::Duration::from_secs(5))
+                .unwrap();
+            participant.abandon();
+            let acquired = fs.try_lock(
+                &root.join(".names.lock"),
+                crate::LockMode::Exclusive,
+                crate::LockSpan::File,
+            );
+            assert!(acquired.is_ok(), "{acquired:?}");
+            drop(acquired.unwrap());
+            let replacement_fs = backend.process();
+            let replacement = factory.open(replacement_fs.clone(), &root).unwrap();
+            let mut fresh = FileMaker::new(replacement_fs.clone(), &root);
+            assert_eq!(
+                replacement.create_managed(&plan, &mut fresh).unwrap(),
+                Created::Resumed
+            );
+            replacement.confirm_managed_created("marker").unwrap();
+            resume_tx.send(()).unwrap();
+            assert!(matches!(
+                creator.join().unwrap(),
+                Err(CoordError::Abandoned)
+            ));
+            let directory =
+                crate::names::ComponentDirectory::open(&*replacement_fs, &root).unwrap();
+            assert_eq!(
+                replacement_fs
+                    .read(&directory.lookup("data").unwrap().unwrap())
+                    .unwrap(),
+                b"data"
+            );
+        });
+    });
+}
+
+#[test]
+fn rejected_managed_creation_does_not_poison_a_raw_reservation() {
+    super::on_every_contract("managed-raw-reservation", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        assert_eq!(
+            participant.reserve(INPUTS, nonce(1)).unwrap(),
+            Created::Created
+        );
+        let before = fs.read_dir(&root).unwrap();
+        let different = CreationPlan {
+            inputs: b"different inputs",
+            nonce: nonce(2),
+            artifacts: &["data", "marker"],
+        };
+        let mut managed = FileMaker::new(fs.clone(), &root);
+        assert!(matches!(
+            participant.create_managed(&different, &mut managed),
+            Err(CoordError::Reserved)
+        ));
+        assert_eq!(fs.read_dir(&root).unwrap(), before);
+        let mut raw = FileMaker::new(fs, &root);
+        assert_eq!(
+            create(&*participant, INPUTS, nonce(1), &mut raw).unwrap(),
+            Created::Resumed
+        );
+    });
+}
+
+#[test]
+fn nested_publication_staging_resumes_inside_a_claimed_attempt() {
+    struct Interrupt {
+        fs: Arc<dyn Vfs>,
+    }
+
+    impl crate::coord::ManagedArtifactMaker for Interrupt {
+        fn make(&mut self, _: &str, target: &Path, _: &[u8]) -> CoordResult<()> {
+            let leftover = target
+                .parent()
+                .unwrap()
+                .join(format!("artifact{}interrupted", crate::PUBLISHING_INFIX));
+            self.fs.write(&leftover, b"partial publication")?;
+            Err(VfsError::new(VfsErrorKind::Other, "make", "interrupted").into())
+        }
+
+        fn marker(&mut self, _: &str, _: &[u8]) -> CoordResult<Vec<u8>> {
+            unreachable!("the interrupted artifact precedes the marker")
+        }
+    }
+
+    struct Publisher {
+        fs: Arc<dyn Vfs>,
+    }
+
+    impl crate::coord::ManagedArtifactMaker for Publisher {
+        fn make(&mut self, logical: &str, target: &Path, _: &[u8]) -> CoordResult<()> {
+            self.fs.publish_new(target, logical.as_bytes())?;
+            self.fs.fsync(target.parent().unwrap())?;
+            Ok(())
+        }
+
+        fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+            Ok(inputs.to_vec())
+        }
+    }
+
+    super::on_every_contract("managed-nested-publish", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let logical = "x".repeat(212);
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(13),
+            artifacts: &[&logical, "marker"],
+        };
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        assert!(
+            participant
+                .create_managed(&plan, &mut Interrupt { fs: fs.clone() },)
+                .is_err()
+        );
+        drop(participant);
+
+        let participant = factory.open(backend.process(), &root).unwrap();
+        let mut publisher = Publisher { fs: fs.clone() };
+        assert_eq!(
+            participant.create_managed(&plan, &mut publisher).unwrap(),
+            Created::Resumed
+        );
+        participant.confirm_managed_created("marker").unwrap();
+        let directory = crate::names::ComponentDirectory::open(&*fs, &root).unwrap();
+        assert_eq!(
+            fs.read(&directory.lookup(&logical).unwrap().unwrap())
+                .unwrap(),
+            logical.as_bytes()
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_creation_refuses_a_symlink_staging_entry() {
+    struct SymlinkMaker;
+
+    impl crate::coord::ManagedArtifactMaker for SymlinkMaker {
+        fn make(&mut self, _: &str, target: &Path, _: &[u8]) -> CoordResult<()> {
+            let referent = target.parent().unwrap().join("referent");
+            std::fs::write(&referent, b"not the entry kind we claim").unwrap();
+            std::os::unix::fs::symlink(Path::new("referent"), target).unwrap();
+            Ok(())
+        }
+
+        fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+            Ok(inputs.to_vec())
+        }
+    }
+
+    let factories: Vec<Box<dyn CoordinationFactory>> = vec![
+        Box::new(FileFactory::new()),
+        Box::new(FileFactory::alternate()),
+        Box::new(crate::coord::shared::SharedFactory::new()),
+    ];
+    for factory in factories {
+        let temp = TempDir::new("managed-symlink-staging");
+        let fs: Arc<dyn Vfs> = Arc::new(crate::OsFs::new());
+        let participant = factory.open(fs.clone(), temp.path()).unwrap();
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(14),
+            artifacts: &["data", "marker"],
+        };
+        assert!(matches!(
+            participant.create_managed(&plan, &mut SymlinkMaker),
+            Err(CoordError::Malformed { .. })
+        ));
+        assert!(!temp.path().join("marker").exists());
+    }
+}
+
+#[test]
+fn invalid_raw_csv_does_not_poison_managed_probe_or_raw_resume() {
+    super::on_every_contract("managed-invalid-raw-csv", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        assert_eq!(
+            participant.reserve(INPUTS, nonce(10)).unwrap(),
+            Created::Created
+        );
+        let map = root.join(".names.csv");
+        fs.write(&map, b"ordinary raw artifact payload").unwrap();
+        let before = fs.read_dir(&root).unwrap();
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(11),
+            artifacts: &[".names.csv", "marker"],
+        };
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert!(participant.create_managed(&plan, &mut maker).is_err());
+        assert_eq!(fs.read_dir(&root).unwrap(), before);
+        assert_eq!(
+            participant.create(&plan, &mut maker).unwrap(),
+            Created::Resumed
+        );
+        participant.confirm_created("marker").unwrap();
+    });
+}
+
+#[test]
+fn valid_raw_header_does_not_let_a_managed_probe_claim_unregistered_children() {
+    super::on_every_contract("managed-valid-header-raw-root", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        assert_eq!(
+            participant.reserve(INPUTS, nonce(15)).unwrap(),
+            Created::Created
+        );
+        fs.write(
+            &root.join(".names.csv"),
+            b"acadia_names_v1,logical_utf8_hex\n",
+        )
+        .unwrap();
+        fs.write(&root.join("data"), b"raw payload").unwrap();
+        let before = fs.read_dir(&root).unwrap();
+        let managed = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(16),
+            artifacts: &["data", "marker"],
+        };
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert!(participant.create_managed(&managed, &mut maker).is_err());
+        assert_eq!(fs.read_dir(&root).unwrap(), before);
+
+        let raw = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(15),
+            artifacts: &[".names.csv", "data", "marker"],
+        };
+        assert_eq!(
+            participant.create(&raw, &mut maker).unwrap(),
+            Created::Resumed
+        );
+        participant.confirm_created("marker").unwrap();
+    });
+}
+
+#[test]
+fn managed_creation_never_adopts_an_unbound_raw_marker() {
+    super::on_every_contract("managed-no-adopt", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        create(&*participant, INPUTS, nonce(1), &mut maker).unwrap();
+        let before = store_names(&*fs, &root);
+        assert!(participant.confirm_managed_created(MARKER).is_err());
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(2),
+            artifacts: &ARTIFACTS,
+        };
+        assert!(participant.create_managed(&plan, &mut maker).is_err());
+        assert_eq!(store_names(&*fs, &root), before);
+        participant.confirm_created(MARKER).unwrap();
+    });
+}
+
 fn create(
     participant: &dyn Coordination,
     inputs: &[u8],
@@ -392,12 +896,80 @@ fn an_open_of_a_root_never_created_or_never_finished_is_refused() {
 }
 
 #[test]
+fn creation_checks_the_marker_staging_budget_before_reservation() {
+    super::on_every_contract("coord-marker-budget", &|factory, backend| {
+        let vfs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(Arc::clone(&vfs), &root).unwrap();
+        let mut maker = FileMaker::new(Arc::clone(&vfs), &root);
+        let budget = CreationPlan::MAX_MARKER_BYTES;
+        for marker in [
+            "x".repeat(budget + 1),
+            "x".repeat(255),
+            "\u{e9}".repeat(budget / 2 + 1),
+        ] {
+            let plan = CreationPlan {
+                inputs: INPUTS,
+                nonce: nonce(1),
+                artifacts: &[&marker],
+            };
+            assert!(matches!(
+                participant.create(&plan, &mut maker),
+                Err(CoordError::InvalidPlan { .. })
+            ));
+            assert!(vfs.read_dir(&root).unwrap().is_empty());
+        }
+        let marker = "x".repeat(budget);
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(2),
+            artifacts: &[&marker],
+        };
+        participant.create(&plan, &mut maker).unwrap();
+        assert!(vfs.exists(&root.join(marker)).unwrap());
+    });
+}
+
+#[test]
+fn raw_non_marker_names_obey_the_component_byte_ceiling() {
+    on_every_implementation("coord-component-length", &|implementation, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = implementation.open(fs.clone(), &root).unwrap();
+        let oversized = "x".repeat(256);
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(12),
+            artifacts: &[&oversized, "marker"],
+        };
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert!(matches!(
+            participant.create(&plan, &mut maker),
+            Err(CoordError::InvalidPlan { .. })
+        ));
+        assert!(fs.read_dir(&root).unwrap().is_empty());
+
+        let maximum = "x".repeat(255);
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(13),
+            artifacts: &[&maximum, "marker"],
+        };
+        assert_eq!(
+            participant.create(&plan, &mut maker).unwrap(),
+            Created::Created
+        );
+        assert!(fs.exists(&root.join(maximum)).unwrap());
+    });
+}
+
+#[test]
 fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
     on_every_implementation("coord-plan", &|implementation, backend| {
         let vfs = backend.process();
         let root = backend.root();
         let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
-        let bad: [&[&str]; 18] = [
+        let bad: &[&[&str]] = &[
             &["\u{1f80}", "\u{1f88}"],
             &["\u{1fb3}x", "\u{1fbc}X", "marker"],
             &["\u{1f80}", "\u{1f88}.publishing.1-0"],
@@ -416,6 +988,32 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
             &["files", "FILES.publishing.x", "marker"],
             &["files.publishing.7", "files"],
             &["bad\0name", "marker"],
+            &["C:artifact", "marker"],
+            &["artifact", "z:marker"],
+            &["marker.", "marker"],
+            &["marker ", "marker"],
+            &["report:summary", "marker"],
+            &["CON", "marker"],
+            &["con.txt", "marker"],
+            &["COM0", "marker"],
+            &["LPT9.ext", "marker"],
+            &["COM\u{b9}", "marker"],
+            &["com\u{b2}.txt", "marker"],
+            &["COM\u{b3}", "marker"],
+            &["LPT\u{b9}", "marker"],
+            &["lpt\u{b2}.ext", "marker"],
+            &["LPT\u{b3}", "marker"],
+            &["NUL .txt", "marker"],
+            &["Con  .dat", "marker"],
+            &["COM\u{b9} .txt", "marker"],
+            &["lpt\u{b2} .log", "marker"],
+            &["bad?name", "marker"],
+            &["bad*name", "marker"],
+            &["bad|name", "marker"],
+            &["bad<name", "marker"],
+            &["bad>name", "marker"],
+            &["bad\"name", "marker"],
+            &["bad\u{1f}name", "marker"],
         ];
         for artifacts in bad {
             let plan = CreationPlan {
@@ -432,10 +1030,22 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
                 "{artifacts:?}"
             );
         }
-        assert!(matches!(
-            participant.confirm_created("a/b"),
-            Err(CoordError::InvalidPlan { .. })
-        ));
+        for invalid in [
+            "a/b",
+            "marker.",
+            "marker ",
+            "report:summary",
+            "CON",
+            "NUL .txt",
+            "Con  .dat",
+            "COM\u{b9} .txt",
+            "lpt\u{b2} .log",
+        ] {
+            assert!(matches!(
+                participant.confirm_created(invalid),
+                Err(CoordError::InvalidPlan { .. })
+            ));
+        }
         assert!(vfs.read_dir(&root).expect("list").is_empty());
     });
 }

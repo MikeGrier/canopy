@@ -159,7 +159,8 @@ use canopy::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vfs: Arc<dyn Vfs> = Arc::new(OsFs::new());
-    let root = std::path::PathBuf::from("/var/lib/my-store"); // an existing, empty directory
+    // Supply an absolute path to an existing, empty directory.
+    let root = std::path::PathBuf::from(if cfg!(windows) { "C:/stores/my-store" } else { "/var/lib/my-store" });
 
     // Every write draws a nonce from the source the store is opened with. The
     // `random-nonce` feature provides `canopy::random_nonce_source()`; any source whose

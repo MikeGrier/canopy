@@ -58,6 +58,33 @@ fn list(participant: &FileCoordination) -> Listing {
 }
 
 #[test]
+fn concurrent_abandon_waits_for_file_guard_release() {
+    for ordinary_release in [false, true] {
+        let mem = Backend::mem();
+        let participant = participant_on(
+            &crate::coord::file::FileFactory::new(),
+            Arc::new(mem),
+            &PathBuf::from(Backend::MEM_ROOT),
+        );
+        crate::tests::assert_abandon_waits_for_release(
+            |lock, waiting| {
+                participant.observe_release_wait(waiting);
+                let id = participant.insert_test_lock(lock);
+                let participant = &participant;
+                move || {
+                    if ordinary_release {
+                        participant.release_lock_safely(id)
+                    } else {
+                        participant.abandon()
+                    }
+                }
+            },
+            || participant.abandon(),
+        );
+    }
+}
+
+#[test]
 fn a_failed_first_registration_marks_missing_membership_without_releasing_attachment() {
     for implementation in super::implementations() {
         for access in [Access::Read, Access::Write] {
@@ -786,6 +813,8 @@ fn a_host_restart_discards_the_overflow_record() {
         let root = PathBuf::from(Backend::MEM_ROOT);
         let make = || participant_on(&implementation, Arc::new(mem.another_process()), &root);
         let observer = make();
+        let occupied = observer.layout().registry_overflow_staging("pending");
+        mem.write(&occupied, b"other publisher").expect("stage");
         let attachments: Vec<_> = (0..=REGISTRY_ENTRIES)
             .map(|_| {
                 let mut attachment = attach(&make(), Access::Read);
@@ -794,6 +823,10 @@ fn a_host_restart_discards_the_overflow_record() {
             })
             .collect();
         drop(attachments);
+        assert_eq!(
+            mem.read(&occupied).expect("preserved stage"),
+            b"other publisher"
+        );
         let layout = observer.layout();
         for path in [layout.registry_overflow(), layout.state_dir(), root.clone()] {
             mem.fsync(&path).expect("sync");

@@ -62,6 +62,17 @@ impl Coordination for Participant {
     }
 }
 impl Creation for Participant {
+    fn create_managed(
+        &self,
+        plan: &CreationPlan<'_>,
+        maker: &mut dyn ManagedArtifactMaker,
+    ) -> CoordResult<Created> {
+        self.inner.create_managed(plan, maker)
+    }
+    fn confirm_managed_created(&self, marker: &str) -> CoordResult<()> {
+        self.inner.confirm_managed_created(marker)
+    }
+
     fn create(
         &self,
         plan: &CreationPlan<'_>,

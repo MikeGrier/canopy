@@ -11,7 +11,7 @@ fn fixture() -> (Arc<dyn Vfs>, Store) {
 
 fn fixture_with(policy: FaultPolicy) -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("drain-store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("drain-store");
     vfs.create_dir_all(&root).unwrap();
     let config = GenesisConfig::new(StoreId::new("drain-store").unwrap(), 0);
     let mut next = 0;

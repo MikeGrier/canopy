@@ -18,7 +18,7 @@ fn fixture(schema: u32) -> (Arc<dyn Vfs>, Store) {
 
 fn fixture_with(schema: u32, policy: FaultPolicy) -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(MemFs::new(), policy));
-    let root = PathBuf::from("schema-store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("schema-store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         Arc::clone(&vfs),
@@ -45,7 +45,7 @@ fn conversion(store: &Store, source: u32, target: u32, floor: u32) -> SchemaUpgr
 #[test]
 fn a_schema_only_conversion_preserves_the_reader_floor_and_requires_reattachment() {
     let vfs: Arc<dyn Vfs> = Arc::new(acadia::MemFs::new());
-    let root = PathBuf::from("schema-upgrade");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("schema-upgrade");
     vfs.create_dir_all(&root).unwrap();
     let options =
         || StoreOptions::without_nonce_source(Agent::new("schema-tests", "v1", "schema test", 1));

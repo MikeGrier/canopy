@@ -41,7 +41,7 @@ fn options() -> StoreOptions {
 /// A fresh store, plus the backend for inspecting what landed.
 fn fresh() -> (Arc<dyn Vfs>, Store) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemFs::new());
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init(
         vfs.clone(),
@@ -179,7 +179,7 @@ fn the_pointer_never_names_a_blob_that_is_not_there() {
                 gate.clone(),
             ),
         ));
-        let root = PathBuf::from("store");
+        let root = PathBuf::from(if cfg!(windows) { "C:/" } else { "/" }).join("store");
         vfs.create_dir_all(&root).unwrap();
         let store = Store::init(
             vfs.clone(),

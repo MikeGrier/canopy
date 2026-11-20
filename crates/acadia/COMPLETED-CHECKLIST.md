@@ -753,3 +753,136 @@ full-review follow-up, 2026-11-19".
 ### <a id="m57-11"></a>M57-11 -- Unix lock docs state the inherited-descriptor fork boundary. *(completed 2026-11-19 09:08:23 -05:00)*
 
 ### <a id="m57-12"></a>M57-12 -- Signal::lower's public ordering contract matches Windows ResetEvent semantics. *(completed 2026-11-19 09:08:23 -05:00)*
+
+## Moved 2026-11-19 -- M58: Coordination and VFS review
+
+- [x] <a id="ar-1"></a>**AR-1** -- Concurrent abandonment waits for guard destruction on both coordination backends.
+- [x] <a id="ar-2"></a>**AR-2** -- Dead file participants reject attach and acquire without reading the reservation.
+- [x] <a id="ar-3"></a>**AR-3** -- Memory process commits reject invalid paths before invoking the callback.
+- [x] <a id="ar-4"></a>**AR-4** -- An exact fault matcher requires both paths to normalize successfully.
+- [x] <a id="ar-5"></a>**AR-5** -- The first-use abandonment test observes the setup lock attempt while another process holds the lock.
+
+## Moved 2026-11-19 -- M59: Coordination, publication and durability review
+
+- [x] <a id="mr-1"></a>**MR-1** -- Native notice withdrawal detaches resources without waiting for a running deadline callback.
+- [x] <a id="mr-2"></a>**MR-2** -- Abandonment waits for ordinary guard retirement through destruction on both coordination backends.
+- [x] <a id="mr-3"></a>**MR-3** -- Creation checks the portable marker staging budget before reserving the root.
+- [x] <a id="mr-4"></a>**MR-4** -- The rename model and MemFs bridge check source inode survival after replacing a durable file, syncing both parents and crashing.
+
+## Moved 2026-11-20 -- Extended component storage
+
+### <a id="name-1"></a>NAME-1 -- Specify exact logical identity and the v1 component storage format. *(completed 2026-11-20 00:09:28 UTC-05:00)*
+
+The [storage format](DESIGN-NOTES.md#extended-component-storage-format-v1) defines direct and
+hashed spellings, per-parent ownership records and the ordering between a binding and its child.
+
+### <a id="name-2"></a>NAME-2 -- Implement durable, per-parent component name resolution above the VFS. *(completed 2026-11-20 00:19:51 UTC-05:00)*
+
+[ComponentDirectory](src/names.rs) holds the parent's lock through resolution and child access.
+It records exact UTF-8 bytes before child publication, rejects unowned paths and inconsistent
+bindings, and flushes child removal before forgetting its owner. [Resolver tests](src/names/tests.rs)
+exercise a second native process, interrupted sidecar publication and restart on either side
+of durable child removal.
+
+### <a id="name-3"></a>NAME-3 -- Use exact logical names for managed creation, resumption and confirmation. *(completed 2026-11-20 01:08:18 UTC-05:00)*
+
+Both coordinators select the [managed protocol](src/coord/creation/managed.rs) explicitly.
+The [contract tests](src/tests/coord/creation.rs) interrupt publication before a long Unicode
+marker, resume through a new participant, and list and read distinct case and normalization
+variants by their original names. Competing creators find one published layout; a managed
+probe of a raw store refuses without adding resolver metadata.
+
+### <a id="name-r1"></a>NAME-R1 -- Claim CSV ownership before replacing any stage. *(completed 2026-11-20 01:25:20 UTC-05:00)*
+
+[ComponentDirectory](src/names.rs) publishes and flushes a header-only CSV before it may
+write or replace `.names.stage`. An existing stage in an unowned directory is refused
+unchanged.
+
+### <a id="name-r2"></a>NAME-R2 -- Release managed resolver locks on abandonment. *(completed 2026-11-20 01:35:33 UTC-05:00)*
+
+Both coordinators own the resolver lock through their participant hold table and run metadata
+operations through the same abandonment fence. The creator guard is released while a paused
+maker is still on the stack, and subsequent resolver work refuses the abandoned participant.
+
+### <a id="name-r3"></a>NAME-R3 -- Refuse mismatched managed reservations before resolver admission. *(completed 2026-11-20 01:38:39 UTC-05:00)*
+
+Managed preflight compares reservation identity and input bytes before acquiring the resolver
+lock. A rejected managed attempt leaves a reservation-only raw directory byte-for-byte as it
+was, so the original raw creator can resume.
+
+### <a id="name-r4"></a>NAME-R4 -- Flush repeated removal before reporting absence. *(completed 2026-11-20 01:43:08 UTC-05:00)*
+
+An unbound retry flushes its parent before returning `false`. The fault test fails the CSV's
+final parent sync, fails the retry flush in a second process view, then proves the deletion and
+empty binding table survive a crash only after a durable acknowledgment.
+
+### <a id="name-r5"></a>NAME-R5 -- Require raw artifact names to round-trip on Win32. *(completed 2026-11-20 01:46:50 UTC-05:00)*
+
+Raw creation and confirmation reject Win32-normalized endings, DOS device basenames, stream
+syntax, control bytes and reserved punctuation before a reservation is persisted. Managed
+logical names accept the same text and round-trip through their resolved physical spelling.
+
+### <a id="name-r6"></a>NAME-R6 -- Recover CSV publication staging siblings. *(completed 2026-11-20 10:16:33 UTC-05:00)*
+
+A compatible reservation permits only regular files that exactly match the CSV target's
+publication-staging grammar. Recovery succeeds whether the CSV is absent or present; the
+same sibling remains occupied without a compatible reservation.
+
+### <a id="name-r7"></a>NAME-R7 -- Fence abandoned makers off final artifact paths. *(completed 2026-11-20 10:22:38 UTC-05:00)*
+
+Managed makers receive unique attempt-private siblings. The participant renames a completed
+artifact into its binding only while live, and existing published children are reused on
+resumption. A stale callback may finish its private sibling but cannot overwrite its replacement.
+
+### <a id="name-r8"></a>NAME-R8 -- Prevalidate managed control entries without writes. *(completed 2026-11-20 10:25:56 UTC-05:00)*
+
+Managed creation validates the existing CSV, fixed stage and lock entry before acquiring a
+resolver lock. A same-input raw layout with ordinary CSV payload is rejected without adding
+metadata, and the raw creator resumes.
+
+### <a id="name-r9"></a>NAME-R9 -- Acquire resolver locks without following links. *(completed 2026-11-20 10:32:25 UTC-05:00)*
+
+Native lock opens use no-follow semantics for their final component and verify the acquired
+handle is a regular file. Unix does not follow symlinks; Windows opens reparse points as the
+entry itself and refuses non-files without touching their targets.
+
+### <a id="name-r10"></a>NAME-R10 -- Flush visible CSV ownership before fixed-stage reuse. *(completed 2026-11-20 10:36:00 UTC-05:00)*
+
+An existing CSV entry is parent-fsynced before any fixed-stage removal or write. A retry fault
+therefore leaves only the header visible, and a crash still cannot preserve unowned stage data.
+
+### <a id="name-r11"></a>NAME-R11 -- Complete raw Win32 device and length validation. *(completed 2026-11-20 10:39:26 UTC-05:00)*
+
+Raw components reject the six superscript Win32 device basenames and exceed no more than 255
+UTF-8 bytes; markers retain their tighter publication-staging budget. Managed logical names
+remain unrestricted and round-trip those spellings.
+
+### <a id="name-r12"></a>NAME-R12 -- Atomically claim private managed-attempt directories. *(completed 2026-11-20 11:23:31 UTC-05:00)*
+
+Managed artifacts are made in a short directory atomically created by the claimant. Equal
+sequence values across PID namespaces compete on directory creation, so one claimant receives
+a private `artifact` leaf and the other advances without observing a shared writable path.
+
+### <a id="name-r13"></a>NAME-R13 -- Contain maker publication staging in the attempt directory. *(completed 2026-11-20 11:25:12 UTC-05:00)*
+
+A maker receives the short `artifact` leaf inside its claim. Nested `publish_new` staging stays
+inside that directory, abandoned attempts do not occupy the root, and direct 212-byte logical
+names resume successfully without exceeding the native component limit.
+
+### <a id="name-r14"></a>NAME-R14 -- Refuse non-file/non-directory staged entries. *(completed 2026-11-20 11:29:59 UTC-05:00)*
+
+Managed placement reads the exact attempt-directory entry without following it. Only a regular
+file or directory can be renamed to the final binding; a symlink or other entry fails before the
+marker is published.
+
+### <a id="name-r15"></a>NAME-R15 -- Validate all visible root entries before creating the resolver lock. *(completed 2026-11-20 11:34:28 UTC-05:00)*
+
+Managed preflight decodes the CSV and validates every root entry against registered physical
+names, owned attempt directories and permitted control publications. Unregistered raw children
+are refused before `.names.lock` can be added, and validation repeats under the held lock.
+
+### <a id="name-r16"></a>NAME-R16 -- Reject space-padded raw DOS device stems. *(completed 2026-11-20 11:37:48 UTC-05:00)*
+
+Raw DOS device comparison trims trailing ASCII spaces only from the pre-extension stem. Mixed-
+case ASCII and superscript device names remain refused, while the original spelling is preserved
+for managed logical-name hashing and lookup.

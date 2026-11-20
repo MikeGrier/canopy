@@ -352,7 +352,7 @@ fn a_sequestered_copy_survives_a_crash() {
     // durable, or a crash loses evidence the repair reported as kept.
     let mem = Arc::new(acadia::MemFs::new());
     let vfs: Arc<dyn Vfs> = mem.clone();
-    let root = PathBuf::from("store");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("store");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(vfs.clone(), root.clone(), test_config()).expect("init");
     let name = ingest(&store, b"good bytes", "n1");
@@ -406,7 +406,7 @@ fn a_blob_repair_is_visible_to_the_modification_count_while_and_after_it_runs() 
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("repair-count");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("repair-count");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let _ = handle.set(store.clone());
@@ -454,7 +454,7 @@ fn a_failed_blob_repair_still_moves_the_count_and_leaves_it_settled() {
             gate.clone(),
         ),
     ));
-    let root = PathBuf::from("repair-fails");
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("repair-fails");
     vfs.create_dir_all(&root).unwrap();
     let store = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
     let name = ingest(&store, b"good bytes", "n1");

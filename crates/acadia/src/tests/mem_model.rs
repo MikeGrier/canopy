@@ -122,6 +122,40 @@ fn mem_model_double_name_after_a_one_parent_sync() {
 }
 
 #[test]
+fn mem_model_rename_over_file_keeps_source_inode_after_crash() {
+    let fs = MemFs::new();
+    let root = Path::new("/d");
+    let left = root.join("l");
+    let right = root.join("r");
+    let source = left.join("f");
+    let target = right.join("f");
+    fs.create_dir(root).unwrap();
+    fs.fsync(root).unwrap();
+    fs.create_dir(&left).unwrap();
+    fs.create_dir(&right).unwrap();
+    fs.fsync(root).unwrap();
+    fs.write(&source, b"A").unwrap();
+    fs.fsync(&source).unwrap();
+    fs.fsync(&left).unwrap();
+    fs.create_dir(&target).unwrap();
+    assert!(fs.rename(&source, &target).is_err());
+    fs.remove_dir(&target).unwrap();
+    fs.write(&target, b"B").unwrap();
+    fs.fsync(&target).unwrap();
+    fs.fsync(&right).unwrap();
+    let inode = fs.file_inodes(&source).unwrap();
+    assert_ne!(inode, fs.file_inodes(&target).unwrap());
+    fs.rename(&source, &target).unwrap();
+    fs.fsync(&right).unwrap();
+    fs.fsync(&left).unwrap();
+    let restarted = fs.simulate_restart();
+    assert!(!restarted.exists(&source).unwrap());
+    assert_eq!(restarted.file_inodes(&target).unwrap(), inode);
+    assert_eq!(restarted.read(&target).unwrap(), b"A");
+    restarted.audit_refs();
+}
+
+#[test]
 fn mem_model_carried_snapshots_and_unnamed_children() {
     replay(
         "durable file replaced by directory",

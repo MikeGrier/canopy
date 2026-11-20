@@ -67,6 +67,7 @@ use std::path::{Component, Path, PathBuf};
 pub mod coord;
 pub mod fault;
 pub mod mem;
+pub mod names;
 pub mod os;
 pub mod read_root;
 pub mod signal;
@@ -524,10 +525,10 @@ pub trait Vfs: Send + Sync {
     /// [`VfsErrorKind::NotADirectory`] if `path` is not a directory.
     fn read_dir(&self, path: &Path) -> VfsResult<Vec<DirEntry>>;
 
-    /// Returns the [`Metadata`] for what `path` names, following symbolic links as every path
-    /// operation does, so a link to a directory describes the directory. [`read_dir`](Vfs::read_dir)
-    /// differs because a listing names entries without resolving them, and reports a link as
-    /// [`FileType::Other`].
+    /// Returns the [`Metadata`] of the referent of `path`, following a final symbolic link.
+    /// [`read_dir`](Vfs::read_dir) reports a link entry itself as [`FileType::Other`]. On Unix,
+    /// [`rename`](Vfs::rename) moves or replaces the final entry, and [`remove_file`](Vfs::remove_file)
+    /// unlinks it; neither operation mutates the final link's referent.
     ///
     /// Fails with [`VfsErrorKind::NotFound`] if `path` names nothing, including a link that leads
     /// nowhere.
@@ -547,8 +548,9 @@ pub trait Vfs: Send + Sync {
         }
     }
 
-    /// Takes an exclusive lock named by `path`, creating the file if absent, and
-    /// returns the guard that holds it (`D116`).
+    /// Takes an exclusive lock named by `path`, creating the regular file if absent, and
+    /// returns the guard that holds it (`D116`). An existing final component must be a regular
+    /// file; [`OsFs`] does not follow a final symlink or reparse point while opening it.
     ///
     /// The contract is **exclusion among openers of this filesystem**, not "a
     /// kernel lock". Each backend honours it at its own scope: [`OsFs`] excludes
@@ -583,8 +585,9 @@ pub trait Vfs: Send + Sync {
         .with_path(path))
     }
 
-    /// Takes a lock of `mode` on the `span` of the file at `path`, creating the file if absent
-    /// and never truncating it, and returns the guard that holds it.
+    /// Takes a lock of `mode` on the `span` of the regular file at `path`, creating it if absent
+    /// and never truncating it, and returns the guard that holds it. [`OsFs`] does not follow a
+    /// final symlink or reparse point while opening the path.
     ///
     /// The call **never waits**: a span that overlaps one another holder has in a conflicting
     /// mode -- either of the two exclusive -- fails at once with [`VfsErrorKind::Locked`].
