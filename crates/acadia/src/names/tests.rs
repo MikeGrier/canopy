@@ -174,7 +174,7 @@ fn retry_commits_binding_after_stage_or_parent_failure() {
         assert_eq!(
             decode(&restarted.read(&parent.join(MAP)).unwrap())
                 .unwrap()
-                .get(&spelling("A"))
+                .get(spelling("A").as_str())
                 .unwrap(),
             "A"
         );

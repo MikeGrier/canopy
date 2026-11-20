@@ -73,44 +73,13 @@ impl<'a> ManagedPlan<'a> {
         if reservation == Some(false) {
             return Err(CoordError::Reserved);
         }
-        let (registered, owned) = crate::names::validate_control_entries(self.fs, &self.root)?;
-        if reservation == Some(true) && !owned {
-            return Err(CoordError::Occupied {
-                name: ".names.owner".to_owned(),
-            });
-        }
-        let entries = self.fs.read_dir(&self.root)?;
-        let has_map = crate::names::has_map(&entries);
-        if has_map && reservation != Some(true) {
-            return Err(CoordError::Occupied {
-                name: ".names.csv".to_owned(),
-            });
-        }
-        if let Some(stray) = entries.iter().find(|entry| {
-            let name = entry.file_name.as_str();
-            if name.starts_with(RESERVED_PREFIX)
-                || (crate::names::is_control(name) && entry.file_type == FileType::File)
-                || (registered.contains_key(name) && entry.file_type != FileType::Other)
-            {
-                return false;
-            }
-            if reservation == Some(true) && crate::names::is_map_publication_staging(entry) {
-                return false;
-            }
-            if reservation == Some(true)
-                && registered.keys().any(|physical| {
-                    crate::names::is_artifact_staging(entry, physical)
-                        || (crate::is_publication_staging_of(name, physical)
-                            && entry.file_type == FileType::File)
-                })
-            {
-                return false;
-            }
-            true
-        }) {
-            return Err(CoordError::Occupied {
-                name: stray.file_name.clone(),
-            });
+        if let Some(name) = ComponentDirectory::preflight_managed(
+            self.fs,
+            &self.root,
+            reservation == Some(true),
+            |name| name.starts_with(RESERVED_PREFIX),
+        )? {
+            return Err(CoordError::Occupied { name });
         }
         Ok(())
     }
@@ -142,32 +111,12 @@ impl<'a> ManagedPlan<'a> {
         if reservation == Some(false) {
             return Err(CoordError::Reserved);
         }
-        let registered = fence.fenced(|| dir.registered())?;
-        for logical in registered.values() {
-            if reservation.is_none() || !self.names.contains(logical.as_str()) {
-                return Err(CoordError::Occupied {
-                    name: logical.clone(),
-                });
-            }
-            fence.fenced(|| dir.lookup(logical))?;
-        }
-        for entry in fence.fenced(|| fs.read_dir(root))? {
-            let name = &entry.file_name;
-            if name.starts_with(RESERVED_PREFIX)
-                || registered.contains_key(name)
-                || (reservation == Some(true) && crate::names::is_map_publication_staging(&entry))
-                || (crate::names::is_control(name) && entry.file_type == FileType::File)
-                || registered.keys().any(|target| {
-                    crate::names::is_artifact_staging(&entry, target)
-                        || (crate::is_publication_staging_of(name, target)
-                            && entry.file_type == FileType::File)
-                })
-            {
-                continue;
-            }
-            return Err(CoordError::Occupied {
-                name: entry.file_name,
-            });
+        if let Some(name) = fence.fenced(|| {
+            dir.validate_managed_plan(&self.names, reservation == Some(true), |name| {
+                name.starts_with(RESERVED_PREFIX)
+            })
+        })? {
+            return Err(CoordError::Occupied { name });
         }
         if reservation.is_none() {
             fence.fenced(|| dir.claim_ownership())?;
@@ -177,8 +126,7 @@ impl<'a> ManagedPlan<'a> {
             fence.alive()?;
             let target = fence.fenced(|| dir.reserve(logical))?;
             if fence.fenced(|| dir.lookup(logical))?.is_none() {
-                let attempt =
-                    fence.fenced(|| crate::names::claim_artifact_attempt(fs, root, &target))?;
+                let attempt = fence.fenced(|| dir.claim_artifact_attempt(logical))?;
                 fence.alive()?;
                 if let Err(error) = maker.make(logical, &attempt.artifact, self.inputs) {
                     discard_attempt(fs, root, &attempt)?;

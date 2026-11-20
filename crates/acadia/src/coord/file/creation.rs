@@ -278,8 +278,7 @@ impl Creation for FileCoordination {
         self.read_reservation()?.ok_or(CoordError::NotCreated)?;
         let root =
             crate::names::ComponentDirectory::stable_parent(self.vfs(), self.layout().root())?;
-        let (_, owned) = crate::names::validate_control_entries(self.vfs(), &root)?;
-        if !owned || !crate::names::has_map(&self.vfs().read_dir(&root)?) {
+        if !crate::names::ComponentDirectory::managed_layout_present(self.vfs(), &root)? {
             return Err(CoordError::NotCreated);
         }
         let _resolver = self.keep_existing(&crate::names::lock_path(&root), LockMode::Shared)?;

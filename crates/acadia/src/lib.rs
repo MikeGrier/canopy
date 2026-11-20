@@ -67,7 +67,7 @@ use std::path::{Component, Path, PathBuf};
 pub mod coord;
 pub mod fault;
 pub mod mem;
-pub mod names;
+mod names;
 pub mod os;
 pub mod read_root;
 pub mod signal;

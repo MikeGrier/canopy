@@ -911,3 +911,33 @@ Later logical children therefore do not invalidate an identical creation retry.
 
 Once a maker returns an error, its claimed attempt directory is removed and the parent synced.
 Crash-left attempts are not reclaimed while a writer may still be alive.
+
+## Moved 2026-11-20 -- Extended name mapping boundary
+
+### <a id="name-b1"></a>NAME-B1 -- Introduce an opaque physical component type and a versioned mapping codec. *(completed 2026-11-20 14:45:42 UTC-05:00)*
+
+The selected durable owner metadata chooses one internal mapping trait implementation. Physical
+spellings travel as an opaque type, and existing v1 owner, CSV and digest bytes remain unchanged.
+
+### <a id="name-b2"></a>NAME-B2 -- Extract CSV persistence and control-file handling into a name-map store. *(completed 2026-11-20 14:45:42 UTC-05:00)*
+
+The component directory owns one internal store for ownership publication, CSV load, encode,
+stage, rename and durability. Coordination receives no raw physical-to-logical map.
+
+### <a id="name-b3"></a>NAME-B3 -- Move managed-plan classification and attempt naming behind the component directory. *(completed 2026-11-20 14:45:42 UTC-05:00)*
+
+Managed preflight, plan validation, root confirmation, staging classification and artifact-attempt
+claiming are semantic directory operations. Creation orchestration uses logical names and carries no
+physical registry.
+
+### <a id="name-b4"></a>NAME-B4 -- Keep mapped-name resolution crate-private. *(completed 2026-11-20 14:45:42 UTC-05:00)*
+
+The names module, component directory, physical-name type, codec and map store are unavailable to
+external callers. Public `Creation` documentation exposes logical planning and ownership semantics,
+not resolver access or physical control names.
+
+### <a id="name-b5"></a>NAME-B5 -- Record the versioned mapping boundary and store separation. *(completed 2026-11-20 14:45:42 UTC-05:00)*
+
+The canonical design records the internal resolver boundary and supersedes the earlier public
+component-directory direction; the rationale records why physical spelling and storage protocol
+must remain version-selected implementation details.

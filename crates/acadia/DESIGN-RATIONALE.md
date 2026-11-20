@@ -725,3 +725,19 @@ allowed to release their locks before an arbitrary callback returns. Attempt-pri
 are the only isolation boundary that lets a live replacement finish without trusting stale
 code to stop writing. Publication siblings and uncertain CSV entry durability are recovered
 by explicit grammar and ordering, never by treating presence as ownership.
+
+## Mapped name resolution is internal to Acadia
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Mapped name resolution is
+internal to Acadia". Exposing `ComponentDirectory` would let callers bind to the current
+physical spelling, durable CSV shape or control-entry grammar even when they use only logical
+names. That would turn a versioned storage implementation into a public protocol outside the
+owner record that selects it. Keeping the resolver crate-private leaves `Creation`'s logical
+inputs and marker semantics stable while allowing future codecs and stores to change together.
+
+The maker's attempt-private `artifact` path is an opaque I/O target, not a resolved final name
+and not a mapping capability. Its short, controlled lifetime is sufficient for artifact
+publication; the final physical path remains inside coordination. Preflight and recovery still
+need to recognize resolver control and staging entries, but those questions are answered inside
+the component directory so creation orchestration depends on semantics rather than physical-name
+classification.

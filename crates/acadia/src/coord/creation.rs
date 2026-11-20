@@ -258,9 +258,8 @@ pub trait ArtifactMaker {
 pub trait Creation {
     /// Creates or resumes a resolver-managed layout. Artifact names are arbitrary UTF-8
     /// data, compared exactly, not raw paths. The final logical component is the marker.
-    /// Select this API consistently for the root; it does not adopt raw artifacts. Use
-    /// [`ComponentDirectory::lookup`](crate::names::ComponentDirectory::lookup) and
-    /// [`ComponentDirectory::list`](crate::names::ComponentDirectory::list) for its children.
+    /// Select this API consistently for the root; it does not adopt raw artifacts. Physical
+    /// resolution and access to managed children remain owned by the crate.
     fn create_managed(
         &self,
         plan: &CreationPlan<'_>,

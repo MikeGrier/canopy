@@ -5,7 +5,7 @@ use crate::{
     DirEntry, FileType, LockMode, LockSpan, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult,
 };
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,16 +20,77 @@ const OWNER_BYTES: &[u8] = b"acadia_names_owner_v1\n";
 const ARTIFACT_ATTEMPT_PREFIX: &str = ".names-attempt-";
 const ARTIFACT_LEAF: &str = "artifact";
 const HEADER: &str = "acadia_names_v1,logical_utf8_hex\n";
-pub(crate) type Bindings = BTreeMap<String, String>;
+type Bindings = BTreeMap<PhysicalName, String>;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct PhysicalName(String);
+
+impl PhysicalName {
+    fn from_validated(spelling: String) -> Self {
+        Self(spelling)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for PhysicalName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+trait ComponentNameMapping: Send + Sync {
+    fn physical(&self, logical: &str) -> PhysicalName;
+    fn owner_bytes(&self) -> &'static [u8];
+    fn map_header(&self) -> &'static str;
+}
+
+struct MappingV1;
+
+impl ComponentNameMapping for MappingV1 {
+    fn physical(&self, logical: &str) -> PhysicalName {
+        let device = matches!(logical, "con" | "prn" | "aux" | "nul")
+            || matches!(
+                logical.as_bytes(),
+                [b'c', b'o', b'm', b'0'..=b'9'] | [b'l', b'p', b't', b'0'..=b'9']
+            );
+        if logical == ".store"
+            || (!device
+                && (1..=DIRECT_LIMIT).contains(&logical.len())
+                && logical.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'-' | b'_')
+                }))
+        {
+            return PhysicalName::from_validated(logical.to_owned());
+        }
+        let mut physical = DIGEST_PREFIX.to_owned();
+        append_hex(&mut physical, &Sha256::digest(logical.as_bytes()));
+        PhysicalName::from_validated(physical)
+    }
+
+    fn owner_bytes(&self) -> &'static [u8] {
+        OWNER_BYTES
+    }
+
+    fn map_header(&self) -> &'static str {
+        HEADER
+    }
+}
+
+static MAPPING_V1: MappingV1 = MappingV1;
 
 fn invalid(message: &'static str) -> VfsError {
     VfsError::new(VfsErrorKind::InvalidInput, "component_names", message)
 }
 
-fn decode(bytes: &[u8]) -> VfsResult<Bindings> {
+fn decode_mapping(mapping: &dyn ComponentNameMapping, bytes: &[u8]) -> VfsResult<Bindings> {
     let rows = std::str::from_utf8(bytes)
         .ok()
-        .and_then(|text| text.strip_prefix(HEADER))
+        .and_then(|text| text.strip_prefix(mapping.map_header()))
         .ok_or_else(|| invalid("invalid name map header or encoding"))?;
     let mut bindings = Bindings::new();
     for record in rows.split_inclusive('\n') {
@@ -49,22 +110,28 @@ fn decode(bytes: &[u8]) -> VfsResult<Bindings> {
             .map(|pos| u8::from_str_radix(&hex[pos..pos + 2], 16).expect("validated hexadecimal"))
             .collect();
         let logical = String::from_utf8(bytes).map_err(|_| invalid("invalid logical UTF-8"))?;
-        if spelling(&logical) != physical
+        let expected = mapping.physical(&logical);
+        if expected.as_str() != physical
             || bindings
                 .last_key_value()
-                .is_some_and(|(last, _)| last.as_str() >= physical)
+                .is_some_and(|(last, _)| last >= &expected)
         {
             return Err(invalid("mismatched, duplicate or unsorted physical name"));
         }
-        bindings.insert(physical.to_owned(), logical);
+        bindings.insert(expected, logical);
     }
     Ok(bindings)
 }
 
-fn encode(bindings: &Bindings) -> String {
-    let mut csv = String::from(HEADER);
+#[cfg(test)]
+fn decode(bytes: &[u8]) -> VfsResult<Bindings> {
+    decode_mapping(&MAPPING_V1, bytes)
+}
+
+fn encode_mapping(mapping: &dyn ComponentNameMapping, bindings: &Bindings) -> String {
+    let mut csv = String::from(mapping.map_header());
     for (physical, logical) in bindings {
-        csv.push_str(physical);
+        csv.push_str(physical.as_str());
         csv.push(',');
         append_hex(&mut csv, logical.as_bytes());
         csv.push('\n');
@@ -72,16 +139,112 @@ fn encode(bindings: &Bindings) -> String {
     csv
 }
 
-/// Exclusive access to the extended-name namespace of one existing parent directory.
-/// Keep the guard through operations on resolved paths. Do not lock the same parent
-/// recursively, or modify its namespace outside this protocol while it is managed.
-pub struct ComponentDirectory<'fs> {
-    fs: &'fs dyn Vfs,
-    parent: PathBuf,
+/// Exclusive access to the exact logical-name namespace of one existing parent directory.
+/// Keep the guard through operations on resolved paths. Returned paths stay inside the
+/// coordination layer and never become part of Acadia's public namespace contract.
+pub(crate) struct ComponentDirectory<'fs> {
+    store: NameMapStore<'fs>,
     _lock: Option<Box<dyn VfsLock>>,
 }
 
 type Entries = BTreeMap<String, Option<DirEntry>>;
+
+struct NameMapStore<'fs> {
+    fs: &'fs dyn Vfs,
+    parent: PathBuf,
+    mapping: &'static dyn ComponentNameMapping,
+}
+
+impl<'fs> NameMapStore<'fs> {
+    fn new(fs: &'fs dyn Vfs, parent: PathBuf, mapping: &'static dyn ComponentNameMapping) -> Self {
+        Self {
+            fs,
+            parent,
+            mapping,
+        }
+    }
+
+    fn physical(&self, logical: &str) -> PhysicalName {
+        self.mapping.physical(logical)
+    }
+
+    fn claim_ownership(&self) -> VfsResult<()> {
+        let entries = snapshot(self.fs, &self.parent)?;
+        match entry(self.fs, &self.parent, &entries, OWNER)? {
+            None => {
+                self.fs
+                    .publish_new(&self.parent.join(OWNER), self.mapping.owner_bytes())?;
+                self.fs.fsync(&self.parent)
+            }
+            Some(FileType::File)
+                if self.fs.read(&self.parent.join(OWNER))? == self.mapping.owner_bytes() =>
+            {
+                self.fs.fsync(&self.parent)
+            }
+            Some(_) => {
+                Err(invalid("invalid managed ownership record").with_path(self.parent.join(OWNER)))
+            }
+        }
+    }
+
+    fn load(&self, entries: &Entries) -> VfsResult<Bindings> {
+        let path = self.parent.join(MAP);
+        match entry(self.fs, &self.parent, entries, MAP)? {
+            None => Ok(Bindings::new()),
+            Some(FileType::File) => decode_mapping(self.mapping, &self.fs.read(&path)?)
+                .map_err(|error| error.with_path(path)),
+            Some(_) => Err(invalid("name map is not a regular file").with_path(path)),
+        }
+    }
+
+    fn save(&self, entries: &Entries, bindings: &Bindings) -> VfsResult<()> {
+        self.claim_ownership()?;
+        let map = self.parent.join(MAP);
+        let stage = self.parent.join(STAGE);
+        match entry(self.fs, &self.parent, entries, MAP)? {
+            None => {
+                if entry(self.fs, &self.parent, entries, STAGE)?.is_some() {
+                    return Err(invalid("unowned name map stage").with_path(stage));
+                }
+                self.fs
+                    .publish_new(&map, self.mapping.map_header().as_bytes())?;
+                self.fs.fsync(&self.parent)?;
+            }
+            Some(FileType::File) => {
+                self.fs.fsync(&self.parent)?;
+                match entry(self.fs, &self.parent, entries, STAGE)? {
+                    Some(FileType::File) => self.fs.remove_file(&stage)?,
+                    None => (),
+                    Some(_) => {
+                        return Err(invalid("invalid name map stage").with_path(stage));
+                    }
+                }
+            }
+            Some(_) => return Err(invalid("name map is not a regular file").with_path(map)),
+        }
+        self.fs
+            .write(&stage, encode_mapping(self.mapping, bindings).as_bytes())?;
+        self.fs.fsync(&stage)?;
+        self.fs.rename(&stage, &map)?;
+        self.fs.fsync(&self.parent)
+    }
+}
+
+struct RegisteredNames(Bindings);
+
+impl RegisteredNames {
+    fn contains_physical(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
+    fn physical_names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(PhysicalName::as_str)
+    }
+
+    fn logical_names(&self) -> impl Iterator<Item = &str> {
+        self.0.values().map(String::as_str)
+    }
+}
 
 fn snapshot(fs: &dyn Vfs, parent: &Path) -> VfsResult<Entries> {
     let mut entries = Entries::new();
@@ -138,8 +301,35 @@ impl<'fs> ComponentDirectory<'fs> {
         }
     }
 
+    pub(crate) fn preflight_managed(
+        fs: &dyn Vfs,
+        parent: &Path,
+        resume: bool,
+        is_reserved: impl Fn(&str) -> bool,
+    ) -> VfsResult<Option<String>> {
+        let (registered, owned) = validate_control_entries(fs, parent)?;
+        if resume && !owned {
+            return Ok(Some(OWNER.to_owned()));
+        }
+        let has_map = fs
+            .read_dir(parent)?
+            .iter()
+            .any(|entry| entry.file_name == MAP);
+        if has_map && !resume {
+            return Ok(Some(MAP.to_owned()));
+        }
+        occupied_managed_entry(fs, parent, &registered, resume, is_reserved)
+    }
+
+    pub(crate) fn managed_layout_present(fs: &dyn Vfs, parent: &Path) -> VfsResult<bool> {
+        let (_, owned) = validate_control_entries(fs, parent)?;
+        let entries = snapshot(fs, parent)?;
+        Ok(owned && snapshot_entry(parent, &entries, MAP)?.is_some())
+    }
+
     /// Locks the parent's permanent metadata lock and validates the authoritative CSV.
-    pub fn open(fs: &'fs dyn Vfs, parent: &Path) -> VfsResult<Self> {
+    #[allow(dead_code)]
+    pub(crate) fn open(fs: &'fs dyn Vfs, parent: &Path) -> VfsResult<Self> {
         Self::open_with_lock(fs, parent, true)
     }
 
@@ -163,130 +353,114 @@ impl<'fs> ComponentDirectory<'fs> {
         } else {
             None
         };
-        let directory = Self {
-            fs,
-            parent: parent.to_owned(),
-            _lock: lock,
-        };
         validate_control_entries(fs, &parent)?;
         let entries = snapshot(fs, &parent)?;
+        let (mapping, _) = select_mapping(fs, &parent, &entries)?;
+        let directory = Self {
+            store: NameMapStore::new(fs, parent.clone(), mapping),
+            _lock: lock,
+        };
         if entry(fs, &parent, &entries, LOCK)? != Some(FileType::File) {
             return Err(invalid("resolver lock is not a regular file").with_path(lock_path));
         }
-        directory.bindings(&entries)?;
+        directory.store.load(&entries)?;
         Ok(directory)
     }
 
     pub(crate) fn claim_ownership(&self) -> VfsResult<()> {
-        let entries = snapshot(self.fs, &self.parent)?;
-        match entry(self.fs, &self.parent, &entries, OWNER)? {
-            None => {
-                self.fs.publish_new(&self.parent.join(OWNER), OWNER_BYTES)?;
-                self.fs.fsync(&self.parent)
-            }
-            Some(FileType::File) if self.fs.read(&self.parent.join(OWNER))? == OWNER_BYTES => {
-                self.fs.fsync(&self.parent)
-            }
-            Some(_) => {
-                Err(invalid("invalid managed ownership record").with_path(self.parent.join(OWNER)))
-            }
-        }
-    }
-
-    fn bindings(&self, entries: &Entries) -> VfsResult<Bindings> {
-        let path = self.parent.join(MAP);
-        match entry(self.fs, &self.parent, entries, MAP)? {
-            None => Ok(Bindings::new()),
-            Some(FileType::File) => {
-                decode(&self.fs.read(&path)?).map_err(|error| error.with_path(path))
-            }
-            Some(_) => Err(invalid("name map is not a regular file").with_path(path)),
-        }
-    }
-
-    fn save(&self, entries: &Entries, bindings: &Bindings) -> VfsResult<()> {
-        self.claim_ownership()?;
-        let map = self.parent.join(MAP);
-        let stage = self.parent.join(STAGE);
-        match entry(self.fs, &self.parent, entries, MAP)? {
-            None => {
-                if entry(self.fs, &self.parent, entries, STAGE)?.is_some() {
-                    return Err(invalid("unowned name map stage").with_path(stage));
-                }
-                self.fs.publish_new(&map, HEADER.as_bytes())?;
-                self.fs.fsync(&self.parent)?;
-            }
-            Some(FileType::File) => {
-                self.fs.fsync(&self.parent)?;
-                match entry(self.fs, &self.parent, entries, STAGE)? {
-                    Some(FileType::File) => self.fs.remove_file(&stage)?,
-                    None => (),
-                    Some(_) => {
-                        return Err(invalid("invalid name map stage").with_path(stage));
-                    }
-                }
-            }
-            Some(_) => return Err(invalid("name map is not a regular file").with_path(map)),
-        }
-        self.fs.write(&stage, encode(bindings).as_bytes())?;
-        self.fs.fsync(&stage)?;
-        self.fs.rename(&stage, &map)?;
-        self.fs.fsync(&self.parent)
+        self.store.claim_ownership()
     }
 
     fn child(
         &self,
         entries: &Entries,
         bindings: &Bindings,
-        physical: &str,
+        physical: &PhysicalName,
         logical: &str,
     ) -> VfsResult<Option<FileType>> {
         let owner = bindings.get(physical);
-        let kind = entry(self.fs, &self.parent, entries, physical)?;
+        let kind = entry(
+            self.store.fs,
+            &self.store.parent,
+            entries,
+            physical.as_str(),
+        )?;
         if owner.is_some_and(|name| name != logical)
             || (kind.is_some() && owner.is_none())
             || kind == Some(FileType::Other)
         {
             return Err(invalid("unowned, colliding or unsupported child")
-                .with_path(self.parent.join(physical)));
+                .with_path(self.store.parent.join(physical.as_str())));
         }
         Ok(kind)
     }
 
     /// Durably claims the spelling before returning the physical path for child publication.
     /// Repeating the operation resumes the same binding, even after an uncertain directory flush.
-    pub fn reserve(&mut self, logical: &str) -> VfsResult<PathBuf> {
-        let entries = snapshot(self.fs, &self.parent)?;
-        let mut bindings = self.bindings(&entries)?;
-        let physical = spelling(logical);
+    pub(crate) fn reserve(&mut self, logical: &str) -> VfsResult<PathBuf> {
+        let entries = snapshot(self.store.fs, &self.store.parent)?;
+        let mut bindings = self.store.load(&entries)?;
+        let physical = self.store.physical(logical);
         self.child(&entries, &bindings, &physical, logical)?;
         if bindings.contains_key(&physical) {
-            self.fs.fsync(&self.parent)?;
+            self.store.fs.fsync(&self.store.parent)?;
         } else {
             bindings.insert(physical.clone(), logical.to_owned());
-            self.save(&entries, &bindings)?;
+            self.store.save(&entries, &bindings)?;
         }
-        Ok(self.parent.join(physical))
+        Ok(self.store.parent.join(physical.as_str()))
     }
 
     /// Resolves an existing, owned child. An unpublished reservation is absent.
-    pub fn lookup(&self, logical: &str) -> VfsResult<Option<PathBuf>> {
-        let entries = snapshot(self.fs, &self.parent)?;
-        let bindings = self.bindings(&entries)?;
-        let physical = spelling(logical);
+    pub(crate) fn lookup(&self, logical: &str) -> VfsResult<Option<PathBuf>> {
+        let entries = snapshot(self.store.fs, &self.store.parent)?;
+        let bindings = self.store.load(&entries)?;
+        let physical = self.store.physical(logical);
         Ok(self
             .child(&entries, &bindings, &physical, logical)?
-            .map(|_| self.parent.join(physical)))
+            .map(|_| self.store.parent.join(physical.as_str())))
     }
 
-    pub(crate) fn registered(&self) -> VfsResult<BTreeMap<String, String>> {
-        self.bindings(&snapshot(self.fs, &self.parent)?)
+    fn registered(&self) -> VfsResult<RegisteredNames> {
+        let bindings = self
+            .store
+            .load(&snapshot(self.store.fs, &self.store.parent)?)?;
+        Ok(RegisteredNames(bindings))
+    }
+
+    pub(crate) fn validate_managed_plan(
+        &self,
+        planned: &BTreeSet<&str>,
+        resume: bool,
+        is_reserved: impl Fn(&str) -> bool,
+    ) -> VfsResult<Option<String>> {
+        let registered = self.registered()?;
+        for logical in registered.logical_names() {
+            if !resume || !planned.contains(logical) {
+                return Ok(Some(logical.to_owned()));
+            }
+            self.lookup(logical)?;
+        }
+        occupied_managed_entry(
+            self.store.fs,
+            &self.store.parent,
+            &registered,
+            resume,
+            is_reserved,
+        )
+    }
+
+    pub(crate) fn claim_artifact_attempt(&self, logical: &str) -> VfsResult<ArtifactAttempt> {
+        let physical = self.store.physical(logical);
+        let target = self.store.parent.join(physical.as_str());
+        claim_artifact_attempt(self.store.fs, &self.store.parent, &target)
     }
 
     /// Lists only published, owned children, using their original logical names.
-    pub fn list(&self) -> VfsResult<Vec<DirEntry>> {
-        let entries = snapshot(self.fs, &self.parent)?;
-        let bindings = self.bindings(&entries)?;
+    #[allow(dead_code)]
+    pub(crate) fn list(&self) -> VfsResult<Vec<DirEntry>> {
+        let entries = snapshot(self.store.fs, &self.store.parent)?;
+        let bindings = self.store.load(&entries)?;
         let mut visible = Vec::new();
         for (physical, logical) in &bindings {
             if let Some(file_type) = self.child(&entries, &bindings, physical, logical)? {
@@ -300,26 +474,31 @@ impl<'fs> ComponentDirectory<'fs> {
     }
 
     /// Removes a file, empty directory or unpublished reservation. Returns false if unbound.
-    pub fn remove(&mut self, logical: &str) -> VfsResult<bool> {
-        let entries = snapshot(self.fs, &self.parent)?;
-        let mut bindings = self.bindings(&entries)?;
-        let physical = spelling(logical);
+    #[allow(dead_code)]
+    pub(crate) fn remove(&mut self, logical: &str) -> VfsResult<bool> {
+        let entries = snapshot(self.store.fs, &self.store.parent)?;
+        let mut bindings = self.store.load(&entries)?;
+        let physical = self.store.physical(logical);
         let kind = self.child(&entries, &bindings, &physical, logical)?;
         if bindings.remove(&physical).is_none() {
-            self.fs.fsync(&self.parent)?;
+            self.store.fs.fsync(&self.store.parent)?;
             return Ok(false);
         }
-        let path = self.parent.join(physical);
+        let path = self.store.parent.join(physical.as_str());
         match kind {
-            Some(FileType::File) => self.fs.remove_file(&path)?,
-            Some(FileType::Dir) => self.fs.remove_dir(&path)?,
+            Some(FileType::File) => self.store.fs.remove_file(&path)?,
+            Some(FileType::Dir) => self.store.fs.remove_dir(&path)?,
             Some(FileType::Other) => return Err(invalid("unsupported child").with_path(path)),
             None => (),
         }
-        self.fs.fsync(&self.parent)?;
-        self.save(&entries, &bindings)?;
+        self.store.fs.fsync(&self.store.parent)?;
+        self.store.save(&entries, &bindings)?;
         Ok(true)
     }
+}
+#[cfg(test)]
+fn encode(bindings: &Bindings) -> String {
+    encode_mapping(&MAPPING_V1, bindings)
 }
 
 fn append_hex(output: &mut String, bytes: &[u8]) {
@@ -328,59 +507,39 @@ fn append_hex(output: &mut String, bytes: &[u8]) {
     }
 }
 
+#[cfg(test)]
 fn spelling(logical: &str) -> String {
-    let device = matches!(logical, "con" | "prn" | "aux" | "nul")
-        || matches!(
-            logical.as_bytes(),
-            [b'c', b'o', b'm', b'0'..=b'9'] | [b'l', b'p', b't', b'0'..=b'9']
-        );
-    if logical == ".store"
-        || (!device
-            && (1..=DIRECT_LIMIT).contains(&logical.len())
-            && logical.bytes().all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-            }))
-    {
-        return logical.to_owned();
-    }
-    let mut physical = DIGEST_PREFIX.to_owned();
-    append_hex(&mut physical, &Sha256::digest(logical.as_bytes()));
-    physical
+    MAPPING_V1.physical(logical).0
 }
 
-pub(crate) fn is_control(name: &str) -> bool {
+fn is_control(name: &str) -> bool {
     matches!(name, LOCK | MAP | STAGE | OWNER)
 }
 
-pub(crate) fn has_map(entries: &[DirEntry]) -> bool {
-    entries.iter().any(|entry| entry.file_name == MAP)
-}
-
-pub(crate) fn validate_control_entries(fs: &dyn Vfs, parent: &Path) -> VfsResult<(Bindings, bool)> {
-    let entries = snapshot(fs, parent)?;
-    let owned = match snapshot_entry(parent, &entries, OWNER)? {
-        None => false,
+fn select_mapping(
+    fs: &dyn Vfs,
+    parent: &Path,
+    entries: &Entries,
+) -> VfsResult<(&'static dyn ComponentNameMapping, bool)> {
+    match snapshot_entry(parent, entries, OWNER)? {
+        None => Ok((&MAPPING_V1, false)),
         Some(FileType::File) => {
             let path = parent.join(OWNER);
-            if fs.read(&path)? != OWNER_BYTES {
-                return Err(invalid("invalid name ownership record").with_path(path));
+            let owner = fs.read(&path)?;
+            if owner == MAPPING_V1.owner_bytes() {
+                Ok((&MAPPING_V1, true))
+            } else {
+                Err(invalid("unsupported name mapping owner").with_path(path))
             }
-            true
         }
-        Some(_) => {
-            return Err(invalid("name owner is not a regular file").with_path(parent.join(OWNER)));
-        }
-    };
-    let bindings = match snapshot_entry(parent, &entries, MAP)? {
-        None => Bindings::new(),
-        Some(FileType::File) => {
-            let path = parent.join(MAP);
-            decode(&fs.read(&path)?).map_err(|error| error.with_path(&path))?
-        }
-        Some(_) => {
-            return Err(invalid("name map is not a regular file").with_path(parent.join(MAP)));
-        }
-    };
+        Some(_) => Err(invalid("name owner is not a regular file").with_path(parent.join(OWNER))),
+    }
+}
+
+fn validate_control_entries(fs: &dyn Vfs, parent: &Path) -> VfsResult<(RegisteredNames, bool)> {
+    let entries = snapshot(fs, parent)?;
+    let (mapping, owned) = select_mapping(fs, parent, &entries)?;
+    let bindings = NameMapStore::new(fs, parent.to_owned(), mapping).load(&entries)?;
     if !owned
         && (entries
             .get(MAP)
@@ -389,10 +548,42 @@ pub(crate) fn validate_control_entries(fs: &dyn Vfs, parent: &Path) -> VfsResult
     {
         return Err(invalid("unowned name map or stage").with_path(parent.join(MAP)));
     }
-    Ok((bindings, owned))
+    Ok((RegisteredNames(bindings), owned))
 }
 
-pub(crate) fn is_map_publication_staging(entry: &DirEntry) -> bool {
+fn occupied_managed_entry(
+    fs: &dyn Vfs,
+    parent: &Path,
+    registered: &RegisteredNames,
+    resume: bool,
+    is_reserved: impl Fn(&str) -> bool,
+) -> VfsResult<Option<String>> {
+    for entry in fs.read_dir(parent)? {
+        let name = entry.file_name.as_str();
+        if is_reserved(name)
+            || is_control(name) && entry.file_type == FileType::File
+            || registered.contains_physical(name) && entry.file_type != FileType::Other
+        {
+            continue;
+        }
+        if resume && is_map_publication_staging(&entry) {
+            continue;
+        }
+        if resume
+            && registered.physical_names().any(|physical| {
+                is_artifact_staging(&entry, physical)
+                    || crate::is_publication_staging_of(name, physical)
+                        && entry.file_type == FileType::File
+            })
+        {
+            continue;
+        }
+        return Ok(Some(entry.file_name));
+    }
+    Ok(None)
+}
+
+fn is_map_publication_staging(entry: &DirEntry) -> bool {
     entry.file_type == FileType::File && crate::is_publication_staging_of(&entry.file_name, MAP)
 }
 
@@ -439,7 +630,7 @@ impl ArtifactAttempt {
     }
 }
 
-pub(crate) fn claim_artifact_attempt(
+fn claim_artifact_attempt(
     fs: &dyn Vfs,
     parent: &Path,
     target: &Path,
@@ -457,7 +648,7 @@ pub(crate) fn claim_artifact_attempt(
     }
 }
 
-pub(crate) fn is_artifact_staging(entry: &DirEntry, physical: &str) -> bool {
+fn is_artifact_staging(entry: &DirEntry, physical: &str) -> bool {
     let suffix = entry
         .file_name
         .strip_prefix(&artifact_attempt_prefix(physical));

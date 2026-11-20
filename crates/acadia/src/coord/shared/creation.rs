@@ -370,8 +370,7 @@ impl Creation for SharedParticipant {
         self.reservation()?.ok_or(CoordError::NotCreated)?;
         let root =
             crate::names::ComponentDirectory::stable_parent(&*self.inner.vfs, &self.inner.root)?;
-        let (_, owned) = crate::names::validate_control_entries(&*self.inner.vfs, &root)?;
-        if !owned || !crate::names::has_map(&self.inner.vfs.read_dir(&root)?) {
+        if !crate::names::ComponentDirectory::managed_layout_present(&*self.inner.vfs, &root)? {
             return Err(CoordError::NotCreated);
         }
         let _resolver =

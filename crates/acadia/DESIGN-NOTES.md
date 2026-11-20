@@ -2454,6 +2454,10 @@ and child ownership; a hash or native case-insensitive match alone is insufficie
 
 ## Explicit selection of managed creation
 
+> **SUPERSEDED in part, 2026-11-20, by "Mapped name resolution is internal to Acadia".** The
+> sentence below that directs callers to look up and list through `ComponentDirectory` is no
+> longer part of the public contract.
+
 The caller selects the namespace contract: `create_managed` and `confirm_managed_created`
 use exact logical names and the per-parent mapping, while `create` and `confirm_created`
 use raw artifact names. A [managed maker](src/coord/creation/managed.rs) receives the logical
@@ -2476,3 +2480,19 @@ an incomplete-creation plan whitelist is applied. Confirmation validates ownersh
 and acquires `.names.lock` without creating it. A visible CSV entry is parent-synced before its
 fixed stage is reused. Native resolver locks open the final entry without following links or
 reparse points. A caller must consistently select the same namespace contract for its root.
+
+## Mapped name resolution is internal to Acadia, 2026-11-20
+
+The public `Creation` contract accepts logical managed artifact names through a creation plan,
+passes a logical name and an attempt-private path to its maker, and confirms a logical marker.
+It does not expose name-map lookup, listing, physical paths, ownership metadata, control entries,
+or mapping rules. The names module, component directory, physical-name type, version codec and
+name-map store remain crate-private implementation details. Coordination uses the resolver only
+after acquiring its own exclusion and returns no mapping capability to the caller.
+
+A durable owner record selects the versioned codec before its CSV is decoded or changed. CSV
+encoding and control-file publication belong to the selected name-map store, while component
+directory operations answer only semantic questions needed by creation. A future mapping version
+or store revision therefore changes this internal boundary rather than Acadia's public `Creation`
+API. Physical control and staging names are resolver-owned storage protocol, not members of the
+mapped logical namespace and not names a public caller may adopt.
