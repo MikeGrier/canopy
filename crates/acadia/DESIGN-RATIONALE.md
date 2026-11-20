@@ -665,3 +665,24 @@ durability, cleanup and contract alignment".
 - **A public ordering promise must be provable on every platform.** `ResetEvent` guarantees the
   reset but not a general acquire/release RMW for arbitrary consumers. The contract narrows to
   raise/wait synchronization and requires the protocol's own atomic edge where one is needed.
+
+## UTF-8 is Acadia's logical component boundary, 2026-11-19
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "UTF-8 logical path components".
+Passing `Path` or `OsStr` values directly through the contract was rejected because Unix can hold
+non-UTF-8 bytes and Windows uses WTF-16, so one operation could succeed or fail according to a
+backend's native string representation. That variability is implementation detail, not a storage
+feature a dependent should depend on.
+
+Changing `Vfs` path arguments themselves into a Canopy-like path type was unnecessary for this
+boundary: the locator syntax is owned by the backend and is useful for absolute roots, while every
+normal component can be validated identically on entry and represented losslessly as UTF-8. Keeping
+`Path` also avoids coupling Acadia to one caller's hierarchy or character grammar. Creation artifact
+names and directory-entry results, where Acadia owns the component abstraction directly, therefore
+use `str` and `String` without loss.
+
+Validation is performed before fault matching, so a hostile component cannot be hidden behind an
+injected I/O result or consume a deterministic fault schedule. A backend must also refuse a native
+directory entry it cannot encode rather than silently replace bytes. This preserves one observable
+contract on MemFs and OsFs while leaving any shortening, hashing or authoritative per-directory
+mapping policy to a deliberate higher layer.

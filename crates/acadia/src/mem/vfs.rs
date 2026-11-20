@@ -5,6 +5,7 @@ use super::*;
 
 impl Vfs for MemFs {
     fn check_process(&self, op: &'static str, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, op)?;
         let table = self.table();
         table.running(self.process.load(Ordering::Acquire), op, path)
     }
@@ -675,16 +676,26 @@ impl Vfs for MemFs {
         let parts = split_path(path, "read_dir")?;
         let guard = self.tree();
         match node_at(&guard.live, &parts, "read_dir", path)? {
-            Node::Dir(children) => Ok(children
+            Node::Dir(children) => children
                 .iter()
-                .map(|(k, n)| DirEntry {
-                    file_name: k.clone(),
-                    file_type: match n {
-                        Node::File(_) => FileType::File,
-                        Node::Dir(_) => FileType::Dir,
-                    },
+                .map(|(k, n)| {
+                    let file_name = k.to_str().ok_or_else(|| {
+                        err(
+                            VfsErrorKind::InvalidInput,
+                            "read_dir",
+                            path,
+                            "a directory entry is not valid UTF-8",
+                        )
+                    })?;
+                    Ok(DirEntry {
+                        file_name: file_name.to_owned(),
+                        file_type: match n {
+                            Node::File(_) => FileType::File,
+                            Node::Dir(_) => FileType::Dir,
+                        },
+                    })
                 })
-                .collect()),
+                .collect(),
             Node::File(_) => Err(err(
                 VfsErrorKind::NotADirectory,
                 "read_dir",

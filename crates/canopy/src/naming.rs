@@ -44,13 +44,13 @@ pub enum Artifact {
 impl Artifact {
     /// The extension this artifact is written with.
     ///
-    /// Uppercase, like every other field of the name: the renderings are uppercase base32
-    /// and the namespace canonicalises to uppercase, so a mixed-case extension would be the
+    /// Lowercase, like every other field of the name: the renderings are lowercase base32
+    /// and the namespace canonicalises to lowercase, so a mixed-case extension would be the
     /// only part of a path that carried case, and case is not load-bearing on the
     /// filesystems these names live on (`D322`).
     pub fn as_str(self) -> &'static str {
         match self {
-            Artifact::Body => "BODY",
+            Artifact::Body => "body",
         }
     }
 
@@ -104,7 +104,7 @@ impl PathHash {
     /// **That encoding is injective**, which is the property the whole scheme rests on. No
     /// component and no document name may contain the separator, and neither may be empty,
     /// so the rendered form splits back into its parts at the separators with the last
-    /// field always the document. Both are canonicalised to uppercase ASCII before they
+    /// field always the document. Both are canonicalised to lowercase ASCII before they
     /// reach here, so two names that differ only in case are the same name rather than two
     /// paths that collide on a case-folding filesystem.
     pub fn of(node: &NodePath, document: &DocumentName) -> PathHash {

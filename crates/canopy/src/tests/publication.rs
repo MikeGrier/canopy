@@ -173,7 +173,7 @@ fn a_write_that_failed_over_a_lost_replica_is_contended_until_recovery_finishes_
     store
         .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
-    vfs.remove_file(&namespace_root(&store, 2).join("TICKETS").join("RECORD"))
+    vfs.remove_file(&namespace_root(&store, 2).join("tickets").join("record"))
         .unwrap();
     store
         .write_document_replicated_as(&node, &d, &body(b"v2"), &nonce("w2"))

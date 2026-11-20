@@ -581,11 +581,11 @@ fn the_feed_reports_logged_commits_and_unlogged_writes_in_order() {
     assert_eq!(
         recorder.events(),
         [
-            "write ALPHA/ONE = 1",
-            "write BETA/TWO = 2",
-            "write ALPHA/ONE = 3",
-            "write ALPHA/ONE = 4",
-            "remove BETA/TWO",
+            "write alpha/one = 1",
+            "write beta/two = 2",
+            "write alpha/one = 3",
+            "write alpha/one = 4",
+            "remove beta/two",
         ]
     );
 }
@@ -607,7 +607,7 @@ fn the_feed_reports_the_materialized_append_body_once() {
         .unwrap();
     assert_eq!(
         recorder.events(),
-        ["write ALPHA/ONE = first", "write ALPHA/ONE = first second"]
+        ["write alpha/one = first", "write alpha/one = first second"]
     );
 }
 
@@ -630,7 +630,7 @@ fn the_feed_reports_writes_made_through_any_clone_and_the_old_verbs() {
         .unwrap();
     assert_eq!(
         recorder.events(),
-        ["write ALPHA/ONE = 1", "write ALPHA/ONE = 2"]
+        ["write alpha/one = 1", "write alpha/one = 2"]
     );
 }
 
@@ -837,7 +837,7 @@ fn a_quarantine_name_already_taken_refuses_the_repair_and_keeps_both_copies() {
     let replica = partition.join(reference.relative_path());
     vfs.write(&replica, b"rotted").unwrap();
     let file = replica.file_name().unwrap().to_string_lossy().into_owned();
-    let evidence = partition.join(QUARANTINE_DIR).join(format!("{file}.R1"));
+    let evidence = partition.join(QUARANTINE_DIR).join(format!("{file}.r1"));
     vfs.create_dir_all(evidence.parent().unwrap()).unwrap();
     vfs.write(&evidence, b"earlier evidence").unwrap();
     store.note_damaged_blob(reference);

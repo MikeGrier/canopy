@@ -30,8 +30,8 @@ pub enum StoreError {
     NotEmpty {
         /// The root that was not empty.
         root: PathBuf,
-        /// The entry found.
-        entry: OsString,
+        /// The UTF-8 entry found.
+        entry: String,
     },
     /// `init` refused a root that is already another store: its marker records another identity
     /// or implementation, or is the marker of the format before migration.
@@ -363,7 +363,7 @@ impl fmt::Display for StoreError {
                 f,
                 "cannot initialize a store: {} is not empty (found {})",
                 root.display(),
-                entry.to_string_lossy()
+                entry
             ),
             StoreError::AlreadyInitialized { root } => write!(
                 f,

@@ -65,6 +65,32 @@ fn missing_directory_and_escape_fail() {
 }
 
 #[test]
+fn read_components_must_be_utf8_and_nul_free() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    assert_eq!(
+        root.open_file(Path::new("not\0a-component"))
+            .err()
+            .expect("NUL is refused")
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![0xFF]));
+        assert_eq!(
+            root.open_file(&path)
+                .err()
+                .expect("non-UTF-8 is refused")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+}
+
+#[test]
 fn opened_file_is_not_reopened_after_name_replacement() {
     let fixture = Fixture::new();
     fs::write(fixture.0.join("file"), b"original").unwrap();

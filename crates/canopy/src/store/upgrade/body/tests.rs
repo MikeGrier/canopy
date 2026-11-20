@@ -234,14 +234,14 @@ fn undefined_canopy_bodies_are_refused_before_detaching_or_publishing_intent() {
     let drain = store.drain_upgrade().unwrap();
     assert!(matches!(
         drain.begin_migration(
-            UpgradeRequest::new(SchemaLayer::Canopy, 1, 2, 1).unwrap(),
+            UpgradeRequest::new(SchemaLayer::Canopy, 2, 3, 2).unwrap(),
             1
         ),
         Err(StoreError::InvalidUpgrade { .. })
     ));
     drain.cancel().unwrap();
     assert!(!vfs.exists(&store.root.join(UPGRADE_INTENT_NAME)).unwrap());
-    assert_eq!(store.properties().unwrap().canopy_schema.current, 1);
+    assert_eq!(store.properties().unwrap().canopy_schema.current, 2);
 }
 
 #[test]

@@ -328,12 +328,55 @@ fn on_both_faulty<S>(
     body(&FaultyFs::new(OsFs::new(), policy), &os_root, &state);
 }
 
+fn non_utf8_component() -> std::ffi::OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![0xFF])
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[0xD800])
+    }
+}
+
 /// Writes `payload` to `path`, creating parent directories as needed.
 fn seed(fs: &dyn Vfs, path: &Path, payload: &[u8]) {
     if let Some(parent) = path.parent() {
         fs.create_dir_all(parent).expect("create parent");
     }
     fs.write(path, payload).expect("seed file");
+}
+
+#[test]
+fn invalid_utf8_is_refused_before_a_fault_rule_fires() {
+    on_both_faulty(
+        "invalid-utf8-before-fault",
+        |_root| {
+            let policy = FaultPolicy::new()
+                .inject_matching(
+                    FaultOp::Write,
+                    PathMatcher::predicate(|_| true),
+                    Fault::io_error(),
+                    When::Always,
+                )
+                .inject_matching(
+                    FaultOp::Rename,
+                    PathMatcher::predicate(|_| true),
+                    Fault::io_error(),
+                    When::Always,
+                );
+            (policy, ())
+        },
+        |fs, root, ()| {
+            let invalid = root.join(non_utf8_component());
+            assert_kind(fs.write(&invalid, b"x"), VfsErrorKind::InvalidInput);
+
+            let valid = root.join("source");
+            assert_kind(fs.rename(&valid, &invalid), VfsErrorKind::InvalidInput);
+        },
+    );
 }
 
 #[test]

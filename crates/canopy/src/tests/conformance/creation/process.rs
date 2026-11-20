@@ -4,7 +4,6 @@
 //! process of the one filesystem, held at the first call of each step until the replay lets it
 //! take that step.
 
-use std::ffi::OsStr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -238,7 +237,7 @@ struct Maker {
 }
 
 impl ArtifactMaker for Maker {
-    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+    fn make(&mut self, name: &str, inputs: &[u8]) -> CoordResult<()> {
         let path = root().join(name);
         match self.vfs.metadata(&path) {
             Ok(_) => return Ok(()),
@@ -250,7 +249,7 @@ impl ArtifactMaker for Maker {
         Ok(())
     }
 
-    fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+    fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
         Ok(inputs.to_vec())
     }
 }
@@ -268,7 +267,7 @@ fn attempt(part: &Part, vfs: Arc<dyn Vfs>, artifacts: usize) -> String {
         Err(error) => return format!("{error:?} opening a participant"),
     };
     let names: Vec<String> = (1..=artifacts).map(artifact).collect();
-    let names: Vec<&OsStr> = names.iter().map(OsStr::new).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     if !part.creator {
         return outcome(
             participant

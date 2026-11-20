@@ -21,6 +21,13 @@
 //! Four properties are load-bearing and are part of the contract, not an
 //! implementation accident:
 //!
+//! - **UTF-8 logical components, backend-native locators.** Every normal component of a path is
+//!   valid UTF-8, regardless of backend; a directory listing returns each component as `String`.
+//!   Prefixes and roots are physical locators owned by the backend or its caller, but they do not
+//!   relax the component rule. A backend-facing path with a non-UTF-8 component, or a directory
+//!   containing an entry that cannot cross this contract, is refused with
+//!   [`VfsErrorKind::InvalidInput`], never lossy-converted. Acadia does not impose Canopy's narrower
+//!   lowercase character grammar; it owns only the portable UTF-8 component boundary.
 //! - **Path-oriented, object-safe.** Every operation names a path and returns an
 //!   owned result, and there are no associated types, so a `Vfs` is usable as
 //!   `Arc<dyn Vfs>` and shareable across the async daemon and the single-writer
@@ -54,9 +61,8 @@
 //! decide who may act and when. It depends on the seam and on [`signal`]; nothing
 //! in them depends on it.
 
-use std::ffi::OsString;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub mod coord;
 pub mod fault;
@@ -92,9 +98,9 @@ pub const PUBLISHING_INFIX: &str = ".publishing.";
 /// Whether `name` is a sibling that a publication of a file named `target` stages its bytes in:
 /// `target`, [`PUBLISHING_INFIX`] and a non-empty suffix. A crash can leave one behind, and it
 /// carries no meaning ([`Vfs::publish_new`]).
-pub fn is_publication_staging_of(name: &std::ffi::OsStr, target: &std::ffi::OsStr) -> bool {
-    name.as_encoded_bytes()
-        .strip_prefix(target.as_encoded_bytes())
+pub fn is_publication_staging_of(name: &str, target: &str) -> bool {
+    name.as_bytes()
+        .strip_prefix(target.as_bytes())
         .and_then(|rest| rest.strip_prefix(PUBLISHING_INFIX.as_bytes()))
         .is_some_and(|suffix| !suffix.is_empty())
 }
@@ -288,10 +294,34 @@ impl Metadata {
 /// and its type. `.` and `..` are never reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
-    /// The entry's file name -- the final path component only.
-    pub file_name: OsString,
+    /// The entry's UTF-8 file name -- the final path component only.
+    pub file_name: String,
     /// What kind of entry it is.
     pub file_type: FileType,
+}
+
+pub(crate) fn validate_path_components(path: &Path, op: &'static str) -> VfsResult<()> {
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            let Some(name) = name.to_str() else {
+                return Err(VfsError::new(
+                    VfsErrorKind::InvalidInput,
+                    op,
+                    "a path component is not valid UTF-8",
+                )
+                .with_path(path));
+            };
+            if name.as_bytes().contains(&0) {
+                return Err(VfsError::new(
+                    VfsErrorKind::InvalidInput,
+                    op,
+                    "a path component contains NUL",
+                )
+                .with_path(path));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A held exclusive lock, released when it is dropped (`D116`).
@@ -364,14 +394,19 @@ impl LockSpan {
 /// `path` to already exist and fails with [`VfsErrorKind::NotFound`] if it does
 /// not; directories are created only by [`create_dir`](Vfs::create_dir) and
 /// [`create_dir_all`](Vfs::create_dir_all).
+///
+/// Every normal path component must be valid UTF-8 and contain no NUL. Decorators validate this
+/// before applying their own behavior, and a listing returns each final component as `String`.
+/// A foreign native entry is therefore an [`InvalidInput`](VfsErrorKind::InvalidInput) refusal of
+/// the listing, not a lossy filename conversion.
 pub trait Vfs: Send + Sync {
     /// Refuses an operation through a process view that has ended.
     ///
     /// Backends whose process identity is meaningful override this; decorators call the wrapped
     /// backend before selecting any behavior of their own. Other backends have no extra process
     /// view state to check.
-    fn check_process(&self, _op: &'static str, _path: &Path) -> VfsResult<()> {
-        Ok(())
+    fn check_process(&self, op: &'static str, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, op)
     }
 
     /// Runs `commit` as one process-liveness decision: a backend that can end process views keeps

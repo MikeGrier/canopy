@@ -93,15 +93,13 @@ fn every_staging_name_a_publication_tries_is_recognised_as_its_own() {
         let path = Path::new("/root").join(target);
         for _ in 0..10 {
             let staging = publishing_path(&path).unwrap();
-            let name = staging.file_name().unwrap();
-            assert!(
-                crate::is_publication_staging_of(name, std::ffi::OsStr::new(target)),
-                "{name:?}"
-            );
-            assert!(!crate::is_publication_staging_of(
-                name,
-                std::ffi::OsStr::new("other")
-            ));
+            let name = staging
+                .file_name()
+                .unwrap()
+                .to_str()
+                .expect("UTF-8 staging name");
+            assert!(crate::is_publication_staging_of(name, target), "{name:?}");
+            assert!(!crate::is_publication_staging_of(name, "other"));
         }
     }
 }
@@ -158,7 +156,7 @@ fn metadata_follows_a_link_and_a_listing_names_it() {
         .read_dir(&dir.0)
         .unwrap()
         .into_iter()
-        .map(|entry| (entry.file_name.into_string().unwrap(), entry.file_type))
+        .map(|entry| (entry.file_name, entry.file_type))
         .collect();
     listed.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
@@ -169,6 +167,21 @@ fn metadata_follows_a_link_and_a_listing_names_it() {
             ("target".to_owned(), FileType::File),
         ]
     );
+}
+
+/// A Unix entry that cannot cross the UTF-8 VFS contract makes the listing a typed refusal.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_directory_entry_refuses_a_listing() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = Scratch::new("non-utf8-entry");
+    let name = std::ffi::OsString::from_vec(vec![0xFF]);
+    fs::write(dir.0.join(name), b"foreign entry").unwrap();
+
+    let error = OsFs::new().read_dir(&dir.0).unwrap_err();
+    assert_eq!(error.kind(), VfsErrorKind::InvalidInput);
+    assert_eq!(error.op(), "read_dir");
 }
 
 /// A read of more than any buffer can hold is an error, never an abort.

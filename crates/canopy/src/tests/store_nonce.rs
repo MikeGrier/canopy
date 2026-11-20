@@ -148,7 +148,7 @@ fn a_nonce_whose_record_was_not_made_durable_is_not_returned_and_a_crash_unsets_
             .store_nonce()
             .unwrap()
             .as_str()
-            .starts_with("KEPT-"),
+            .starts_with("kept-"),
         "the lost value is never seen"
     );
 }

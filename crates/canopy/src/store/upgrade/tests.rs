@@ -193,8 +193,8 @@ fn an_agent_upgrade_does_not_apply_upgrade_admission_to_the_canopy_layer() {
     let target = Agent::new("schema-tests", "v2", "schema test", 2);
     let mut metadata = agent::AgentMetadata::new(&source);
     metadata.canopy_schema = SchemaVersions {
-        current: 3,
-        oldest_reader: 2,
+        current: 4,
+        oldest_reader: 3,
     };
     metadata.transition = Some(Transition {
         request: UpgradeRequest::new(SchemaLayer::Agent, 1, 2, 1).unwrap(),
@@ -207,14 +207,14 @@ fn an_agent_upgrade_does_not_apply_upgrade_admission_to_the_canopy_layer() {
             ..
         })
     ));
-    metadata.canopy_schema.oldest_reader = 1;
+    metadata.canopy_schema.oldest_reader = 2;
     metadata.check_admission(&target, Access::Read).unwrap();
 }
 
 #[test]
 fn a_canopy_upgrade_preserves_the_other_layers_admission_and_floor() {
     let (vfs, store) = fixture(7);
-    let request = UpgradeRequest::new(SchemaLayer::Canopy, 1, 2, 1).unwrap();
+    let request = UpgradeRequest::new(SchemaLayer::Canopy, 2, 3, 2).unwrap();
     let upgrade = store
         .drain_upgrade()
         .unwrap()
@@ -235,8 +235,8 @@ fn a_canopy_upgrade_preserves_the_other_layers_admission_and_floor() {
     assert_eq!(
         properties.canopy_schema,
         SchemaVersions {
-            current: 2,
-            oldest_reader: 1
+            current: 3,
+            oldest_reader: 2
         }
     );
     assert_eq!(

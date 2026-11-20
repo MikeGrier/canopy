@@ -256,17 +256,15 @@ fn view(world: &World, fs: &dyn Vfs) -> (Vec<String>, Vec<BTreeSet<String>>, Str
             let partition = world.root.join(BLOB_TREE_DIR).join(format!("p{index}"));
             let mut held = BTreeSet::new();
             for shard in fs.read_dir(&partition).unwrap_or_default() {
-                if shard.file_type != FileType::Dir
-                    || shard.file_name.to_string_lossy().starts_with('.')
-                {
+                if shard.file_type != FileType::Dir || shard.file_name.starts_with('.') {
                     continue;
                 }
                 for file in fs
                     .read_dir(&partition.join(&shard.file_name))
                     .unwrap_or_default()
                 {
-                    let name = file.file_name.to_string_lossy();
-                    if let Some((who, version)) = BlobName::owner_and_version(&name)
+                    let name = &file.file_name;
+                    if let Some((who, version)) = BlobName::owner_and_version(name)
                         && who == owner
                     {
                         held.insert(world.named_base32(version));

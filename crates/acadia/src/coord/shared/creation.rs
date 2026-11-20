@@ -2,11 +2,13 @@
 
 use super::*;
 use crate::VfsErrorKind;
-use crate::coord::creation::{make_artifacts, validate_artifact_name, validate_plan};
+use crate::coord::creation::{
+    is_publication_staging_of_folded, make_artifacts, names_equal, validate_artifact_name,
+    validate_plan,
+};
 use crate::coord::{
     ArtifactMaker, Created, Creation, CreationNonce, CreationPlan, RESERVED_PREFIX,
 };
-use std::ffi::{OsStr, OsString};
 
 /// Changing these tags or names breaks creation admission between implementations.
 mod format {
@@ -83,7 +85,7 @@ enum Found {
     /// The marker under a reservation of this implementation with the plan's inputs.
     Existing,
     Marker,
-    Occupied(OsString),
+    Occupied(String),
 }
 
 struct CreationHold {
@@ -110,9 +112,8 @@ impl Drop for CreationHold {
     }
 }
 
-fn reserved(name: &OsStr) -> bool {
-    name.as_encoded_bytes()
-        .starts_with(RESERVED_PREFIX.as_bytes())
+fn reserved(name: &str) -> bool {
+    name.as_bytes().starts_with(RESERVED_PREFIX.as_bytes())
 }
 
 impl SharedParticipant {
@@ -174,45 +175,48 @@ impl SharedParticipant {
         }
     }
 
-    fn read_root(&self, plan: &CreationPlan<'_>) -> CoordResult<Found> {
-        let mut names: Vec<_> = self
-            .inner
-            .vfs
-            .read_dir(&self.inner.root)?
-            .into_iter()
-            .map(|entry| entry.file_name)
-            .collect();
-        names.sort();
-        if names
+    fn read_root(&self, plan: &CreationPlan<'_>) -> CoordResult<(Found, Vec<String>)> {
+        let marker = *plan.artifacts.last().expect("validated plan");
+        let mut entries = self.inner.vfs.read_dir(&self.inner.root)?;
+        entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        if let Some(entry) = entries
             .iter()
-            .any(|name| name == plan.artifacts.last().expect("validated plan"))
+            .find(|entry| names_equal(&entry.file_name, marker))
         {
-            return Ok(match self.reservation()? {
-                Some(reservation)
-                    if reservation.implementation == IMPLEMENTATION
-                        && reservation.inputs == plan.inputs =>
-                {
-                    Found::Existing
-                }
-                _ => Found::Marker,
-            });
+            if entry.file_type != crate::FileType::File {
+                return Ok((Found::Occupied(entry.file_name.clone()), Vec::new()));
+            }
+            return Ok((
+                match self.reservation()? {
+                    Some(reservation)
+                        if reservation.implementation == IMPLEMENTATION
+                            && reservation.inputs == plan.inputs =>
+                    {
+                        Found::Existing
+                    }
+                    _ => Found::Marker,
+                },
+                Vec::new(),
+            ));
         }
-        let mut artifact = None;
-        for name in names {
+        let mut artifacts = Vec::new();
+        for entry in entries {
+            let name = entry.file_name;
             if reserved(&name) {
                 continue;
             }
             if !plan.artifacts.iter().any(|artifact| {
-                *artifact == name.as_os_str() || crate::is_publication_staging_of(&name, artifact)
+                names_equal(&name, artifact) || is_publication_staging_of_folded(&name, artifact)
             }) {
-                return Ok(Found::Occupied(name));
+                return Ok((Found::Occupied(name), artifacts));
             }
-            artifact.get_or_insert(name);
+            artifacts.push(name);
         }
-        match (self.reservation_course(plan.inputs)?, artifact) {
-            (Found::Empty, Some(name)) => Ok(Found::Occupied(name)),
-            (course, _) => Ok(course),
-        }
+        let found = match (self.reservation_course(plan.inputs)?, artifacts.first()) {
+            (Found::Empty, Some(name)) => Found::Occupied(name.clone()),
+            (course, _) => course,
+        };
+        Ok((found, artifacts))
     }
 
     fn creation_course(found: Found) -> CoordResult<Found> {
@@ -225,9 +229,19 @@ impl SharedParticipant {
 
     /// Makes the marker of a store found made durable with its directory entry, as an open does:
     /// its creator may have died between making the marker and making it durable.
-    fn found(&self, marker: &OsStr) -> CoordResult<Created> {
+    fn found(&self, marker: &str) -> CoordResult<Created> {
         self.alive()?;
-        self.inner.vfs.fsync(&self.inner.root.join(marker))?;
+        let actual = self
+            .inner
+            .vfs
+            .read_dir(&self.inner.root)?
+            .into_iter()
+            .find(|entry| names_equal(&entry.file_name, marker))
+            .filter(|entry| entry.file_type == crate::FileType::File)
+            .ok_or(CoordError::NotCreated)?;
+        self.inner
+            .vfs
+            .fsync(&self.inner.root.join(actual.file_name))?;
         self.inner.vfs.fsync(&self.inner.root)?;
         Ok(Created::Existing)
     }
@@ -286,14 +300,16 @@ impl Creation for SharedParticipant {
     ) -> CoordResult<Created> {
         self.alive()?;
         validate_plan(plan)?;
-        let marker = plan.artifacts.last().expect("validated plan");
-        let first = Self::creation_course(self.read_root(plan)?)?;
+        let marker = *plan.artifacts.last().expect("validated plan");
+        let (found, _) = self.read_root(plan)?;
+        let first = Self::creation_course(found)?;
         if matches!(first, Found::Existing) {
             return self.found(marker);
         }
         let creation = self.creation_hold(LockMode::Exclusive)?;
         self.alive()?;
-        let course = Self::creation_course(self.read_root(plan)?)?;
+        let (found, existing) = self.read_root(plan)?;
+        let course = Self::creation_course(found)?;
         if matches!(course, Found::Existing) {
             return self.found(marker);
         }
@@ -308,6 +324,7 @@ impl Creation for SharedParticipant {
             maker,
             &*self.inner.vfs,
             &self.inner.root,
+            &existing,
             &|| self.alive(),
             &|path, bytes| self.publish_held(&creation, path, bytes),
         )?;
@@ -328,7 +345,7 @@ impl Creation for SharedParticipant {
         self.settle(&creation, course, inputs, nonce)
     }
 
-    fn confirm_created(&self, marker: &OsStr) -> CoordResult<()> {
+    fn confirm_created(&self, marker: &str) -> CoordResult<()> {
         validate_artifact_name(marker)?;
         self.alive()?;
         let _creation = self.creation_hold(LockMode::Shared)?;
@@ -339,11 +356,17 @@ impl Creation for SharedParticipant {
                 recorded: reservation.implementation,
             });
         }
-        let path = self.inner.root.join(marker);
-        if !self.inner.vfs.exists(&path)? {
-            return Err(CoordError::NotCreated);
-        }
-        self.inner.vfs.fsync(&path)?;
+        let actual = self
+            .inner
+            .vfs
+            .read_dir(&self.inner.root)?
+            .into_iter()
+            .find(|entry| names_equal(&entry.file_name, marker))
+            .filter(|entry| entry.file_type == crate::FileType::File)
+            .ok_or(CoordError::NotCreated)?;
+        self.inner
+            .vfs
+            .fsync(&self.inner.root.join(actual.file_name))?;
         self.inner.vfs.fsync(&self.inner.root)?;
         Ok(())
     }

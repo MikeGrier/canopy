@@ -2353,3 +2353,22 @@ and four aligned public documentation with behavior the code and its protocols a
 
 Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md), "The corrected full-review follow-up,
 2026-11-19".
+
+## UTF-8 logical path components, 2026-11-19
+
+Acadia's public logical component surfaces are UTF-8 `str`/`String` values. Every normal component
+of a `Path` passed through `Vfs` must be valid UTF-8 and contain no NUL. A backend reports
+`InvalidInput` when an input path violates that rule, before fault matching or any other decorator
+behavior is applied. Directory entries are returned as `String`; a native directory entry that
+cannot be represented is a refusal of the listing, not a lossy conversion.
+
+Physical roots and prefixes remain backend locators because the OS backend must receive an
+operating-system path and the caller owns where that root lives. The locator does not relax the
+contract for normal components. Acadia does not adopt Canopy's narrower lowercase ASCII grammar:
+it owns the portable UTF-8 boundary, while a dependent may impose an additional grammar before
+calling Acadia.
+
+The contract separates storage mechanics from name policy. A future Acadia name policy may encode or
+map arbitrary UTF-8 components, but the mapping would be an explicit higher layer with authoritative
+metadata, recovery and collision rules; `OsFs` and `MemFs` do not implement one implicitly. The
+current `Vfs` and creation contracts preserve caller component spelling after validation.

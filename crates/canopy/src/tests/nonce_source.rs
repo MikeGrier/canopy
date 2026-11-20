@@ -74,7 +74,7 @@ pub(super) fn scripted_source(nonces: Vec<Nonce>) -> impl FnMut() -> Nonce + Sen
 
 /// Decodes RFC 4648 base32 without padding, for checking the encoder against itself.
 fn decode(text: &str) -> Vec<u8> {
-    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut bytes = Vec::new();
     let mut buffer: u32 = 0;
     let mut held = 0u32;
@@ -148,7 +148,7 @@ fn an_actor_stream_does_not_depend_on_how_many_other_actors_draw() {
 
 #[test]
 fn all_zero_bits_encode_as_all_a() {
-    assert_eq!(encode([0; RANDOM_BYTES]), "A".repeat(26));
+    assert_eq!(encode([0; RANDOM_BYTES]), "a".repeat(26));
 }
 
 #[test]
@@ -161,14 +161,14 @@ fn all_one_bits_encode_with_the_last_digit_padded_with_zero_bits() {
 fn a_single_high_bit_lands_in_the_first_digit() {
     let mut bits = [0u8; RANDOM_BYTES];
     bits[0] = 0x80;
-    assert_eq!(encode(bits), format!("Q{}", "A".repeat(25)));
+    assert_eq!(encode(bits), format!("q{}", "a".repeat(25)));
 }
 
 #[test]
 fn a_single_low_bit_lands_in_the_last_digit() {
     let mut bits = [0u8; RANDOM_BYTES];
     bits[RANDOM_BYTES - 1] = 0x01;
-    assert_eq!(encode(bits), format!("{}E", "A".repeat(25)));
+    assert_eq!(encode(bits), format!("{}e", "a".repeat(25)));
 }
 
 #[test]

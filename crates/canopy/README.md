@@ -208,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Names
 
 Path components, document names, and nonces are validated and normalized: ASCII
-letters (folded to uppercase), digits, `-` and `_`, with an interior `.` also allowed
+letters (folded to lowercase), digits, `-` and `_`, with an interior `.` also allowed
 in document names. There is no relative addressing: `.` and `..` are rejected, so a
 path always names exactly one node.
 

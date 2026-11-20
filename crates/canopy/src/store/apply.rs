@@ -707,14 +707,14 @@ impl Store {
                 Err(error) => return Err(StoreError::Vfs(error)),
             };
             for entry in listed {
-                let name = entry.file_name.to_string_lossy();
+                let name = entry.file_name;
                 let goes = match entry.file_type {
-                    FileType::File => removed_documents.contains(name.as_ref()),
-                    FileType::Dir => removed_children.contains(name.as_ref()),
+                    FileType::File => removed_documents.contains(name.as_str()),
+                    FileType::Dir => removed_children.contains(name.as_str()),
                     _ => false,
                 };
                 if !goes {
-                    entries.insert(name.into_owned());
+                    entries.insert(name);
                 }
             }
         }

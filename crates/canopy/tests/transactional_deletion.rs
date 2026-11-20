@@ -101,7 +101,7 @@ fn blobs(vfs: &Arc<dyn Vfs>, store: &Store) -> Vec<(usize, String)> {
             continue;
         };
         for entry in entries {
-            let name = entry.file_name.to_string_lossy().into_owned();
+            let name = entry.file_name;
             // Other documents may share the shard; only this one's blobs are the subject.
             if BlobName::parse(&name).map(|blob| blob.path_hash())
                 == Ok(canopy::PathHash::of(&node(), &document()))

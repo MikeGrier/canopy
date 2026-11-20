@@ -23,7 +23,6 @@
 //! canopy therefore needs no clock or RNG dependency.
 
 use std::collections::BTreeSet;
-use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -281,25 +280,26 @@ fn temp_name(document: &DocumentName, nonce: &Nonce) -> String {
 ///
 /// A [`NodePath`] component never begins with `.`, so a leading dot unambiguously
 /// marks a canopy-reserved entry rather than a node.
-fn is_dotfile(name: &OsString) -> bool {
-    name.to_string_lossy().starts_with('.')
+fn is_dotfile(name: &str) -> bool {
+    name.starts_with('.')
 }
 
 /// Reconstructs the path component an on-disk directory carries, or `None` if the
 /// entry is not a well-formed component (foreign content to be skipped).
 ///
-/// The directory name is canopy's canonical (uppercased) form, so re-validation
+/// The directory name is canopy's canonical (lowercased) form, so re-validation
 /// round-trips for any entry canopy wrote; a name that fails to parse was not placed by
 /// canopy and is not part of the namespace.
-fn parse_component(name: &OsString) -> Option<String> {
-    let raw = name.to_str()?;
-    NodePath::parse(raw).ok().map(|path| path.name().to_owned())
+fn parse_component(name: &str) -> Option<String> {
+    NodePath::parse(name)
+        .ok()
+        .map(|path| path.name().to_owned())
 }
 
 /// Reconstructs the [`DocumentName`] an on-disk document file carries, or `None` if the
 /// entry is not a well-formed document name (foreign content to be skipped).
-fn parse_document_name(name: &OsString) -> Option<DocumentName> {
-    DocumentName::new(name.to_str()?).ok()
+fn parse_document_name(name: &str) -> Option<DocumentName> {
+    DocumentName::new(name).ok()
 }
 /// One transaction's records collected from the commit log during recovery (TXN-4).
 ///

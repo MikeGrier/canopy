@@ -13,9 +13,9 @@ use crate::name::Nonce;
 /// How many random bytes a nonce carries: 128 bits.
 pub(crate) const RANDOM_BYTES: usize = 16;
 
-/// The RFC 4648 base32 alphabet: uppercase letters and the digits 2-7, all inside the nonce
+/// The RFC 4648 base32 alphabet: lowercase letters and the digits 2-7, all inside the nonce
 /// character set, so an encoded nonce is already canonical.
-const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 /// The characters 128 bits take in base32: 26, the last carrying the final 3 bits.
 pub(crate) const RANDOM_NONCE_LEN: usize = (RANDOM_BYTES * 8).div_ceil(5);

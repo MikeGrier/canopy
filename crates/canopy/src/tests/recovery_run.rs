@@ -182,7 +182,7 @@ fn a_paused_recovery_cannot_clear_a_later_transactions_log() {
 fn tree(vfs: &Arc<dyn Vfs>, root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn walk(vfs: &Arc<dyn Vfs>, dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
         for entry in vfs.read_dir(dir).unwrap() {
-            let name = entry.file_name.to_string_lossy().into_owned();
+            let name = &entry.file_name;
             if name.starts_with(".coord") || name == ".lock" {
                 continue;
             }

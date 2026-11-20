@@ -5766,3 +5766,19 @@ prose in comments and configuration headers, are left as they are[^voc-1].
 
 [^voc-1]: `VOC-1` in [COMPLETED-CHECKLIST.md](../../COMPLETED-CHECKLIST.md#voc-1)
     [completed 2026-11-18; `e0c0fa8`]
+
+## Caller-derived names are lowercase in Canopy schema 2, 2026-11-19
+
+Canopy canonicalizes caller-derived `NodePath` components, `DocumentName` values and `Nonce`
+values to lowercase ASCII. It continues to accept either ASCII case at the input boundary, so two
+spellings that differ only in case name one logical object. Nonce values, path hashes, base32 blob
+and digest renderings, shard directories, artifact extensions and persisted path strings emitted by
+this schema are lowercase. Canopy-owned root and control names remain unchanged.
+
+Lowercase canonicalization is a Canopy schema-2 layout rule, independent of the genesis JSON format
+version. New stores record schema 2 in the marker and attachment payload. Schema-1 stores are not
+admitted for reading or writing by this build and are not migrated: no important existing stores
+require a data-path migration, and treating uppercase-derived paths as schema 2 would let one logical
+document acquire a different path hash and on-disk address. Decoders continue to accept either
+base32 case so a filesystem or external transport may fold spelling without making a persisted
+name unparsable. This decision schedules no migration unit.

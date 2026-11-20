@@ -320,7 +320,7 @@ impl Store {
 
             let mut removed_here = false;
             for entry in entries {
-                let file_name = entry.file_name.to_string_lossy().into_owned();
+                let file_name = entry.file_name;
                 let Some((entry_owner, version)) = BlobName::owner_and_version(&file_name) else {
                     continue;
                 };

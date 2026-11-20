@@ -161,7 +161,7 @@ fn an_owner_field_that_is_not_a_rendering_is_refused() {
 #[test]
 fn an_owner_whose_pad_bits_are_set_is_refused() {
     // The free check `D322` leaves in the rendering: the final character of a SHA-256 is
-    // always `A` or `Q`, so anything else means truncation or a foreign encoder.
+    // always `a` or `q`, so anything else means truncation or a foreign encoder.
     let (path_hash, p) = pointer(b"body");
     let mut rendered = p.render();
     rendered[ContentDigest::BASE32_LEN - 1] = b'B';

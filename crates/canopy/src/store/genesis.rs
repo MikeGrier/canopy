@@ -16,7 +16,6 @@ use acadia::coord::{
     Access, ArtifactMaker, CoordError, CoordResult, Coordination, CoordinationFactory,
     CreationNonce, CreationPlan, ModificationEnd, Purpose, Waiting,
 };
-use std::ffi::OsStr;
 
 use super::coordinated::Coordinated;
 
@@ -30,7 +29,7 @@ impl Store {
         access: Access,
     ) -> Result<(Genesis, Coordinated), StoreError> {
         let participant = factory.open(Arc::clone(vfs), root)?;
-        participant.confirm_created(OsStr::new(MARKER_NAME))?;
+        participant.confirm_created(MARKER_NAME)?;
         let mut attachment = participant.attach(access, Waiting::Wait)?;
         let genesis = Self::read_admission_genesis(vfs, root)?;
         genesis.metadata.check_admission(agent, access)?;
@@ -137,11 +136,7 @@ impl Store {
         let genesis = Genesis::from_config(config, agent);
         let marker = serde_json::to_vec_pretty(&genesis)?;
         let inputs = genesis.creation_inputs()?;
-        let artifacts = [
-            OsStr::new(BLOB_TREE_DIR),
-            OsStr::new(NAMESPACE_TREE_DIR),
-            OsStr::new(MARKER_NAME),
-        ];
+        let artifacts = [BLOB_TREE_DIR, NAMESPACE_TREE_DIR, MARKER_NAME];
         // Creators with one identity make one creation, so the nonce tells nothing apart.
         let plan = CreationPlan {
             inputs: &inputs,
@@ -358,7 +353,7 @@ impl Store {
                 .metadata
                 .check_identity(options.agent())?;
             let participant = factory.open(Arc::clone(&vfs), &root)?;
-            participant.confirm_created(OsStr::new(MARKER_NAME))?;
+            participant.confirm_created(MARKER_NAME)?;
             return Ok(Migration::AlreadyCurrent);
         }
         let _lock = Self::lock_root(&vfs, &root)?;
@@ -369,7 +364,7 @@ impl Store {
                     .check_identity(options.agent())?;
                 factory
                     .open(Arc::clone(&vfs), &root)?
-                    .confirm_created(OsStr::new(MARKER_NAME))?;
+                    .confirm_created(MARKER_NAME)?;
                 return Ok(Migration::AlreadyCurrent);
             }
             Found::Interrupted(record) => {
@@ -545,7 +540,7 @@ impl GenesisMaker<'_> {
 }
 
 impl ArtifactMaker for GenesisMaker<'_> {
-    fn make(&mut self, name: &OsStr, _inputs: &[u8]) -> CoordResult<()> {
+    fn make(&mut self, name: &str, _inputs: &[u8]) -> CoordResult<()> {
         if name == BLOB_TREE_DIR {
             // The blob tree's partitions, whose count is independent of the namespace's
             // (`D316`, `D320`). Shard directories under them are created lazily on first
@@ -573,7 +568,7 @@ impl ArtifactMaker for GenesisMaker<'_> {
 
     /// The marker the coordination publishes atomically and last (D40), once the root's
     /// coordination state is vouched for.
-    fn marker(&mut self, _name: &OsStr, _inputs: &[u8]) -> CoordResult<Vec<u8>> {
+    fn marker(&mut self, _name: &str, _inputs: &[u8]) -> CoordResult<Vec<u8>> {
         self.vouch()?;
         Ok(self.marker.to_vec())
     }

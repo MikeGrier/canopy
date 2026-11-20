@@ -100,7 +100,7 @@ fn a_write_leaves_no_staging_orphan() {
         .expect("agent version stamp");
     assert_eq!(
         node_entries(&vfs, &store, 0),
-        vec![OsString::from("RECORD.JSON")]
+        vec![String::from("record.json")]
     );
 }
 
@@ -533,7 +533,7 @@ fn the_new_errors_say_what_happened() {
     );
     assert_eq!(
         StoreError::NonceCollision { nonce: nonce("n1") }.to_string(),
-        "nonce N1 is already claimed"
+        "nonce n1 is already claimed"
     );
 }
 
@@ -580,8 +580,8 @@ fn a_transform_reports_the_body_it_committed() {
     assert_eq!(
         spy.seen(),
         vec![(
-            "RECORD".to_string(),
-            "RECORD.JSON".to_string(),
+            "record".to_string(),
+            "record.json".to_string(),
             b"hello".to_vec()
         )]
     );
@@ -642,8 +642,8 @@ fn a_committed_transaction_reports_every_swap_it_wrote() {
     assert_eq!(
         targets,
         vec![
-            ("A".to_string(), "ONE.JSON".to_string()),
-            ("B".to_string(), "TWO.JSON".to_string())
+            ("a".to_string(), "one.json".to_string()),
+            ("b".to_string(), "two.json".to_string())
         ]
     );
 }
@@ -819,6 +819,6 @@ fn a_transform_reports_what_it_committed_to_the_observer() {
         .expect("agent version stamp");
     assert_eq!(
         spy.seen(),
-        vec![("COUNTER".to_string(), "N".to_string(), vec![1])]
+        vec![("counter".to_string(), "n".to_string(), vec![1])]
     );
 }

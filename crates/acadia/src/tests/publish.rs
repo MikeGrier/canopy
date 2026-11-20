@@ -11,7 +11,7 @@ fn names(fs: &dyn Vfs, dir: &Path) -> Vec<String> {
         .read_dir(dir)
         .unwrap()
         .into_iter()
-        .map(|entry| entry.file_name.to_string_lossy().into_owned())
+        .map(|entry| entry.file_name)
         .collect();
     names.sort();
     names
@@ -168,16 +168,13 @@ fn a_publication_can_be_made_to_fail_and_publishes_nothing() {
 
 #[test]
 fn a_publications_staging_name_is_recognised_and_nothing_else_is() {
-    let marker = std::ffi::OsStr::new("marker");
+    let marker = "marker";
     for name in [
         "marker.publishing.1-0",
         "marker.publishing.x",
         "marker.publishing.publishing.1",
     ] {
-        assert!(
-            crate::is_publication_staging_of(std::ffi::OsStr::new(name), marker),
-            "{name}"
-        );
+        assert!(crate::is_publication_staging_of(name, marker), "{name}");
     }
     for name in [
         "marker",
@@ -189,9 +186,6 @@ fn a_publications_staging_name_is_recognised_and_nothing_else_is() {
         "marker.published.1",
         "",
     ] {
-        assert!(
-            !crate::is_publication_staging_of(std::ffi::OsStr::new(name), marker),
-            "{name}"
-        );
+        assert!(!crate::is_publication_staging_of(name, marker), "{name}");
     }
 }

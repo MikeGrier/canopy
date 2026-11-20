@@ -425,7 +425,7 @@ fn a_prepare_round_trips_a_multi_component_swap_node() {
     let LogRecord::Prepare { prepared, .. } = &records[0] else {
         panic!("expected a prepare record, got {:?}", records[0]);
     };
-    assert_eq!(prepared.swaps()[0].node().to_string(), "TICKETS/AB/ABCDEF");
+    assert_eq!(prepared.swaps()[0].node().to_string(), "tickets/ab/abcdef");
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn a_prepare_with_duplicate_swap_targets_is_malformed() {
     .unwrap();
     match log.read() {
         Err(CommitLogError::Malformed(message)) => assert!(
-            message.contains("names ALPHA/RECORD twice"),
+            message.contains("names alpha/record twice"),
             "rejected for another reason: {message}"
         ),
         other => panic!("a duplicate target must be malformed, got {other:?}"),

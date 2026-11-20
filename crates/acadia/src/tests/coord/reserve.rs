@@ -3,7 +3,6 @@
 //! Recording the implementation of a root whose store the caller makes or changes itself
 //! (canopy's DESIGN-NOTES.md, "Creating a store root, modelled in `Creation.tla`").
 
-use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
@@ -140,31 +139,24 @@ fn a_reservation_is_what_confirming_a_created_root_looks_for() {
         let (vfs, root) = (backend.process(), backend.root());
         let owner = participant(implementation, Arc::clone(&vfs), &root);
         assert!(
-            matches!(
-                owner.confirm_created(OsStr::new(MARKER)),
-                Err(CoordError::NotCreated)
-            ),
+            matches!(owner.confirm_created(MARKER), Err(CoordError::NotCreated)),
             "{}: nothing is reserved",
             backend.name()
         );
         owner.reserve(INPUTS, nonce(1)).expect("reserve");
         assert!(
-            matches!(
-                owner.confirm_created(OsStr::new(MARKER)),
-                Err(CoordError::NotCreated)
-            ),
+            matches!(owner.confirm_created(MARKER), Err(CoordError::NotCreated)),
             "reserved, but no marker"
         );
         vfs.write(&root.join(MARKER), b"marker").expect("write");
         owner
-            .confirm_created(OsStr::new(MARKER))
+            .confirm_created(MARKER)
             .expect("reserved, and the marker is there");
         for other in super::implementations() {
             if other.implementation() == implementation.implementation() {
                 continue;
             }
-            let mismatch =
-                participant(&other, Arc::clone(&vfs), &root).confirm_created(OsStr::new(MARKER));
+            let mismatch = participant(&other, Arc::clone(&vfs), &root).confirm_created(MARKER);
             assert!(
                 matches!(mismatch, Err(CoordError::ImplementationMismatch { .. })),
                 "{}",

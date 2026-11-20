@@ -10,8 +10,8 @@ use super::*;
 #[test]
 fn unconditional_swap_has_no_expected_digest() {
     let swap = Swap::new(name("aaa"), doc("record"), body(b"one"));
-    assert_eq!(swap.node().to_string(), "AAA");
-    assert_eq!(swap.document().as_str(), "RECORD");
+    assert_eq!(swap.node().to_string(), "aaa");
+    assert_eq!(swap.document().as_str(), "record");
     assert_eq!(
         swap.body().expect("a write carries a body").as_bytes(),
         b"one"
@@ -31,8 +31,8 @@ fn single_swap_set_has_one_element() {
     let set = SwapSet::single(Swap::new(name("aaa"), doc("record"), body(b"x")));
     assert_eq!(set.len(), 1);
     assert!(!set.is_empty());
-    assert_eq!(set.swaps()[0].node().to_string(), "AAA");
-    assert_eq!(set.swaps()[0].document().as_str(), "RECORD");
+    assert_eq!(set.swaps()[0].node().to_string(), "aaa");
+    assert_eq!(set.swaps()[0].document().as_str(), "record");
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn multi_document_swap_set_preserves_order() {
     .expect("distinct targets");
     assert_eq!(set.len(), 3);
     let nodes: Vec<String> = set.swaps().iter().map(|s| s.node().to_string()).collect();
-    assert_eq!(nodes, ["AAA", "BBB", "CCC"]);
+    assert_eq!(nodes, ["aaa", "bbb", "ccc"]);
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn two_documents_at_one_node_are_distinct_targets() {
     .expect("distinct (node, document) targets");
     assert_eq!(set.len(), 2);
     let docs: Vec<&str> = set.swaps().iter().map(|s| s.document().as_str()).collect();
-    assert_eq!(docs, ["RECORD", "ENGINE"]);
+    assert_eq!(docs, ["record", "engine"]);
 }
 
 #[test]
@@ -78,8 +78,8 @@ fn swap_set_rejects_a_duplicate_target() {
     assert_eq!(
         err,
         SwapSetError::DuplicateTarget {
-            node: "AAA".to_owned(),
-            document: "RECORD".to_owned(),
+            node: "aaa".to_owned(),
+            document: "record".to_owned(),
         }
     );
 }
@@ -96,8 +96,8 @@ fn swap_set_duplicate_detection_uses_the_normalized_name() {
     assert_eq!(
         err,
         SwapSetError::DuplicateTarget {
-            node: "ABC".to_owned(),
-            document: "RECORD".to_owned(),
+            node: "abc".to_owned(),
+            document: "record".to_owned(),
         }
     );
 }
@@ -105,12 +105,12 @@ fn swap_set_duplicate_detection_uses_the_normalized_name() {
 #[test]
 fn swap_set_error_displays_the_offending_target() {
     let err = SwapSetError::DuplicateTarget {
-        node: "AAA".to_owned(),
+        node: "aaa".to_owned(),
         document: "record".to_owned(),
     };
     assert_eq!(
         format!("{err}"),
-        "swap set names the document \"record\" at node \"AAA\" more than once"
+        "swap set names the document \"record\" at node \"aaa\" more than once"
     );
 }
 
@@ -219,15 +219,15 @@ fn builder_duplicate_targets_are_rejected_at_build() {
     let (_vfs, store) = seeded_store();
     let mut builder = store.transaction();
     builder.write(name("alpha"), doc("one"), body(b"1")).write(
-        name("ALPHA"),
-        doc("ONE"),
+        name("alpha"),
+        doc("one"),
         body(b"2"),
     );
     assert_eq!(
         builder.build().unwrap_err(),
         SwapSetError::DuplicateTarget {
-            node: "ALPHA".to_owned(),
-            document: "ONE".to_owned(),
+            node: "alpha".to_owned(),
+            document: "one".to_owned(),
         }
     );
 }
@@ -242,7 +242,7 @@ fn builder_duplicate_node_removals_are_rejected_at_build() {
     assert_eq!(
         builder.build().unwrap_err(),
         SwapSetError::DuplicateNodeRemoval {
-            node: "ALPHA".to_owned(),
+            node: "alpha".to_owned(),
         }
     );
 }
@@ -458,7 +458,7 @@ fn append_and_write_cannot_target_the_same_document() {
     let mut builder = store.transaction();
     builder
         .append(name("alpha"), doc("one"), b"a".to_vec())
-        .write(name("ALPHA"), doc("ONE"), body(b"b"));
+        .write(name("alpha"), doc("one"), body(b"b"));
     assert!(matches!(
         builder.build(),
         Err(SwapSetError::DuplicateTarget { .. })

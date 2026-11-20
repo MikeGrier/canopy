@@ -3,7 +3,6 @@
 //! Creation exclusion and the creation reservation (canopy's DESIGN-NOTES.md, "Creating a store
 //! root, modelled in `Creation.tla`").
 
-use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Barrier, Mutex};
@@ -34,8 +33,8 @@ const OTHER_INPUTS: &[u8] = b"genesis: five replicas";
 /// Long enough for a participant that is not waiting to have finished.
 const SETTLE: Duration = Duration::from_millis(50);
 
-fn artifacts() -> Vec<&'static OsStr> {
-    ARTIFACTS.iter().map(OsStr::new).collect()
+fn artifacts() -> Vec<&'static str> {
+    ARTIFACTS.to_vec()
 }
 
 pub(super) fn nonce(n: u8) -> CreationNonce {
@@ -47,7 +46,7 @@ pub(super) fn nonce(n: u8) -> CreationNonce {
 struct FileMaker {
     vfs: Arc<dyn Vfs>,
     root: PathBuf,
-    made: Vec<OsString>,
+    made: Vec<String>,
     fail_at: Option<usize>,
     before: Option<(usize, Box<dyn FnMut() + Send>)>,
 }
@@ -91,18 +90,18 @@ impl FileMaker {
 }
 
 impl ArtifactMaker for FileMaker {
-    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+    fn make(&mut self, name: &str, inputs: &[u8]) -> CoordResult<()> {
         self.step()?;
         let path = self.root.join(name);
         self.vfs.write(&path, inputs)?;
         self.vfs.fsync(&path)?;
-        self.made.push(name.to_os_string());
+        self.made.push(name.to_owned());
         Ok(())
     }
 
-    fn marker(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+    fn marker(&mut self, name: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
         self.step()?;
-        self.made.push(name.to_os_string());
+        self.made.push(name.to_owned());
         Ok(inputs.to_vec())
     }
 }
@@ -157,29 +156,11 @@ fn store_names(vfs: &dyn Vfs, root: &Path) -> Vec<String> {
         .read_dir(root)
         .expect("list the root")
         .into_iter()
-        .map(|entry| entry.file_name.to_string_lossy().into_owned())
+        .map(|entry| entry.file_name)
         .filter(|name| !name.starts_with(crate::coord::RESERVED_PREFIX))
         .collect();
     names.sort();
     names
-}
-
-/// `prefix` followed by a code unit no Unicode string holds.
-fn non_unicode(prefix: &str) -> OsString {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStringExt;
-        let mut bytes = prefix.as_bytes().to_vec();
-        bytes.push(0xFF);
-        OsString::from_vec(bytes)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStringExt;
-        let mut wide: Vec<u16> = prefix.encode_utf16().collect();
-        wide.push(0xD800);
-        OsString::from_wide(&wide)
-    }
 }
 
 /// Asserts that every artifact exists and holds `inputs`.
@@ -194,6 +175,93 @@ fn assert_created(vfs: &dyn Vfs, root: &Path, inputs: &[u8]) {
 }
 
 #[test]
+fn a_non_file_marker_is_not_a_created_root() {
+    on_every_implementation("coord-marker-kind", &|implementation, backend| {
+        let vfs = backend.process();
+        let root = backend.root();
+        create_through(implementation, Arc::clone(&vfs), &root, INPUTS, 1).expect("create");
+        vfs.remove_file(&root.join(MARKER))
+            .expect("remove the marker file");
+        vfs.create_dir(&root.join(MARKER))
+            .expect("replace the marker with a directory");
+
+        assert!(matches!(
+            create_through(implementation, backend.process(), &root, INPUTS, 2),
+            Err(CoordError::Occupied { .. })
+        ));
+        assert!(matches!(
+            implementation
+                .open(backend.process(), &root)
+                .expect("open")
+                .confirm_created(MARKER),
+            Err(CoordError::NotCreated)
+        ));
+    });
+}
+
+#[test]
+fn a_created_root_is_found_when_artifact_names_only_differ_by_case() {
+    on_every_implementation("coord-create-folded", &|implementation, backend| {
+        let vfs = backend.process();
+        let root = backend.root();
+        create_through(implementation, Arc::clone(&vfs), &root, INPUTS, 1).expect("create");
+        let folded = ["FILES", "LOG", "MARKER"];
+        let mut maker = FileMaker::new(Arc::clone(&vfs), &root);
+        let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
+        assert_eq!(
+            participant
+                .create(
+                    &CreationPlan {
+                        inputs: INPUTS,
+                        nonce: nonce(2),
+                        artifacts: &folded,
+                    },
+                    &mut maker,
+                )
+                .expect("find the store"),
+            Created::Existing
+        );
+        assert!(maker.made.is_empty());
+        participant
+            .confirm_created(folded[folded.len() - 1])
+            .expect("confirm the marker");
+    });
+}
+
+#[test]
+fn a_folded_resume_uses_the_physical_names_of_existing_artifacts() {
+    on_every_implementation("coord-resume-folded", &|implementation, backend| {
+        let vfs = backend.process();
+        let root = backend.root();
+        let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
+        let mut interrupted = FileMaker::new(Arc::clone(&vfs), &root).failing_at(2);
+        assert!(create(&*participant, INPUTS, nonce(1), &mut interrupted).is_err());
+
+        let folded = ["FILES", "LOG", "MARKER"];
+        let mut resumed = FileMaker::new(Arc::clone(&vfs), &root);
+        assert_eq!(
+            participant
+                .create(
+                    &CreationPlan {
+                        inputs: INPUTS,
+                        nonce: nonce(2),
+                        artifacts: &folded,
+                    },
+                    &mut resumed,
+                )
+                .expect("resume the store"),
+            Created::Resumed
+        );
+        assert_eq!(resumed.made, ["files", "log", "MARKER"].map(str::to_owned));
+        assert_eq!(
+            store_names(&*vfs, &root),
+            ["MARKER", "files", "log"],
+            "the resumed artifacts do not create differently-cased duplicates"
+        );
+    });
+}
+
+#[test]
 fn creation_records_the_reservation_then_makes_every_artifact_in_order() {
     on_every_implementation("coord-create", &|implementation, backend| {
         let vfs = backend.process();
@@ -204,14 +272,14 @@ fn creation_records_the_reservation_then_makes_every_artifact_in_order() {
             create(&*participant, INPUTS, nonce(1), &mut maker).expect("create"),
             Created::Created
         );
-        assert_eq!(maker.made, ARTIFACTS.map(OsString::from));
+        assert_eq!(maker.made, ARTIFACTS.map(str::to_owned));
         assert_created(&*vfs, &root, INPUTS);
         let recorded = reservation(&*vfs, &root).expect("a reservation");
         assert_eq!(&recorded.implementation, implementation.implementation());
         assert_eq!(recorded.nonce, nonce(1));
         assert_eq!(recorded.inputs, INPUTS);
         participant
-            .confirm_created(OsStr::new(MARKER))
+            .confirm_created(MARKER)
             .unwrap_or_else(|error| panic!("{}: {error}", backend.name()));
     });
 }
@@ -294,7 +362,7 @@ fn an_open_through_another_implementation_is_refused() {
         let other = FileFactory::alternate()
             .open(backend.process(), &root)
             .expect("open");
-        match other.confirm_created(OsStr::new(MARKER)) {
+        match other.confirm_created(MARKER) {
             Err(CoordError::ImplementationMismatch { recorded }) => {
                 assert_eq!(recorded, FileFactory::IMPLEMENTATION);
             }
@@ -309,7 +377,7 @@ fn an_open_of_a_root_never_created_or_never_finished_is_refused() {
         let root = backend.root();
         let participant = implementation.open(backend.process(), &root).expect("open");
         assert!(matches!(
-            participant.confirm_created(OsStr::new(MARKER)),
+            participant.confirm_created(MARKER),
             Err(CoordError::NotCreated)
         ));
         let vfs = backend.process();
@@ -317,7 +385,7 @@ fn an_open_of_a_root_never_created_or_never_finished_is_refused() {
         let creator = implementation.open(vfs, &root).expect("open");
         assert!(create(&*creator, INPUTS, nonce(1), &mut maker).is_err());
         assert!(matches!(
-            participant.confirm_created(OsStr::new(MARKER)),
+            participant.confirm_created(MARKER),
             Err(CoordError::NotCreated)
         ));
     });
@@ -329,13 +397,14 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
         let vfs = backend.process();
         let root = backend.root();
         let participant = implementation.open(Arc::clone(&vfs), &root).expect("open");
-        let bad: [&[&str]; 17] = [
+        let bad: [&[&str]; 18] = [
             &["\u{1f80}", "\u{1f88}"],
             &["\u{1fb3}x", "\u{1fbc}X", "marker"],
             &["\u{1f80}", "\u{1f88}.publishing.1-0"],
             &["\u{1ff3}", "\u{1ffc}"],
             &[],
             &["dir/marker"],
+            &["dir\\marker"],
             &[".."],
             &[".coord-marker"],
             &["log", "log"],
@@ -348,17 +417,11 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
             &["files.publishing.7", "files"],
             &["bad\0name", "marker"],
         ];
-        let reserved_non_unicode = non_unicode(".coord");
-        let bad = bad
-            .iter()
-            .map(|names| names.iter().map(OsString::from).collect::<Vec<_>>())
-            .chain([vec![reserved_non_unicode]]);
         for artifacts in bad {
-            let artifacts: Vec<&OsStr> = artifacts.iter().map(OsString::as_os_str).collect();
             let plan = CreationPlan {
                 inputs: INPUTS,
                 nonce: nonce(1),
-                artifacts: &artifacts,
+                artifacts,
             };
             let mut maker = FileMaker::new(Arc::clone(&vfs), &root);
             assert!(
@@ -370,7 +433,7 @@ fn a_plan_that_creation_could_not_make_is_refused_and_changes_nothing() {
             );
         }
         assert!(matches!(
-            participant.confirm_created(OsStr::new("a/b")),
+            participant.confirm_created("a/b"),
             Err(CoordError::InvalidPlan { .. })
         ));
         assert!(vfs.read_dir(&root).expect("list").is_empty());
@@ -423,9 +486,9 @@ fn a_publication_left_beside_any_artifact_does_not_keep_its_creation_from_finish
             let mut interrupted = FileMaker::new(Arc::clone(&vfs), &root).failing_at(at);
             assert!(create(&*creator, INPUTS, nonce(1), &mut interrupted).is_err());
             creator.abandon();
-            let left = root.join(format!("{artifact}.publishing.9-9"));
+            let left = root.join(format!("{}.PUBLISHING.9-9", artifact.to_ascii_uppercase()));
             vfs.write(&left, b"cut short")
-                .expect("a publication left behind");
+                .expect("a case-variant publication left behind");
             assert_eq!(
                 create_through(implementation, backend.process(), &root, INPUTS, 2)
                     .unwrap_or_else(|error| panic!("{} {artifact}: {error}", backend.name())),
@@ -719,7 +782,7 @@ fn a_creator_suspended_before_publishing_holds_off_its_own_implementation() {
                 let opener = still_waiting(move || {
                     f2.open(opener_vfs, &r2)
                         .expect("open")
-                        .confirm_created(OsStr::new(MARKER))
+                        .confirm_created(MARKER)
                 });
                 assert!(creator.0, "a creator of the same implementation waits");
                 assert!(opener.0, "an opener of the same implementation waits");
@@ -766,7 +829,7 @@ fn a_creator_suspended_after_publishing_refuses_another_implementation_and_holds
                 other
                     .open(Arc::new(rival.another_process()), &root2)
                     .expect("open")
-                    .confirm_created(OsStr::new(MARKER)),
+                    .confirm_created(MARKER),
                 Err(CoordError::ImplementationMismatch { .. })
             ));
             let (f, r, v) = (
@@ -873,14 +936,14 @@ fn an_open_makes_a_marker_its_creator_did_not_make_durable() {
         implementation
             .open(Arc::new(mem.another_process()), &root)
             .expect("open")
-            .confirm_created(OsStr::new(MARKER))
+            .confirm_created(MARKER)
             .expect("the open finds the marker");
         let mem = mem.simulate_restart();
         assert_created(&mem, &root, INPUTS);
         implementation
             .open(Arc::new(mem.another_process()), &root)
             .expect("open")
-            .confirm_created(OsStr::new(MARKER))
+            .confirm_created(MARKER)
             .expect("the store survives the crash");
     }
 }
@@ -1014,7 +1077,7 @@ fn a_crash_between_any_two_steps_of_creation_leaves_a_creation_to_finish() {
             implementation
                 .open(Arc::new(mem.another_process()), &root)
                 .expect("open")
-                .confirm_created(OsStr::new(MARKER))
+                .confirm_created(MARKER)
                 .expect("a finished creation survives a crash");
         }
     }

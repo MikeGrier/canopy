@@ -57,7 +57,6 @@
 //! that moment. The gate composes with [`When`] rather than replacing it, so
 //! "open the gate, then fail exactly once" is a gate plus [`When::Once`].
 
-use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +64,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::{
     DirEntry, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock, VfsResult,
+    validate_path_components,
 };
 
 #[cfg(test)]
@@ -149,18 +149,18 @@ pub type PathPredicate = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 pub enum PathMatcher {
     /// Matches one path exactly (the default, and what [`FaultPolicy::inject`]
     /// builds).
-    Exact(Vec<OsString>),
-    /// Matches any path whose **final component** is this name, whatever
+    Exact(Option<Vec<String>>),
+    /// Matches any path whose **final component** is this UTF-8 name, whatever
     /// directory it sits in.
-    FileName(OsString),
-    /// Matches any path whose **final component starts with** this string, which
+    FileName(String),
+    /// Matches any path whose **final component starts with** this UTF-8 string, which
     /// is how a rule names a file written under a generated suffix -- a staging
     /// temp, a nonce, a rotation counter.
-    FileNamePrefix(OsString),
-    /// Matches any path that **contains** this component anywhere, which is how
+    FileNamePrefix(String),
+    /// Matches any path that **contains** this UTF-8 component anywhere, which is how
     /// a rule names everything under a directory whose full path it does not
     /// know.
-    HasComponent(OsString),
+    HasComponent(String),
     /// Matches whatever the caller's test accepts.
     Predicate(PathPredicate),
 }
@@ -174,20 +174,20 @@ impl PathMatcher {
 
     /// Matches any path whose final component is `name`.
     #[must_use]
-    pub fn file_name(name: impl AsRef<OsStr>) -> Self {
-        PathMatcher::FileName(name.as_ref().to_os_string())
+    pub fn file_name(name: impl Into<String>) -> Self {
+        PathMatcher::FileName(name.into())
     }
 
     /// Matches any path whose final component starts with `prefix`.
     #[must_use]
-    pub fn file_name_prefix(prefix: impl AsRef<OsStr>) -> Self {
-        PathMatcher::FileNamePrefix(prefix.as_ref().to_os_string())
+    pub fn file_name_prefix(prefix: impl Into<String>) -> Self {
+        PathMatcher::FileNamePrefix(prefix.into())
     }
 
     /// Matches any path containing the component `name`.
     #[must_use]
-    pub fn has_component(name: impl AsRef<OsStr>) -> Self {
-        PathMatcher::HasComponent(name.as_ref().to_os_string())
+    pub fn has_component(name: impl Into<String>) -> Self {
+        PathMatcher::HasComponent(name.into())
     }
 
     /// Matches any path `test` accepts, for what the variants above cannot say.
@@ -200,13 +200,17 @@ impl PathMatcher {
     #[must_use]
     pub fn matches(&self, path: &Path) -> bool {
         match self {
-            PathMatcher::Exact(parts) => normalize(path) == *parts,
-            PathMatcher::FileName(name) => normalize(path).last() == Some(name),
-            PathMatcher::FileNamePrefix(prefix) => normalize(path).last().is_some_and(|name| {
-                name.as_encoded_bytes()
-                    .starts_with(prefix.as_encoded_bytes())
-            }),
-            PathMatcher::HasComponent(name) => normalize(path).iter().any(|part| part == name),
+            PathMatcher::Exact(parts) => parts.as_ref() == normalize(path).as_ref(),
+            PathMatcher::FileName(name) => {
+                normalize(path).as_ref().and_then(|parts| parts.last()) == Some(name)
+            }
+            PathMatcher::FileNamePrefix(prefix) => normalize(path)
+                .as_ref()
+                .and_then(|parts| parts.last())
+                .is_some_and(|name| name.starts_with(prefix)),
+            PathMatcher::HasComponent(name) => normalize(path)
+                .as_ref()
+                .is_some_and(|parts| parts.iter().any(|part| part == name)),
             PathMatcher::Predicate(test) => test(path),
         }
     }
@@ -724,7 +728,7 @@ fn should_fire(when: When, matched: u32) -> bool {
 
 /// Normalizes a path to its named components under the single implicit root,
 /// matching how paths are compared against rule targets.
-fn normalize(path: &Path) -> Vec<OsString> {
+fn normalize(path: &Path) -> Option<Vec<String>> {
     let mut parts = Vec::new();
     for comp in path.components() {
         match comp {
@@ -732,10 +736,10 @@ fn normalize(path: &Path) -> Vec<OsString> {
             Component::ParentDir => {
                 parts.pop();
             }
-            Component::Normal(s) => parts.push(s.to_os_string()),
+            Component::Normal(name) => parts.push(name.to_str()?.to_owned()),
         }
     }
-    parts
+    Some(parts)
 }
 
 /// Builds the [`VfsError`] returned for an injected failure.
@@ -835,6 +839,8 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> VfsResult<()> {
+        validate_path_components(from, "rename")?;
+        validate_path_components(to, "rename")?;
         match self.check(FaultOp::Rename, from)? {
             Some(Fault::Fail(kind)) => Err(fault_err(*kind, "rename", from)),
             _ => self.inner.rename(from, to),

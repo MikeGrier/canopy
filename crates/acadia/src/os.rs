@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     DirEntry, FileType, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock,
-    VfsResult,
+    VfsResult, validate_path_components,
 };
 
 #[cfg(not(any(unix, windows)))]
@@ -642,10 +642,12 @@ fn file_op_err(op: &'static str, path: &Path, e: &io::Error) -> VfsError {
 
 impl Vfs for OsFs {
     fn read(&self, path: &Path) -> VfsResult<Vec<u8>> {
+        validate_path_components(path, "read")?;
         fs::read(path).map_err(|e| file_op_err("read", path, &e))
     }
 
     fn read_at(&self, path: &Path, offset: u64, len: usize) -> VfsResult<Vec<u8>> {
+        validate_path_components(path, "read_at")?;
         let file = fs::File::open(path).map_err(|e| file_op_err("read_at", path, &e))?;
         let metadata = file.metadata().map_err(|e| err("read_at", path, &e))?;
         // Unix opens a directory for reading; checked before the range so an empty or
@@ -692,10 +694,12 @@ impl Vfs for OsFs {
     }
 
     fn write(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        validate_path_components(path, "write")?;
         fs::write(path, contents).map_err(|e| err("write", path, &e))
     }
 
     fn append(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        validate_path_components(path, "append")?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -706,6 +710,7 @@ impl Vfs for OsFs {
     }
 
     fn truncate(&self, path: &Path, len: u64) -> VfsResult<()> {
+        validate_path_components(path, "truncate")?;
         let file = OpenOptions::new()
             .write(true)
             .open(path)
@@ -714,6 +719,7 @@ impl Vfs for OsFs {
     }
 
     fn fsync(&self, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, "fsync")?;
         let meta = fs::metadata(path).map_err(|e| err("fsync", path, &e))?;
         if meta.is_dir() {
             open_dir_for_sync(path)
@@ -733,36 +739,52 @@ impl Vfs for OsFs {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> VfsResult<()> {
+        validate_path_components(from, "rename")?;
+        validate_path_components(to, "rename")?;
         fs::rename(from, to).map_err(|e| err("rename", from, &e))
     }
 
     fn remove_file(&self, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, "remove_file")?;
         fs::remove_file(path).map_err(|e| file_op_err("remove_file", path, &e))
     }
 
     fn create_dir(&self, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, "create_dir")?;
         fs::create_dir(path).map_err(|e| err("create_dir", path, &e))
     }
 
     fn create_dir_all(&self, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, "create_dir_all")?;
         fs::create_dir_all(path).map_err(|e| err("create_dir_all", path, &e))
     }
 
     fn remove_dir(&self, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, "remove_dir")?;
         fs::remove_dir(path).map_err(|e| err("remove_dir", path, &e))
     }
 
     fn remove_dir_all(&self, path: &Path) -> VfsResult<()> {
+        validate_path_components(path, "remove_dir_all")?;
         fs::remove_dir_all(path).map_err(|e| err("remove_dir_all", path, &e))
     }
 
     fn read_dir(&self, path: &Path) -> VfsResult<Vec<DirEntry>> {
+        validate_path_components(path, "read_dir")?;
         let mut entries = Vec::new();
         for entry in fs::read_dir(path).map_err(|e| err("read_dir", path, &e))? {
             let entry = entry.map_err(|e| err("read_dir", path, &e))?;
             let file_type = file_type_of(entry.file_type().map_err(|e| err("read_dir", path, &e))?);
+            let file_name = entry.file_name().into_string().map_err(|_| {
+                VfsError::new(
+                    VfsErrorKind::InvalidInput,
+                    "read_dir",
+                    "a directory entry is not valid UTF-8",
+                )
+                .with_path(path)
+            })?;
             entries.push(DirEntry {
-                file_name: entry.file_name(),
+                file_name,
                 file_type,
             });
         }
@@ -770,6 +792,7 @@ impl Vfs for OsFs {
     }
 
     fn metadata(&self, path: &Path) -> VfsResult<Metadata> {
+        validate_path_components(path, "metadata")?;
         let meta = fs::metadata(path).map_err(|e| err("metadata", path, &e))?;
         let file_type = file_type_of(meta.file_type());
         Ok(Metadata {
@@ -784,6 +807,7 @@ impl Vfs for OsFs {
     }
 
     fn lock_exclusive(&self, path: &Path) -> VfsResult<Box<dyn VfsLock>> {
+        validate_path_components(path, "lock_exclusive")?;
         match open_exclusive(path) {
             Ok(handle) => Ok(Box::new(OsLock { handle })),
             Err(e) if is_contention(&e) => {
@@ -797,14 +821,17 @@ impl Vfs for OsFs {
     }
 
     fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        validate_path_components(path, "try_lock")?;
         take_span_lock(path, "try_lock", mode, span, false)
     }
 
     fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
+        validate_path_components(path, "lock")?;
         take_span_lock(path, "lock", mode, span, true)
     }
 
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {
+        validate_path_components(path, "publish_new")?;
         publish_staged(path, contents, || publishing_path(path))
     }
 
@@ -817,6 +844,7 @@ impl Vfs for OsFs {
     }
 
     fn open_output(&self, path: &Path) -> VfsResult<fs::File> {
+        validate_path_components(path, "open_output")?;
         // `std`'s default share mode on Windows already admits concurrent readers
         // and Unix imposes none, so a tailing reader can open the file meanwhile.
         OpenOptions::new()

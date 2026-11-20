@@ -94,6 +94,29 @@ fn ordinary_admission_checks_each_layers_reader_range_and_writer_equality() {
 }
 
 #[test]
+fn schema_one_stores_are_not_admitted_by_schema_two() {
+    use acadia::coord::Access;
+    let agent = Agent::new("agent", "version", "description", 1);
+    let mut metadata = AgentMetadata::new(&agent);
+    metadata.canopy_schema = SchemaVersions {
+        current: 1,
+        oldest_reader: 1,
+    };
+    for access in [Access::Read, Access::Write] {
+        assert!(matches!(
+            metadata.check_admission(&agent, access),
+            Err(StoreError::SchemaMismatch {
+                layer: SchemaLayer::Canopy,
+                spoken: 2,
+                current: 1,
+                oldest_reader: 1,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
 fn metadata_preserves_opaque_agent_values_and_initializes_both_reader_floors() {
     for schema in [0, 1, 2, 3, 4, 7, 8, 16, 100, u32::MAX] {
         let agent = Agent::new("example.agent", "build-B", "agent documentation", schema);

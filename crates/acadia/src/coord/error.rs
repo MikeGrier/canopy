@@ -2,7 +2,6 @@
 
 //! [`CoordError`]: why a coordination operation did not do what it was asked.
 
-use std::ffi::OsString;
 use std::fmt;
 
 use crate::{VfsError, VfsErrorKind};
@@ -32,8 +31,8 @@ pub enum CoordError {
     },
     /// The root holds something creation does not make.
     Occupied {
-        /// The first such name found beneath the root.
-        name: OsString,
+        /// The first such UTF-8 name found beneath the root.
+        name: String,
     },
     /// A creation of the root was begun by another implementation, or with other inputs; only
     /// that implementation, with those inputs, may resume it.
@@ -77,11 +76,9 @@ impl fmt::Display for CoordError {
             CoordError::ImplementationMismatch { recorded } => {
                 write!(f, "the root is coordinated by {recorded}")
             }
-            CoordError::Occupied { name } => write!(
-                f,
-                "the root holds {} which creation does not make",
-                name.to_string_lossy()
-            ),
+            CoordError::Occupied { name } => {
+                write!(f, "the root holds {name} which creation does not make")
+            }
             CoordError::Reserved => f.write_str(
                 "a creation of the root was begun by another implementation or with other inputs",
             ),

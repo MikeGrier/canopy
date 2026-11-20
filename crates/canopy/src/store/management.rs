@@ -2,7 +2,6 @@
 
 use super::*;
 use acadia::coord::{Coordination, CoordinationFactory, ImplementationId};
-use std::ffi::OsStr;
 
 /// Store-level metadata read together from one atomically published marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +94,7 @@ impl DiagnosticView {
         let root = root.into();
         Store::read_genesis(&vfs, &root)?;
         let participant = factory.open(Arc::clone(&vfs), &root)?;
-        participant.confirm_created(OsStr::new(MARKER_NAME))?;
+        participant.confirm_created(MARKER_NAME)?;
         Store::read_genesis(&vfs, &root)?;
         Ok(Self {
             vfs,

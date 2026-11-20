@@ -408,8 +408,8 @@ fn children_are_documents_and_child_nodes_distinguished() {
     place(&store, "TICKETS/OTHER", "d.json", "n4");
 
     let (documents, nodes) = names(&store.list_children(node_of("TICKETS")).unwrap());
-    assert_eq!(documents, vec!["A.JSON", "B.JSON"]);
-    assert_eq!(nodes, vec!["TICKETS/DEEP", "TICKETS/OTHER"]);
+    assert_eq!(documents, vec!["a.json", "b.json"]);
+    assert_eq!(nodes, vec!["tickets/deep", "tickets/other"]);
 }
 
 #[test]
@@ -422,7 +422,7 @@ fn children_are_sorted_so_a_walk_is_deterministic() {
     }
 
     let (documents, _) = names(&store.list_children(node_of("TICKETS")).unwrap());
-    assert_eq!(documents, vec!["A.JSON", "M.JSON", "Z.JSON"]);
+    assert_eq!(documents, vec!["a.json", "m.json", "z.json"]);
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn traversal_unions_across_replicas_rather_than_taking_a_majority() {
     let (documents, _) = names(&store.list_children(node.clone()).unwrap());
     assert_eq!(
         documents,
-        vec!["EVERYWHERE.JSON", "LONELY.JSON"],
+        vec!["everywhere.json", "lonely.json"],
         "a minority entry must still be enumerable"
     );
 }
@@ -477,7 +477,7 @@ fn traversal_reports_a_document_once_even_when_replicas_disagree_about_its_value
         .unwrap();
 
     let (documents, _) = names(&store.list_children(node).unwrap());
-    assert_eq!(documents, vec!["A.JSON"]);
+    assert_eq!(documents, vec!["a.json"]);
 }
 
 #[test]
@@ -497,7 +497,7 @@ fn reserved_dotfiles_and_foreign_entries_are_skipped() {
     vfs.create_dir_all(&dir.join("bad name")).unwrap();
 
     let (documents, nodes) = names(&store.list_children(node_of("TICKETS")).unwrap());
-    assert_eq!(documents, vec!["HELLO.WORLD.TXT", "REAL.JSON"]);
+    assert_eq!(documents, vec!["hello.world.txt", "real.json"]);
     assert!(nodes.is_empty(), "{nodes:?}");
 }
 
@@ -526,10 +526,10 @@ fn every_document_in_the_namespace_is_enumerable() {
     assert_eq!(
         listed,
         vec![
-            ("OTHER".to_string(), "D.JSON".to_string()),
-            ("TICKETS".to_string(), "A.JSON".to_string()),
-            ("TICKETS/DEEP".to_string(), "B.JSON".to_string()),
-            ("TICKETS/DEEP/DEEPER".to_string(), "C.JSON".to_string()),
+            ("other".to_string(), "d.json".to_string()),
+            ("tickets".to_string(), "a.json".to_string()),
+            ("tickets/deep".to_string(), "b.json".to_string()),
+            ("tickets/deep/deeper".to_string(), "c.json".to_string()),
         ]
     );
 }
@@ -556,7 +556,7 @@ fn a_document_may_not_take_a_name_a_child_node_already_holds() {
     match store.write_pointer(&node, &document, &pointer, &nonce_of("n2")) {
         Err(StoreError::NameIsChildNode { path, name }) => {
             assert_eq!(path, node);
-            assert_eq!(name, "A");
+            assert_eq!(name, "a");
         }
         other => panic!("expected a namespace collision, got {other:?}"),
     }
@@ -619,7 +619,7 @@ fn a_refused_write_leaves_nothing_behind() {
     }
     // And the node that was already there is untouched.
     let (documents, _) = names(&store.list_children(node_of("TICKETS/A")).unwrap());
-    assert_eq!(documents, vec!["INNER.JSON"]);
+    assert_eq!(documents, vec!["inner.json"]);
 }
 
 /// The replica index each read touches first, for `rounds` reads of one document.
@@ -1039,7 +1039,7 @@ fn a_pointer_repair_from_an_obsolete_report_writes_nothing() {
     store
         .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
-    let entry = namespace_root(&store, 0).join("TICKETS").join("RECORD");
+    let entry = namespace_root(&store, 0).join("tickets").join("record");
     vfs.remove_file(&entry).unwrap();
     let obsolete = store.read_pointer(&node, &d).unwrap();
     assert_eq!(obsolete.missing(), [0]);
@@ -1064,7 +1064,7 @@ fn a_pointer_repair_restores_what_is_still_missing() {
     store
         .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
-    let entry = namespace_root(&store, 1).join("TICKETS").join("RECORD");
+    let entry = namespace_root(&store, 1).join("tickets").join("record");
     vfs.remove_file(&entry).unwrap();
     let report = store.read_pointer(&node, &d).unwrap();
 
@@ -1087,7 +1087,7 @@ fn a_removal_replayed_over_an_absent_entry_still_syncs_its_parent() {
     let parent = root
         .join(crate::store::NAMESPACE_TREE_DIR)
         .join("p0")
-        .join("TICKETS");
+        .join("tickets");
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),
         FaultPolicy::new().inject_gated(
@@ -1134,7 +1134,7 @@ fn a_pointer_repair_is_visible_to_the_modification_count() {
     store
         .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
-    vfs.remove_file(&namespace_root(&store, 2).join("TICKETS").join("RECORD"))
+    vfs.remove_file(&namespace_root(&store, 2).join("tickets").join("record"))
         .unwrap();
     let report = store.read_pointer(&node, &d).unwrap();
 
@@ -1161,7 +1161,7 @@ fn an_obsolete_pointer_repair_leaves_the_count_alone() {
     store
         .write_document_replicated_as(&node, &d, &body(b"v1"), &nonce("w1"))
         .unwrap();
-    vfs.remove_file(&namespace_root(&store, 0).join("TICKETS").join("RECORD"))
+    vfs.remove_file(&namespace_root(&store, 0).join("tickets").join("record"))
         .unwrap();
     let obsolete = store.read_pointer(&node, &d).unwrap();
     store
@@ -1187,7 +1187,7 @@ fn collection_never_deletes_the_blob_a_durable_pointer_still_names() {
     let parent = root
         .join(crate::store::NAMESPACE_TREE_DIR)
         .join("p0")
-        .join("TICKETS");
+        .join("tickets");
     let faulty = Arc::new(FaultyFs::new(
         acadia::MemFs::new(),
         FaultPolicy::new().inject_gated(

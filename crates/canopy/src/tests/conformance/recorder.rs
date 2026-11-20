@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use acadia::{
-    DirEntry, Fault, FaultGate, FaultOp, FaultPolicy, FaultyFs, LockMode, LockSpan, MemFs,
-    Metadata, PathMatcher, Vfs, VfsLock, VfsResult, When,
+    DirEntry, FaultOp, FaultPolicy, FaultyFs, LockMode, LockSpan, MemFs, Metadata, Vfs, VfsError,
+    VfsErrorKind, VfsLock, VfsResult,
 };
 
 mod tests;
@@ -35,29 +35,30 @@ pub(super) trait Watcher: Send + Sync {
     fn after(&self, op: FaultOp, path: &Path, to: Option<&Path>);
 }
 
-/// Every operation a [`FaultyFs`] can fail.
-const OPS: [FaultOp; 20] = [
-    FaultOp::Read,
-    FaultOp::ReadAt,
-    FaultOp::Write,
-    FaultOp::Append,
-    FaultOp::Truncate,
-    FaultOp::Fsync,
-    FaultOp::Rename,
-    FaultOp::RemoveFile,
-    FaultOp::CreateDir,
-    FaultOp::CreateDirAll,
-    FaultOp::RemoveDir,
-    FaultOp::RemoveDirAll,
-    FaultOp::ReadDir,
-    FaultOp::Metadata,
-    FaultOp::LockExclusive,
-    FaultOp::TryLock,
-    FaultOp::Lock,
-    FaultOp::PublishNew,
-    FaultOp::OpenOutput,
-    FaultOp::BootIdentity,
-];
+fn operation_name(op: FaultOp) -> &'static str {
+    match op {
+        FaultOp::Read => "read",
+        FaultOp::ReadAt => "read_at",
+        FaultOp::Write => "write",
+        FaultOp::Append => "append",
+        FaultOp::Truncate => "truncate",
+        FaultOp::Fsync => "fsync",
+        FaultOp::Rename => "rename",
+        FaultOp::RemoveFile => "remove_file",
+        FaultOp::CreateDir => "create_dir",
+        FaultOp::CreateDirAll => "create_dir_all",
+        FaultOp::RemoveDir => "remove_dir",
+        FaultOp::RemoveDirAll => "remove_dir_all",
+        FaultOp::ReadDir => "read_dir",
+        FaultOp::Metadata => "metadata",
+        FaultOp::LockExclusive => "lock_exclusive",
+        FaultOp::TryLock => "try_lock",
+        FaultOp::Lock => "lock",
+        FaultOp::PublishNew => "publish_new",
+        FaultOp::OpenOutput => "open_output",
+        FaultOp::BootIdentity => "boot_identity",
+    }
+}
 
 /// Whether `op` can change what a filesystem holds.
 pub(super) fn mutates(op: FaultOp) -> bool {
@@ -79,7 +80,6 @@ pub(super) fn mutates(op: FaultOp) -> bool {
 
 pub(super) struct Recorder {
     faulty: FaultyFs<MemFs>,
-    gate: FaultGate,
     dead: AtomicBool,
     watcher: Mutex<Option<Arc<dyn Watcher>>>,
 }
@@ -97,19 +97,8 @@ impl Recorder {
 
     /// A recorder over `mem`, which may be one simulated process of a filesystem others share.
     pub(super) fn over(mem: MemFs) -> Recorder {
-        let gate = FaultGate::closed();
-        let policy = OPS.iter().fold(FaultPolicy::new(), |policy, &op| {
-            policy.inject_gated(
-                op,
-                PathMatcher::predicate(|_| true),
-                Fault::io_error(),
-                When::Always,
-                gate.clone(),
-            )
-        });
         Recorder {
-            faulty: FaultyFs::new(mem, policy),
-            gate,
+            faulty: FaultyFs::new(mem, FaultPolicy::new()),
             dead: AtomicBool::new(false),
             watcher: Mutex::new(None),
         }
@@ -161,10 +150,10 @@ impl Recorder {
             }
         }
         if fail {
-            self.gate.open();
-            let result = run(&self.faulty);
-            self.gate.close();
-            return result;
+            let op = operation_name(op);
+            self.faulty.check_process(op, path)?;
+            self.faulty.commit_process(op, path, &mut || {})?;
+            return Err(VfsError::new(VfsErrorKind::Other, op, "injected fault").with_path(path));
         }
         let result = run(&self.faulty);
         if result.is_ok()

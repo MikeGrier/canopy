@@ -3,8 +3,7 @@
 //! [`Creation`]: creation exclusion and the creation reservation (canopy's DESIGN-NOTES.md,
 //! "Creating a store root, modelled in `Creation.tla`").
 
-use std::ffi::OsStr;
-use std::path::{Component, Path};
+use std::path::Path;
 
 use super::RESERVED_PREFIX;
 use super::error::{CoordError, CoordResult};
@@ -23,20 +22,28 @@ pub struct CreationPlan<'a> {
     /// them: none begins with [`RESERVED_PREFIX`](super::RESERVED_PREFIX), which names the
     /// coordination's own entries, none names another, and none is a sibling a publication of
     /// another is staged in ([`is_publication_staging_of`](crate::is_publication_staging_of)).
-    pub artifacts: &'a [&'a OsStr],
+    pub artifacts: &'a [&'a str],
 }
 
 /// `name` as a case-insensitive filesystem compares it: a Unicode name by each character's simple
 /// uppercase mapping, any other by the uppercase of its ASCII code units.
-fn folded(name: &OsStr) -> Vec<u8> {
-    match name.to_str() {
-        Some(text) => text
-            .chars()
-            .map(simple_uppercase)
-            .collect::<String>()
-            .into_bytes(),
-        None => name.as_encoded_bytes().to_ascii_uppercase(),
-    }
+fn folded(name: &str) -> Vec<u8> {
+    name.chars()
+        .map(simple_uppercase)
+        .collect::<String>()
+        .into_bytes()
+}
+
+pub(crate) fn names_equal(left: &str, right: &str) -> bool {
+    folded(left) == folded(right)
+}
+
+pub(crate) fn is_publication_staging_of_folded(name: &str, target: &str) -> bool {
+    let name = folded(name);
+    let target = folded(target);
+    name.strip_prefix(target.as_slice())
+        .and_then(|rest| rest.strip_prefix(crate::PUBLISHING_INFIX.to_ascii_uppercase().as_bytes()))
+        .is_some_and(|suffix| !suffix.is_empty())
 }
 
 /// The simple uppercase mapping of `c` (UnicodeData.txt's field 12). `char::to_uppercase` gives the
@@ -67,6 +74,7 @@ pub(crate) fn make_artifacts(
     maker: &mut dyn ArtifactMaker,
     vfs: &dyn crate::Vfs,
     root: &Path,
+    existing: &[String],
     alive: &dyn Fn() -> CoordResult<()>,
     publish: &dyn Fn(&Path, &[u8]) -> CoordResult<()>,
 ) -> CoordResult<()> {
@@ -76,7 +84,12 @@ pub(crate) fn make_artifacts(
         .expect("a validated plan has artifacts");
     for artifact in others {
         alive()?;
-        maker.make(artifact, plan.inputs)?;
+        let name = existing
+            .iter()
+            .find(|name| names_equal(name, artifact))
+            .map(String::as_str)
+            .unwrap_or(artifact);
+        maker.make(name, plan.inputs)?;
         alive()?;
         vfs.fsync(root)?;
     }
@@ -90,17 +103,13 @@ pub(crate) fn make_artifacts(
 
 /// Refuses a name that is not one plain name directly beneath the root, or that begins with the
 /// reserved prefix in any case.
-pub(crate) fn validate_artifact_name(name: &OsStr) -> CoordResult<()> {
-    if name.as_encoded_bytes().contains(&0) {
+pub(crate) fn validate_artifact_name(name: &str) -> CoordResult<()> {
+    if name.contains('\0') {
         return Err(CoordError::InvalidPlan {
             why: "an artifact's name contains NUL",
         });
     }
-    let mut components = Path::new(name).components();
-    if !matches!(
-        (components.next(), components.next()),
-        (Some(Component::Normal(only)), None) if only == name
-    ) {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
         return Err(CoordError::InvalidPlan {
             why: "an artifact is one plain name directly beneath the root",
         });
@@ -162,7 +171,7 @@ pub trait ArtifactMaker {
     /// # Errors
     ///
     /// Any failure ends the creation, which a later call resumes.
-    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()>;
+    fn make(&mut self, name: &str, inputs: &[u8]) -> CoordResult<()>;
 
     /// Gives the bytes of the marker `name` for `inputs`, once every other artifact is durable;
     /// whatever must precede the marker is done here. The coordination publishes them with
@@ -171,7 +180,7 @@ pub trait ArtifactMaker {
     /// # Errors
     ///
     /// Any failure ends the creation, which a later call resumes.
-    fn marker(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>>;
+    fn marker(&mut self, name: &str, inputs: &[u8]) -> CoordResult<Vec<u8>>;
 }
 
 /// Creation exclusion and the creation reservation.
@@ -182,9 +191,9 @@ pub trait ArtifactMaker {
 pub trait Creation {
     /// Creates the store root, resumes a creation of it that was interrupted, or finds it made.
     ///
-    /// The root is read: a marker under a reservation that names this implementation and records
-    /// `plan.inputs` is the store asked for, whose marker is made durable with its directory entry
-    /// before the call returns [`Created::Existing`]; any other marker refuses with
+    /// The root is read: a regular-file marker under a reservation that names this implementation
+    /// and records `plan.inputs` is the store asked for, whose marker is made durable with its
+    /// directory entry before the call returns [`Created::Existing`]; any other marker refuses with
     /// [`AlreadyCreated`](super::CoordError::AlreadyCreated); anything beneath it that is neither an
     /// artifact of `plan` nor the coordination's own -- or an artifact with no reservation, which no
     /// creation leaves -- refuses with [`Occupied`](super::CoordError::Occupied). A sibling that
@@ -240,8 +249,9 @@ pub trait Creation {
 
     /// Confirms that the root is a store this implementation coordinates, before an open relies on
     /// it: the reservation must name this implementation, and the marker -- the last of the
-    /// artifacts, named by `marker` -- must exist, and is made durable with its directory entry,
-    /// since its creator may have died between publishing it and making it durable.
+    /// artifacts, named by `marker` -- must be a regular file, and is made durable with its
+    /// directory entry, since its creator may have died between publishing it and making it
+    /// durable.
     ///
     /// It waits for this implementation's creation exclusion, shared with other openers, so an open
     /// that meets a creation in progress waits for it to finish or die.
@@ -250,8 +260,9 @@ pub trait Creation {
     ///
     /// [`ImplementationMismatch`](super::CoordError::ImplementationMismatch) for a root another
     /// implementation coordinates; [`NotCreated`](super::CoordError::NotCreated) for one with no
-    /// marker, a creation that was never finished included, or with no reservation, which no
-    /// creation through this interface leaves; [`InvalidPlan`](super::CoordError::InvalidPlan) for a
+    /// regular-file marker, a creation that was never finished included, or with no reservation,
+    /// which no creation through this interface leaves;
+    /// [`InvalidPlan`](super::CoordError::InvalidPlan) for a
     /// marker name that could not be an artifact.
-    fn confirm_created(&self, marker: &OsStr) -> CoordResult<()>;
+    fn confirm_created(&self, marker: &str) -> CoordResult<()>;
 }

@@ -5,10 +5,47 @@
 //! durability model.
 
 use super::*;
+use std::ffi::OsString;
 
 // ---------------------------------------------------------------------------
 // Shared conformance suite -- asserted identically on OsFs and MemFs.
 // ---------------------------------------------------------------------------
+
+fn non_utf8_component() -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![0xFF])
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0xD800])
+    }
+}
+
+#[test]
+fn a_path_component_must_be_utf8() {
+    on_both("non_utf8_component", |fs, root| {
+        let path = root.join(non_utf8_component());
+        assert_kind(
+            fs.write(&path, b"not a portable name"),
+            VfsErrorKind::InvalidInput,
+        );
+        assert!(!fs.exists(&path).unwrap_or(false));
+    });
+}
+
+#[test]
+fn a_path_component_must_not_contain_nul() {
+    on_both("nul_component", |fs, root| {
+        let path = root.join("not\0a-component");
+        assert_kind(
+            fs.write(&path, b"not a valid name"),
+            VfsErrorKind::InvalidInput,
+        );
+    });
+}
 
 #[test]
 fn write_then_read_roundtrips() {
@@ -108,7 +145,7 @@ fn create_dir_and_read_dir_lists_entries() {
 
         let mut by_name = std::collections::BTreeMap::new();
         for e in fs.read_dir(&dir).unwrap() {
-            by_name.insert(e.file_name.to_string_lossy().into_owned(), e.file_type);
+            by_name.insert(e.file_name, e.file_type);
         }
         assert_eq!(by_name.remove("a"), Some(FileType::File));
         assert_eq!(by_name.remove("b"), Some(FileType::File));

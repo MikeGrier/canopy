@@ -100,8 +100,8 @@ fn a_document_cannot_take_a_name_a_child_node_already_holds() {
         .expect_err("a child node's name is taken");
     match err {
         StoreError::NameIsChildNode { path, name } => {
-            assert_eq!(path.to_string(), "TICKETS");
-            assert_eq!(name, "AB");
+            assert_eq!(path.to_string(), "tickets");
+            assert_eq!(name, "ab");
         }
         other => panic!("expected a name-is-child-node refusal, got {other:?}"),
     }
@@ -128,7 +128,7 @@ fn a_path_cannot_descend_through_a_document() {
         )
         .expect_err("cannot descend through a document");
     match err {
-        StoreError::PathIsDocument { path } => assert_eq!(path.to_string(), "TICKETS/AB"),
+        StoreError::PathIsDocument { path } => assert_eq!(path.to_string(), "tickets/ab"),
         other => panic!("expected a path-is-document refusal, got {other:?}"),
     }
 }
@@ -146,7 +146,7 @@ fn a_collision_reports_the_shallowest_offending_prefix() {
         .write_document_replicated_as(name("a/b/c/d"), &doc("record"), &body(b"x"), &nonce("h10"))
         .expect_err("cannot descend through a document");
     match err {
-        StoreError::PathIsDocument { path } => assert_eq!(path.to_string(), "A/B"),
+        StoreError::PathIsDocument { path } => assert_eq!(path.to_string(), "a/b"),
         other => panic!("expected a path-is-document refusal, got {other:?}"),
     }
 }
@@ -177,7 +177,7 @@ fn a_refused_write_leaves_nothing_behind() {
     );
 
     // `TICKETS/AB` is still the document it was, not a directory.
-    let target = namespace_root(&store, 0).join("TICKETS").join("AB");
+    let target = namespace_root(&store, 0).join("tickets").join("ab");
     assert!(vfs.metadata(&target).unwrap().is_file());
     assert_eq!(
         store.read_body(name("tickets"), &doc("ab")).unwrap(),
@@ -213,7 +213,7 @@ fn a_collision_check_that_cannot_look_fails_rather_than_passing() {
         acadia::MemFs::new(),
         FaultPolicy::new().inject_gated(
             FaultOp::Metadata,
-            PathMatcher::file_name("AB"),
+            PathMatcher::file_name("ab"),
             Fault::io_error(),
             When::Always,
             gate.clone(),
@@ -269,7 +269,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_by_the_next_write()
             )
             .inject_gated(
                 FaultOp::RemoveDir,
-                PathMatcher::file_name("TICKETS"),
+                PathMatcher::file_name("tickets"),
                 Fault::io_error(),
                 When::Always,
                 gate.clone(),
@@ -295,7 +295,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_by_the_next_write()
 
     let faulty = Arc::new(faulty.simulate_restart());
     assert!(
-        faulty.inner().exists(&partition.join("TICKETS")).unwrap(),
+        faulty.inner().exists(&partition.join("tickets")).unwrap(),
         "the node directory's name was never made durable"
     );
 }
@@ -344,7 +344,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_after_a_reopen() {
             )
             .inject_gated(
                 FaultOp::RemoveDir,
-                PathMatcher::file_name("TICKETS"),
+                PathMatcher::file_name("tickets"),
                 Fault::io_error(),
                 When::Always,
                 gate.clone(),
@@ -369,7 +369,7 @@ fn a_node_directory_whose_name_could_not_be_synced_is_synced_after_a_reopen() {
 
     let faulty = Arc::new(faulty.simulate_restart());
     assert!(
-        faulty.inner().exists(&partition.join("TICKETS")).unwrap(),
+        faulty.inner().exists(&partition.join("tickets")).unwrap(),
         "the node directory's name was never made durable"
     );
 }
@@ -388,7 +388,7 @@ fn a_set_removing_a_name_another_of_its_writes_nests_under_is_refused_before_beg
     let refused = store.apply_transaction_as(&swaps, &nonce("t1"));
 
     assert!(
-        matches!(refused, Err(StoreError::NameIsChildNode { ref name, .. }) if name == "B"),
+        matches!(refused, Err(StoreError::NameIsChildNode { ref name, .. }) if name == "b"),
         "got {refused:?}"
     );
     assert!(store.commit_log_is_empty().unwrap());
@@ -440,7 +440,7 @@ fn a_directory_whose_creation_cannot_be_recorded_is_not_created() {
 
     for index in 0..store.pointer_replica_count() {
         assert!(
-            !vfs.exists(&namespace_root(&store, index).join("TICKETS"))
+            !vfs.exists(&namespace_root(&store, index).join("tickets"))
                 .unwrap(),
             "replica {index} created a directory it could not record"
         );
@@ -480,7 +480,7 @@ fn a_stale_intent_below_what_is_now_a_document_does_not_block_reopening() {
     let mut stale = String::new();
     for index in 0..3 {
         stale.push_str(&format!(
-            "{}/p{index}/A/B/C\n{}/p{index}/A/B/C/DEEPER\n",
+            "{}/p{index}/a/b/c\n{}/p{index}/a/b/c/DEEPER\n",
             crate::store::NAMESPACE_TREE_DIR,
             crate::store::NAMESPACE_TREE_DIR
         ));
@@ -593,7 +593,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
             )
             .inject_gated(
                 FaultOp::RemoveDir,
-                PathMatcher::file_name("TICKETS"),
+                PathMatcher::file_name("tickets"),
                 Fault::io_error(),
                 When::Always,
                 gate.clone(),
@@ -616,7 +616,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
     )
     .unwrap();
     store.apply_transaction_as(&emptied, &nonce("s2")).unwrap();
-    assert!(!vfs.exists(&partition.join("TICKETS")).unwrap());
+    assert!(!vfs.exists(&partition.join("tickets")).unwrap());
 
     gate.open();
     store
@@ -640,7 +640,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
         record.ends_with('\n')
             && record
                 .lines()
-                .all(|line| line.ends_with("TICKETS") && line.starts_with("namespace")),
+                .all(|line| line.ends_with("tickets") && line.starts_with("namespace")),
         "every record is a whole path: {record:?}"
     );
     drop(store);
@@ -653,7 +653,7 @@ fn a_torn_intent_record_does_not_hide_the_directory_a_retry_creates() {
 
     let faulty = Arc::new(faulty.simulate_restart());
     assert!(
-        faulty.inner().exists(&partition.join("TICKETS")).unwrap(),
+        faulty.inner().exists(&partition.join("tickets")).unwrap(),
         "the node directory's name was never made durable"
     );
 }
@@ -721,11 +721,11 @@ fn enumeration_reports_documents_at_every_depth_with_their_full_paths() {
     assert_eq!(
         listed,
         [
-            "PENDING-WORK/0001/ENTRY",
-            "STORE/PERMUTATION-KEY",
-            "TICKETS/AA/AAA/RECORD",
-            "TICKETS/AB/ABC/ENGINE",
-            "TICKETS/AB/ABC/RECORD",
+            "pending-work/0001/entry",
+            "store/permutation-key",
+            "tickets/aa/aaa/record",
+            "tickets/ab/abc/engine",
+            "tickets/ab/abc/record",
         ]
     );
 }
@@ -742,7 +742,7 @@ fn enumeration_skips_staging_and_the_marker() {
 
     let listed = store.list_documents().expect("list");
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].0.to_string(), "TICKETS/AB");
+    assert_eq!(listed[0].0.to_string(), "tickets/ab");
 }
 
 #[test]
@@ -791,12 +791,12 @@ fn listing_a_prefix_reports_its_documents_and_child_nodes_separately() {
         .iter()
         .map(DocumentName::as_str)
         .collect();
-    assert_eq!(documents, ["INDEX", "MARKER"]);
+    assert_eq!(documents, ["index", "marker"]);
 
     // Child nodes as full paths, one tier down only -- `TICKETS/AB/DEEPER` is a child
     // of `TICKETS/AB`, not of `TICKETS`.
     let nodes: Vec<String> = children.nodes().iter().map(NodePath::to_string).collect();
-    assert_eq!(nodes, ["TICKETS/AA", "TICKETS/AB"]);
+    assert_eq!(nodes, ["tickets/aa", "tickets/ab"]);
 }
 
 #[test]
@@ -831,7 +831,7 @@ fn listing_does_not_reach_into_sibling_prefixes() {
             .iter()
             .map(NodePath::to_string)
             .collect::<Vec<_>>(),
-        ["PENDING-WORK/0001"]
+        ["pending-work/0001"]
     );
 }
 
@@ -864,7 +864,7 @@ fn listing_the_root_level_reports_the_top_tier() {
             .iter()
             .map(DocumentName::as_str)
             .collect::<Vec<_>>(),
-        ["RECORD"]
+        ["record"]
     );
 }
 

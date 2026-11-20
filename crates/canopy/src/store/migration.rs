@@ -189,7 +189,7 @@ impl Store {
         } else {
             factory
                 .open(Arc::clone(vfs), root)?
-                .confirm_created(std::ffi::OsStr::new(MARKER_NAME))?;
+                .confirm_created(MARKER_NAME)?;
         }
         let metadata = if from_version == AGENT_FORMAT_VERSION {
             let metadata: super::agent::AgentMetadata =
@@ -245,7 +245,7 @@ impl Store {
         } else {
             factory
                 .open(Arc::clone(vfs), root)?
-                .confirm_created(std::ffi::OsStr::new(MARKER_NAME))?;
+                .confirm_created(MARKER_NAME)?;
         }
         let marker = serde_json::to_vec_pretty(&record.genesis)?;
         Self::publish_durably(vfs, root, MARKER_NAME, &marker)?;

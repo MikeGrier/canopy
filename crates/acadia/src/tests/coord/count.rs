@@ -287,7 +287,7 @@ fn a_holder_killed_before_publishing_its_raise_leaves_the_count_as_it_was() {
             .read_dir(&sampler.layout().state_dir())
             .expect("list")
             .into_iter()
-            .any(|entry| entry.file_name.to_string_lossy().starts_with(STAGED));
+            .any(|entry| entry.file_name.starts_with(STAGED));
         assert!(!staged_left, "a failed publication removes what it staged");
     }
 }

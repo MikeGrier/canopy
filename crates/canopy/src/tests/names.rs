@@ -13,7 +13,7 @@ use super::*;
 fn value_types_and_validation_errors_have_stable_display_text() {
     assert_eq!(
         DocumentName::new("record.json").unwrap().to_string(),
-        "RECORD.JSON"
+        "record.json"
     );
     assert_eq!(
         DocumentNameError::Empty.to_string(),
@@ -21,7 +21,7 @@ fn value_types_and_validation_errors_have_stable_display_text() {
     );
     assert_eq!(
         Nonce::new("transaction-1").unwrap().to_string(),
-        "TRANSACTION-1"
+        "transaction-1"
     );
     assert_eq!(NonceError::Empty.to_string(), "nonce is empty");
 }
@@ -30,18 +30,19 @@ fn value_types_and_validation_errors_have_stable_display_text() {
 
 #[test]
 fn document_name_accepts_and_folds_a_simple_name() {
-    assert_eq!(DocumentName::new("engine").unwrap().as_str(), "ENGINE");
+    assert_eq!(DocumentName::new("ENGINE").unwrap().as_str(), "engine");
     assert_eq!(
         DocumentName::new("Record-1_v2").unwrap().as_str(),
-        "RECORD-1_V2"
+        "record-1_v2"
     );
+    assert_eq!(DocumentName::new("ENGINE"), DocumentName::new("engine"));
 }
 
 #[test]
 fn document_name_accepts_an_interior_dot() {
     assert_eq!(
         DocumentName::new("record.json").unwrap().as_str(),
-        "RECORD.JSON"
+        "record.json"
     );
 }
 
@@ -102,7 +103,7 @@ fn document_name_rejects_a_reserved_stem() {
 fn document_name_accepts_a_non_reserved_lookalike() {
     assert_eq!(
         DocumentName::new("console.json").unwrap().as_str(),
-        "CONSOLE.JSON"
+        "console.json"
     );
 }
 
@@ -123,13 +124,13 @@ fn document_name_enforces_the_length_limit() {
 // -- Nonce: validation & normalization (LAY-3) ---------------------------------
 
 #[test]
-fn nonce_folds_letters_to_uppercase() {
-    assert_eq!(nonce("txn-abc").as_str(), "TXN-ABC");
+fn nonce_folds_letters_to_lowercase() {
+    assert_eq!(nonce("TXN-ABC").as_str(), "txn-abc");
 }
 
 #[test]
 fn nonce_accepts_digits_and_separators() {
-    assert_eq!(nonce("TXN_00-19a").as_str(), "TXN_00-19A");
+    assert_eq!(nonce("TXN_00-19A").as_str(), "txn_00-19a");
 }
 
 #[test]
@@ -179,14 +180,14 @@ const RESERVED: [&str; 22] = [
 fn a_reserved_device_name_is_a_valid_nonce_and_keeps_its_logical_value() {
     for raw in ["con", "Nul", "COM1", "lpt9"] {
         let nonce = Nonce::new(raw).expect("a reserved name is still a nonce");
-        assert_eq!(nonce.as_str(), raw.to_ascii_uppercase());
+        assert_eq!(nonce.as_str(), raw.to_ascii_lowercase());
     }
 }
 
 #[test]
 fn con_and_its_substitute_are_distinct() {
     let substitute: String = std::iter::once(crate::name::RESERVED_NONCE_SUBSTITUTE)
-        .chain("ON".chars())
+        .chain("on".chars())
         .collect();
     let con = Nonce::new("con").unwrap();
 
@@ -198,14 +199,14 @@ fn con_and_its_substitute_are_distinct() {
     assert_ne!(con.as_str(), substitute);
     assert_eq!(
         con.as_str(),
-        "CON",
+        "con",
         "the logical nonce is never substituted"
     );
 
     if cfg!(windows) {
         assert_eq!(con.path_component(), substitute);
     } else {
-        assert_eq!(con.path_component(), "CON");
+        assert_eq!(con.path_component(), "con");
     }
     assert_ne!(
         con.path_component(),
@@ -253,17 +254,17 @@ fn reserved_nonces_take_a_distinct_same_length_substitute_on_windows_only() {
         let nonce = Nonce::new(raw).unwrap();
         let component = nonce.path_component();
         if cfg!(windows) {
-            assert_ne!(component, raw);
-            assert_eq!(component.chars().count(), raw.chars().count());
+            assert_ne!(component, nonce.as_str());
+            assert_eq!(component.chars().count(), nonce.as_str().chars().count());
             assert!(component.starts_with(crate::name::RESERVED_NONCE_SUBSTITUTE));
             assert_eq!(
                 &component[crate::name::RESERVED_NONCE_SUBSTITUTE.len_utf8()..],
-                &raw[1..]
+                &nonce.as_str()[1..]
             );
             // Never a valid nonce, so it cannot collide with one.
             assert!(Nonce::new(&component).is_err());
         } else {
-            assert_eq!(component, raw);
+            assert_eq!(component, nonce.as_str());
         }
         assert!(seen.insert(component.into_owned()), "{raw} collides");
     }

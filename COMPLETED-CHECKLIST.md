@@ -234,3 +234,40 @@ termination in the formal models", which holds the full mapping.
 The configurations, timeline replays and trace corpus were regenerated; the canopy suite, including
 the replays, passed against the new corpus, and TLC confirmed the outcome of a sample of renamed
 witnesses, a main and the Acquisition item tier.
+
+## Moved 2026-11-19 -- Review correctness fixes
+
+### M3 -- Review correctness fixes
+
+- [x] <a id="rv-m3-1"></a>**RV-M3-1** -- Require a creation marker discovered or confirmed by
+  `acadia` to be a regular file, rejecting directories and other entry kinds through both file
+  and shared creation implementations.
+
+- [x] <a id="rv-m3-2"></a>**RV-M3-2** -- Apply the documented case-insensitive filesystem
+  comparison consistently while classifying creation markers, artifacts, and publication
+  leftovers.
+
+- [x] <a id="rv-m3-3"></a>**RV-M3-3** -- Isolate recorder-requested conformance faults to the
+  selected VFS call so concurrent calls cannot consume, inherit, or clear another call's fault.
+
+## Moved 2026-11-19 -- UTF-8 path components across Acadia and Canopy
+
+### M3 -- UTF-8 path components
+
+- [x] <a id="path-1"></a>**PATH-1** -- Acadia owns a UTF-8 logical component boundary while
+  physical roots remain backend locators; dependent grammars such as Canopy's lowercase policy remain
+  outside Acadia's contract.
+
+- [x] <a id="path-2"></a>**PATH-2** -- Acadia's public directory entries, creation plans, artifact
+  callbacks, occupancy errors, fault matchers, and anchored read paths use UTF-8 values rather than
+  exposing native `OsString`/`OsStr` component values.
+
+- [x] <a id="path-3"></a>**PATH-3** -- `MemFs`, `OsFs`, decorators, and anchored reads refuse
+  non-UTF-8 components and NUL; native non-UTF-8 directory entries refuse listing rather than
+  being converted lossily, and validation precedes fault matching.
+
+- [x] <a id="path-4"></a>**PATH-4** -- Canopy and `canopy-lock-holder` consume the UTF-8 component
+  API without changing Canopy's lowercase logical-name grammar.
+
+- [x] <a id="path-5"></a>**PATH-5** -- Hostile-name, creation-separator, decorator-precedence,
+  end-to-end, Windows, Linux, formatting, Clippy, documentation, and debug/release checks pass.

@@ -2,10 +2,13 @@
 
 //! How calls are grouped into the steps a model takes.
 
-use super::{Recorder, Runs};
-use acadia::{Vfs, VfsErrorKind};
+use super::{Recorder, Runs, Verdict, Watcher};
+use acadia::{FaultOp, Vfs, VfsErrorKind};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -34,6 +37,55 @@ fn recorder_preserves_process_hooks() {
         VfsErrorKind::ProcessEnded
     );
     assert!(!committed.load(Ordering::Acquire));
+}
+
+struct FailOnePath;
+
+impl Watcher for FailOnePath {
+    fn before(&self, _op: FaultOp, path: &Path, _to: Option<&Path>) -> Verdict {
+        if path == Path::new("/fail") {
+            Verdict::Fail
+        } else {
+            Verdict::Proceed
+        }
+    }
+
+    fn after(&self, _op: FaultOp, _path: &Path, _to: Option<&Path>) {}
+}
+
+#[test]
+fn concurrent_calls_keep_their_own_fault_verdict() {
+    let recorder = Arc::new(Recorder::new());
+    recorder
+        .mem()
+        .write(Path::new("/ok"), b"ok")
+        .expect("write");
+    recorder.watch(Arc::new(FailOnePath));
+    let start = Arc::new(Barrier::new(2));
+    let failed = {
+        let recorder = Arc::clone(&recorder);
+        let start = Arc::clone(&start);
+        thread::spawn(move || {
+            for _ in 0..128 {
+                start.wait();
+                assert_eq!(
+                    recorder.read(Path::new("/fail")).unwrap_err().kind(),
+                    VfsErrorKind::Other
+                );
+            }
+        })
+    };
+    let proceeded = {
+        let recorder = Arc::clone(&recorder);
+        thread::spawn(move || {
+            for _ in 0..128 {
+                start.wait();
+                assert_eq!(recorder.read(Path::new("/ok")).expect("read"), b"ok");
+            }
+        })
+    };
+    failed.join().expect("failed calls");
+    proceeded.join().expect("proceeding calls");
 }
 
 #[test]

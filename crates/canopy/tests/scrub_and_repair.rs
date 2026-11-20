@@ -103,7 +103,7 @@ fn quarantined(vfs: &Arc<dyn Vfs>, store: &Store, tree: &str, index: usize) -> V
     let mut names = match vfs.read_dir(&quarantine(store, tree, index)) {
         Ok(entries) => entries
             .into_iter()
-            .map(|entry| entry.file_name.to_string_lossy().into_owned())
+            .map(|entry| entry.file_name)
             .collect::<Vec<_>>(),
         Err(_) => Vec::new(),
     };
@@ -231,7 +231,7 @@ fn an_unparseable_pointer_replica_is_rebuilt_and_kept() {
     let (report, _) = store.scrub_content().expect("scrub").value;
 
     let (subject, outcome) = &report.pointer_repairs()[0];
-    assert!(subject.contains("RECORD.JSON"));
+    assert!(subject.contains("record.json"));
     assert_eq!(outcome.replaced(), &[2]);
     assert_eq!(outcome.sequestered(), &[2]);
 

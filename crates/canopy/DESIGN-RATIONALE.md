@@ -652,3 +652,20 @@ same path -- is left to the first operation that needs it, which holds writer ex
 caller's nonce source, so setting the value cannot race and needs no new dependency. The value is
 kept in a record canopy owns rather than written into the reservation, because the reservation is
 what creators of every implementation read and compare, and is never rewritten once published.
+
+## Lowercase is the schema-2 spelling, not a transparent rename
+
+The canonical decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Caller-derived names are lowercase in
+Canopy schema 2". Replacing only the public name types was rejected: path hashes, shards, blob names,
+staging paths and repair records derive from those spellings, so an uppercase emitter left in the
+write path would split one logical document across two persisted conventions. Changing every
+emitter together gives schema 2 one address for each accepted input.
+
+A same-format migration was also rejected. Lowercasing an existing namespace is not a spelling fix on
+case-sensitive filesystems: it changes every derived owner hash and every blob reference, and on a
+case-insensitive filesystem a rename of a name that folds equal may not establish a distinct durable
+entry. With no important deployed stores, treating schema 1 as inadmissible is simpler and avoids
+silently interpreting uppercase-schema data under lowercase semantics. Schema admission records the
+boundary without pretending to migrate it. Decoder acceptance of either base32 case remains useful
+because case-folding can happen in transport or filesystem presentation without changing the encoded
+bytes, and because accepting both cases costs no ambiguity.

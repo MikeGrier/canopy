@@ -75,7 +75,7 @@ fn transactions_named_by_reserved_device_names_commit_and_leave_no_staging() {
         );
     }
 
-    // `con` folds to `CON`, the same nonce. Each write emptied the log and released its claim,
+    // `CON` folds to `con`, the same nonce. Each write emptied the log and released its claim,
     // so the id is free again, and the second write reuses the same staging name without
     // colliding with anything the first left behind.
     let document = DocumentName::new("doc0").unwrap();
@@ -100,21 +100,21 @@ fn transactions_named_by_reserved_device_names_commit_and_leave_no_staging() {
     }
 }
 
-/// A directory literally named with the substitute is not where a `CON` transaction stages
+/// A directory literally named with the substitute is not where a `con` transaction stages
 /// on a platform that does not substitute, and the two coexist on one that does not.
 #[cfg(not(windows))]
 #[test]
 fn con_and_its_substitute_name_distinct_directories_off_windows() {
     let root = TempRoot::new("distinct");
     let staging = root.0.join("staging");
-    std::fs::create_dir_all(staging.join("CON")).unwrap();
-    std::fs::create_dir_all(staging.join("\u{00A9}ON")).unwrap();
+    std::fs::create_dir_all(staging.join("con")).unwrap();
+    std::fs::create_dir_all(staging.join("\u{00A9}on")).unwrap();
     let names: Vec<String> = std::fs::read_dir(&staging)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names.len(), 2, "{names:?}");
-    assert_eq!(Nonce::new("CON").unwrap().path_component(), "CON");
+    assert_eq!(Nonce::new("CON").unwrap().path_component(), "con");
 }
 
 /// On Windows the substitute is a real, creatable directory name distinct from the device.
@@ -123,7 +123,7 @@ fn con_and_its_substitute_name_distinct_directories_off_windows() {
 fn the_substitute_names_a_real_directory_on_windows() {
     let root = TempRoot::new("substitute");
     let component = Nonce::new("CON").unwrap().path_component().into_owned();
-    assert_ne!(component, "CON");
+    assert_ne!(component, "con");
     let dir = root.0.join(&component);
     std::fs::create_dir(&dir).expect("the substitute is a valid directory name");
     std::fs::write(dir.join("probe"), b"x").unwrap();

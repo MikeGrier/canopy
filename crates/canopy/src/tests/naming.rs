@@ -29,8 +29,8 @@ fn a_rendered_digest_is_fifty_two_characters_of_the_rfc_4648_alphabet() {
     assert!(
         rendered
             .bytes()
-            .all(|c| c.is_ascii_uppercase() || (b'2'..=b'7').contains(&c)),
-        "{rendered} is outside A-Z2-7"
+            .all(|c| c.is_ascii_lowercase() || (b'2'..=b'7').contains(&c)),
+        "{rendered} is outside a-z2-7"
     );
 }
 
@@ -59,12 +59,12 @@ fn rand_like() -> Vec<u8> {
 #[test]
 fn every_rendered_digest_ends_in_a_or_q() {
     // 256 bits is 51 characters plus one significant bit, so the final character carries
-    // that bit and four zero pad bits: its value is 0 or 16, which is `A` or `Q` (`D322`).
+    // that bit and four zero pad bits: its value is 0 or 16, which is `a` or `q` (`D322`).
     for _ in 0..256 {
         let rendered = ContentDigest::of(&rand_like()).to_base32();
         let last = rendered.chars().last().unwrap();
         assert!(
-            last == 'A' || last == 'Q',
+            last == 'a' || last == 'q',
             "{rendered} ends in {last}, which no SHA-256 rendering can"
         );
     }
@@ -94,12 +94,12 @@ fn base32_decoding_accepts_either_case() {
 
 #[test]
 fn base32_rejects_non_zero_pad_bits() {
-    // The final character must encode one significant bit and four zeros. `B` (value 1)
+    // The final character must encode one significant bit and four zeros. `b` (value 1)
     // sets a pad bit, so it is a string no encoder of ours produced.
     let digest = ContentDigest::of(b"pad");
     let mut rendered = digest.to_base32();
     rendered.pop();
-    rendered.push('B');
+    rendered.push('b');
     assert_eq!(
         ContentDigest::from_base32(&rendered),
         None,
@@ -168,7 +168,7 @@ fn the_hashed_encoding_is_injective_across_the_node_document_boundary() {
 #[test]
 fn a_path_hash_folds_case_because_the_names_do() {
     // Not a property of the hash -- a property of the names reaching it. Both canonicalise
-    // to uppercase, so two spellings are one path rather than two that collide on a
+    // to lowercase, so two spellings are one path rather than two that collide on a
     // case-folding filesystem.
     assert_eq!(
         hash("tickets/a", "Record.JSON"),
@@ -214,7 +214,7 @@ fn a_blob_name_is_owner_then_content_then_artifact() {
 
     assert_eq!(
         name.file_name(),
-        format!("{}.{}.BODY", path_hash.render(), digest.to_base32())
+        format!("{}.{}.body", path_hash.render(), digest.to_base32())
     );
     // The owner leads so that every artifact of one document shares a prefix, which is
     // what makes `D315`'s cleanup a prefix match rather than an enumeration.
@@ -359,7 +359,7 @@ fn parsing_rejects_a_name_that_is_not_ours() {
 
 #[test]
 fn an_artifact_extension_is_an_enumerated_vocabulary() {
-    assert_eq!(Artifact::Body.as_str(), "BODY");
+    assert_eq!(Artifact::Body.as_str(), "body");
     assert_eq!(Artifact::from_extension("BODY"), Some(Artifact::Body));
     assert_eq!(Artifact::from_extension("body"), Some(Artifact::Body));
     assert_eq!(Artifact::from_extension("JSON"), None);
@@ -376,7 +376,7 @@ fn the_body_carries_an_explicit_extension() {
         Artifact::Body,
     );
     assert_eq!(name.file_name().split('.').count(), 3);
-    assert!(name.file_name().ends_with(".BODY"));
+    assert!(name.file_name().ends_with(".body"));
 }
 
 #[test]

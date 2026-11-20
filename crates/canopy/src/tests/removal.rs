@@ -160,7 +160,7 @@ fn a_removal_leaves_the_node_behind() {
             .iter()
             .map(NodePath::to_string)
             .collect::<Vec<_>>(),
-        ["TICKETS/AB"]
+        ["tickets/ab"]
     );
 }
 
@@ -183,7 +183,7 @@ fn a_removed_document_disappears_from_the_traversal() {
         .into_iter()
         .map(|(path, document)| format!("{path}/{document}"))
         .collect();
-    assert_eq!(listed, ["A/KEEP"]);
+    assert_eq!(listed, ["a/keep"]);
 }
 
 // -- Mixed transactions --------------------------------------------------------

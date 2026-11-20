@@ -172,7 +172,7 @@ fn blob_count(vfs: &Arc<dyn Vfs>, store: &Store, node: &NodePath) -> usize {
             continue;
         };
         for entry in entries {
-            let name = entry.file_name.to_string_lossy().into_owned();
+            let name = entry.file_name;
             if BlobName::parse(&name).map(|blob| blob.path_hash()) == Ok(path_hash) {
                 count += 1;
             }

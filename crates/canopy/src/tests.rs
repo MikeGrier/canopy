@@ -216,16 +216,14 @@ fn nonce(raw: &str) -> Nonce {
     Nonce::new(raw).expect("valid nonce")
 }
 
-use std::ffi::OsString;
-
-/// The file names in namespace replica `index`'s directory for the node `RECORD`, for
+/// The file names in namespace replica `index`'s directory for the node `record`, for
 /// asserting no `.tmp.<nonce>` staging orphan survives a commit.
 ///
 /// One directory per path component since `D222`, so a one-component path is one
 /// directory below the replica root -- there is no synthesized shard tier above it.
-fn node_entries(vfs: &Arc<dyn Vfs>, store: &Store, index: usize) -> Vec<OsString> {
-    let node_dir = namespace_root(store, index).join("RECORD");
-    let mut names: Vec<OsString> = vfs
+fn node_entries(vfs: &Arc<dyn Vfs>, store: &Store, index: usize) -> Vec<String> {
+    let node_dir = namespace_root(store, index).join("record");
+    let mut names: Vec<String> = vfs
         .read_dir(&node_dir)
         .expect("read node dir")
         .into_iter()

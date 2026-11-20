@@ -2436,3 +2436,35 @@ provenance and crash tests and both cross-process tests; deciding under the excl
 reading taken before it failed the under-exclusion test. The replacement for the intermittent test
 passed 100 looped runs, and its observation moved to
 [RESOLVED-TEST-FAILURES.md](RESOLVED-TEST-FAILURES.md).
+
+## Moved 2026-11-19 -- Lowercase canonical caller names
+
+### <a id="m16-1"></a>M16-1 -- Inventory name canonicalization consumers and record the schema-compatibility decision. *(completed 2026-11-19 13:34:28 -05:00)*
+
+The inventory covers `NodePath`, `DocumentName`, `Nonce`, owner hashes, base32 renderings, blob names,
+random nonces, reserved Windows device names, marker schema admission, fixtures, examples and
+on-disk tests. Lowercase is a Canopy schema-2 rule. Schema-1 stores are refused; no data migration is
+scheduled or attempted.
+
+### <a id="m16-2"></a>M16-2 -- Canonicalize caller-derived node, document and nonce names to lowercase. *(completed 2026-11-19 13:34:28 -05:00)*
+
+Either ASCII case is accepted and folded to lowercase. The character sets, limits, traversal
+refusals, reserved device names, collision behavior and case-equivalence behavior are unchanged.
+
+### <a id="m16-3"></a>M16-3 -- Carry lowercase spelling through persisted names and derived identities. *(completed 2026-11-19 13:34:28 -05:00)*
+
+Path hashes, lowercase base32 digests, random nonces, shard names, blob names and `body` extensions
+now share the schema-2 spelling. The marker and attachment payload speak Canopy schema 2, so a
+schema-1 marker cannot be admitted under the new interpretation. Decoders retain case-insensitive
+base32 parsing.
+
+### <a id="m16-4"></a>M16-4 -- Update internal consumers, fixtures, projections and edge cases. *(completed 2026-11-19 13:34:28 -05:00)*
+
+Tests cover mixed-case input, boundaries, reserved names, path hashes, blob parsing, interrupted
+writes, direct VFS fixtures, conformance consumers, random nonces and schema-1 refusal.
+
+### <a id="m16-5"></a>M16-5 -- Document and validate lowercase canonicalization on Windows and Linux. *(completed 2026-11-19 13:34:28 -05:00)*
+
+Public API and README wording now state lowercase output. Full Canopy tests, integration tests and
+doctests pass on Windows and WSL; workspace Clippy and debug/release checks, rustdoc, formatting and
+encoding checks pass.

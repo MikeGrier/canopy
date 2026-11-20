@@ -7,7 +7,7 @@ use std::borrow::Cow;
 mod tests;
 
 /// The canopy schema spoken by this build, independently of the genesis encoding version.
-pub const CANOPY_SCHEMA_VERSION: u32 = 1;
+pub const CANOPY_SCHEMA_VERSION: u32 = 2;
 
 /// Changing these values breaks the attachment payload encoding.
 mod registry_tags {

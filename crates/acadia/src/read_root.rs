@@ -13,6 +13,7 @@ use cap_std::fs::{Dir, OpenOptions};
 /// to reopen. Concurrent content writes can still change a stream; consumers
 /// must hash and retain the exact bytes they read.
 pub trait ReadRoot: Send + Sync {
+    /// Opens a relative sequence of valid UTF-8, NUL-free components without following links.
     fn open_file(&self, relative: &Path) -> io::Result<Box<dyn Read + Send>>;
 }
 
@@ -50,6 +51,16 @@ impl OsReadRoot {
 
 impl ReadRoot for OsReadRoot {
     fn open_file(&self, relative: &Path) -> io::Result<Box<dyn Read + Send>> {
+        for component in relative.components() {
+            if let Component::Normal(name) = component {
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| invalid("read path component is not valid UTF-8"))?;
+                if name.as_bytes().contains(&0) {
+                    return Err(invalid("read path component contains NUL"));
+                }
+            }
+        }
         let mut components = relative.components().peekable();
         let mut directory = self.directory.try_clone()?;
         while let Some(component) = components.next() {

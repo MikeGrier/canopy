@@ -386,45 +386,43 @@ impl SharedState {
             _ => return Err(failure("invalid live shared-state instance")),
         };
         let cells = directory.join("cells");
-        let epoch =
-            if first {
-                for entry in vfs.read_dir(&directory)? {
-                    if entry.file_name.to_str().is_some_and(|name| {
-                        name.starts_with("registry-") && name.ends_with(".payload")
-                    }) {
-                        vfs.remove_file(&directory.join(entry.file_name))?;
-                    }
+        let epoch = if first {
+            for entry in vfs.read_dir(&directory)? {
+                if entry.file_name.starts_with("registry-") && entry.file_name.ends_with(".payload")
+                {
+                    vfs.remove_file(&directory.join(entry.file_name))?;
                 }
-                let epoch_path = directory.join("epoch");
-                let previous = read_optional(vfs.as_ref(), &epoch_path)?;
-                let decoded = previous
-                    .as_ref()
-                    .and_then(|bytes| bytes.strip_prefix(&format::EPOCH))
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-                    .map(u64::from_le_bytes);
-                let next = match decoded {
-                    Some(value) => value.checked_add(1).ok_or(CoordError::Exhausted {
+            }
+            let epoch_path = directory.join("epoch");
+            let previous = read_optional(vfs.as_ref(), &epoch_path)?;
+            let decoded = previous
+                .as_ref()
+                .and_then(|bytes| bytes.strip_prefix(&format::EPOCH))
+                .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                .map(u64::from_le_bytes);
+            let next = match decoded {
+                Some(value) => value.checked_add(1).ok_or(CoordError::Exhausted {
+                    what: "shared-state epoch",
+                })?,
+                None if previous.is_some() => {
+                    return Err(CoordError::Malformed {
                         what: "shared-state epoch",
-                    })?,
-                    None if previous.is_some() => {
-                        return Err(CoordError::Malformed {
-                            what: "shared-state epoch",
-                        });
-                    }
-                    None => 1,
-                };
-                let mut bytes = format::EPOCH.to_vec();
-                bytes.extend_from_slice(&next.to_le_bytes());
-                // Replaced whole: the record has no predecessor to fall back on if torn.
-                let staging = directory.join("epoch.staging");
-                vfs.write(&staging, &bytes)?;
-                vfs.fsync(&staging)?;
-                vfs.rename(&staging, &epoch_path)?;
-                vfs.fsync(&directory)?;
-                Some(next)
-            } else {
-                None
+                    });
+                }
+                None => 1,
             };
+            let mut bytes = format::EPOCH.to_vec();
+            bytes.extend_from_slice(&next.to_le_bytes());
+            // Replaced whole: the record has no predecessor to fall back on if torn.
+            let staging = directory.join("epoch.staging");
+            vfs.write(&staging, &bytes)?;
+            vfs.fsync(&staging)?;
+            vfs.rename(&staging, &epoch_path)?;
+            vfs.fsync(&directory)?;
+            Some(next)
+        } else {
+            None
+        };
         match vfs.metadata(&cells) {
             Ok(metadata) if metadata.len == BYTE_COUNT as u64 => {}
             Ok(_) if first => {

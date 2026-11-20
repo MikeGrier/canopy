@@ -5,7 +5,6 @@ use crate::coord::{
     Access, ArtifactMaker, CoordError, Coordination, Created, CreationNonce, CreationPlan,
     ModificationEnd, Purpose, ReaderSafety, Registration, WriterExclusion,
 };
-use std::ffi::OsStr;
 use std::time::Instant;
 
 fn opened(factory: &dyn CoordinationFactory, backend: &Backend) -> Box<dyn Coordination> {
@@ -157,17 +156,17 @@ fn a_discovery_inspection_that_unwinds_ends_its_participant() {
 fn creation_dropped_while_unwinding_ends_its_participant() {
     struct PanicMaker;
     impl ArtifactMaker for PanicMaker {
-        fn make(&mut self, _: &OsStr, _: &[u8]) -> crate::coord::CoordResult<()> {
+        fn make(&mut self, _: &str, _: &[u8]) -> crate::coord::CoordResult<()> {
             panic!("artifact creation unwinds");
         }
 
-        fn marker(&mut self, _: &OsStr, _: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
+        fn marker(&mut self, _: &str, _: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
             unreachable!("creation stops in the first artifact")
         }
     }
     on_every_contract("coord-contract-panic-creation", &|factory, backend| {
         let participant = opened(factory, backend);
-        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let names = ["data", "marker"];
         let plan = CreationPlan {
             inputs: b"inputs",
             nonce: CreationNonce::from_bytes([1; 16]),
@@ -276,14 +275,14 @@ fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
         root: PathBuf,
     }
     impl ArtifactMaker for Maker {
-        fn make(&mut self, name: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<()> {
+        fn make(&mut self, name: &str, inputs: &[u8]) -> crate::coord::CoordResult<()> {
             let path = self.root.join(name);
             self.fs.write(&path, inputs)?;
             self.fs.fsync(&path)?;
             Ok(())
         }
 
-        fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
+        fn marker(&mut self, _: &str, inputs: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
             Ok(inputs.to_vec())
         }
     }
@@ -325,7 +324,7 @@ fn a_creator_abandoned_while_it_publishes_its_marker_publishes_none_after() {
         let vfs: Arc<dyn Vfs> = Arc::new(FaultyFs::new(mem.another_process(), policy));
         let opened: Arc<dyn Coordination> = Arc::from(factory.open(vfs, &root).unwrap());
         let _ = participant.set(Arc::clone(&opened));
-        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let names = ["data", "marker"];
         let plan = CreationPlan {
             inputs: b"inputs",
             nonce: CreationNonce::from_bytes([1; 16]),
@@ -783,18 +782,18 @@ fn public_creation_reservation_contract_on_every_implementation_and_backend() {
             root: PathBuf,
         }
         impl ArtifactMaker for Maker {
-            fn make(&mut self, name: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<()> {
+            fn make(&mut self, name: &str, inputs: &[u8]) -> crate::coord::CoordResult<()> {
                 let path = self.root.join(name);
                 self.fs.write(&path, inputs)?;
                 self.fs.fsync(&path)?;
                 Ok(())
             }
 
-            fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
+            fn marker(&mut self, _: &str, inputs: &[u8]) -> crate::coord::CoordResult<Vec<u8>> {
                 Ok(inputs.to_vec())
             }
         }
-        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let names = ["data", "marker"];
         let plan = CreationPlan {
             inputs: b"inputs",
             nonce: CreationNonce::from_bytes([1; 16]),
@@ -812,7 +811,7 @@ fn public_creation_reservation_contract_on_every_implementation_and_backend() {
                 .unwrap(),
             Created::Created
         );
-        participant.confirm_created(OsStr::new("marker")).unwrap();
+        participant.confirm_created("marker").unwrap();
         assert!(matches!(
             participant.reserve(b"different", CreationNonce::from_bytes([2; 16])),
             Err(CoordError::Reserved)

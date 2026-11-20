@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::{
     DirEntry, FileType, LockMode, LockSpan, Metadata, Vfs, VfsError, VfsErrorKind, VfsLock,
-    VfsResult,
+    VfsResult, validate_path_components,
 };
 
 mod durable;
@@ -325,6 +325,7 @@ fn err(kind: VfsErrorKind, op: &'static str, path: &Path, message: &'static str)
 /// popping. An empty result (the root itself) is rejected as invalid input,
 /// because every operation names at least one entry.
 fn split_path(path: &Path, op: &'static str) -> VfsResult<Vec<OsString>> {
+    validate_path_components(path, op)?;
     let mut parts: Vec<OsString> = Vec::new();
     for comp in path.components() {
         match comp {

@@ -11,6 +11,10 @@ under [`canopy`](https://crates.io/crates/canopy).
 
 ## The contract
 
+- **UTF-8 logical components.** Every normal component of a VFS path is valid UTF-8;
+  directory entries are returned as `String`. A non-UTF-8 input component or native directory
+  entry is refused as `InvalidInput`, never lossy-converted. Physical roots remain backend
+  configuration, and Acadia intentionally does not impose Canopy's narrower name grammar.
 - **Path-oriented and object-safe.** Every operation names a path and returns an
   owned result, so a `Vfs` works as `Arc<dyn Vfs>` and can be shared across threads.
 - **Errors are values.** Every fallible operation returns `VfsResult<T>`. Failures

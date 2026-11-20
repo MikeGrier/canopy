@@ -293,17 +293,14 @@ fn read_documents(world: &World, fs: &dyn Vfs) -> Result<Documents, String> {
             let partition = world.root.join(BLOB_TREE_DIR).join(format!("p{replica}"));
             let mut versions = BTreeSet::new();
             for shard in fs.read_dir(&partition).map_err(|error| error.to_string())? {
-                if shard.file_type != FileType::Dir
-                    || shard.file_name.to_string_lossy().starts_with('.')
-                {
+                if shard.file_type != FileType::Dir || shard.file_name.starts_with('.') {
                     continue;
                 }
                 for file in fs
                     .read_dir(&partition.join(&shard.file_name))
                     .map_err(|error| error.to_string())?
                 {
-                    if let Some((owner, version)) =
-                        BlobName::owner_and_version(&file.file_name.to_string_lossy())
+                    if let Some((owner, version)) = BlobName::owner_and_version(&file.file_name)
                         && owner == document.hash.render()
                     {
                         versions.insert(world.rendered_version(version)?);

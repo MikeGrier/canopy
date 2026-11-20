@@ -67,7 +67,7 @@ fn a_set_carries_its_node_removals() {
             .iter()
             .map(NodePath::to_string)
             .collect::<Vec<_>>(),
-        ["RECORD/AA", "RECORD/AB"]
+        ["record/aa", "record/ab"]
     );
     assert!(!swaps.is_empty());
 }
@@ -98,7 +98,7 @@ fn removing_one_node_twice_is_refused() {
     let result = SwapSet::with_node_removals([], [name("record"), name("record")]);
     assert!(matches!(
         result,
-        Err(SwapSetError::DuplicateNodeRemoval { node }) if node == "RECORD"
+        Err(SwapSetError::DuplicateNodeRemoval { node }) if node == "record"
     ));
 }
 
@@ -113,7 +113,7 @@ fn a_write_at_a_removed_node_is_refused() {
     assert!(matches!(
         result,
         Err(SwapSetError::WriteBeneathRemovedNode { node, write, document })
-            if node == "RECORD" && write == "RECORD" && document == "RECORD.JSON"
+            if node == "record" && write == "record" && document == "record.json"
     ));
 }
 
@@ -132,7 +132,7 @@ fn a_write_beneath_a_removed_node_is_refused() {
     assert!(matches!(
         result,
         Err(SwapSetError::WriteBeneathRemovedNode { node, write, .. })
-            if node == "RECORD" && write == "RECORD/AA/DEEPER"
+            if node == "record" && write == "record/aa/deeper"
     ));
 }
 
@@ -166,7 +166,7 @@ fn the_contradiction_errors_read_as_sentences() {
     let duplicate = SwapSet::with_node_removals([], [name("record"), name("record")])
         .expect_err("duplicate node removal");
     assert!(
-        duplicate.to_string().contains("RECORD"),
+        duplicate.to_string().contains("record"),
         "{duplicate} names the node"
     );
 
@@ -176,8 +176,8 @@ fn the_contradiction_errors_read_as_sentences() {
     )
     .expect_err("write beneath a removed node");
     let text = contradiction.to_string();
-    assert!(text.contains("RECORD"), "{text} names the node");
-    assert!(text.contains("RECORD.JSON"), "{text} names the document");
+    assert!(text.contains("record"), "{text} names the node");
+    assert!(text.contains("record.json"), "{text} names the document");
 }
 
 // -- Applying a node removal ---------------------------------------------------
@@ -208,7 +208,7 @@ fn an_empty_node_is_removed_from_every_partition() {
     // Every partition, not just the one a reader happens to consult.
     for index in 0..3 {
         assert!(
-            !node_entries(&_vfs, &store, index).contains(&OsString::from("AA")),
+            !node_entries(&_vfs, &store, index).contains(&String::from("aa")),
             "partition {index} still holds the node directory"
         );
     }
@@ -248,11 +248,11 @@ fn a_node_still_holding_a_document_is_refused() {
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
-            node: "RECORD".to_owned(),
+            node: "record".to_owned(),
             // A node removal names no document, which is why the field is optional.
             document: None,
             expected: RejectedPrecondition::NodeNotEmpty {
-                documents: vec!["RECORD.JSON".to_owned()],
+                documents: vec!["record.json".to_owned()],
                 nodes: Vec::new(),
             },
             current: None,
@@ -277,12 +277,12 @@ fn a_node_still_holding_a_child_node_is_refused() {
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
-            node: "RECORD".to_owned(),
+            node: "record".to_owned(),
             document: None,
             expected: RejectedPrecondition::NodeNotEmpty {
                 documents: Vec::new(),
                 // Reported as a full path, matching `list_children`.
-                nodes: vec!["RECORD/AA".to_owned()],
+                nodes: vec!["record/aa".to_owned()],
             },
             current: None,
         }
@@ -348,8 +348,8 @@ fn a_node_holding_only_an_unrecognized_entry_is_refused_before_begin() {
         .unwrap();
     vfs.write(
         &namespace_root(&store, 1)
-            .join("RECORD")
-            .join("AA")
+            .join("record")
+            .join("aa")
             .join(".foreign"),
         b"not ours",
     )
@@ -362,7 +362,7 @@ fn a_node_holding_only_an_unrecognized_entry_is_refused_before_begin() {
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
-            node: "RECORD/AA".to_owned(),
+            node: "record/aa".to_owned(),
             document: None,
             expected: RejectedPrecondition::NodeHoldsUnrecognizedEntries {
                 entries: vec![".foreign".to_owned()],
@@ -395,8 +395,8 @@ fn the_rejection_names_everything_that_would_remain() {
         expected,
         RejectedPrecondition::NodeNotEmpty {
             // Sorted, so the report does not depend on directory-read order.
-            documents: vec!["AAA".to_owned(), "BBB".to_owned()],
-            nodes: vec!["RECORD/CHILD".to_owned()],
+            documents: vec!["aaa".to_owned(), "bbb".to_owned()],
+            nodes: vec!["record/child".to_owned()],
         }
     );
 }

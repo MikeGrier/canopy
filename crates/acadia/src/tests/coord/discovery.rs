@@ -104,7 +104,7 @@ fn discover(participant: &FileCoordination) -> RecoveryNeed {
 }
 
 /// Every file of the state, with its contents, so a discovery can be shown to have changed none.
-fn state_of(participant: &FileCoordination) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+fn state_of(participant: &FileCoordination) -> Vec<(String, Vec<u8>)> {
     let dir = participant.layout().state_dir();
     let mut files: Vec<_> = participant
         .vfs()

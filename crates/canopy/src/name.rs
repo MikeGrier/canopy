@@ -51,7 +51,7 @@ impl From<&NodePath> for NodePath {
 ///
 /// Construct one with [`DocumentName::new`]. A node directory holds one or more of
 /// these -- caller-chosen document names canopy stores but never interprets (D54).
-/// Validation mirrors a path component (ASCII letters folded to uppercase, digits, `-`,
+/// Validation mirrors a path component (ASCII letters folded to lowercase, digits, `-`,
 /// `_`, bounded length, no reserved device stems) with one addition: an interior `.`
 /// is accepted so a caller may carry a conventional extension. A leading or trailing
 /// `.` is rejected -- a leading dot would collide with canopy's own dotfiles
@@ -74,7 +74,7 @@ impl DocumentName {
 
     /// Validates and normalizes `raw` into a canonical document name.
     ///
-    /// The accepted character set is ASCII letters (folded to uppercase), ASCII
+    /// The accepted character set is ASCII letters (folded to lowercase), ASCII
     /// digits, the separators `-` and `_`, and an interior `.`. The empty name, a
     /// leading or trailing `.`, any other character (path separators, whitespace,
     /// control bytes, non-ASCII), an over-long name, and a Windows reserved device
@@ -92,8 +92,8 @@ impl DocumentName {
         let mut canonical = String::with_capacity(raw.len());
         for (byte_offset, ch) in raw.char_indices() {
             let normalized = match ch {
-                'a'..='z' => ch.to_ascii_uppercase(),
-                'A'..='Z' | '0'..='9' | '-' | '_' | '.' => ch,
+                'A'..='Z' => ch.to_ascii_lowercase(),
+                'a'..='z' | '0'..='9' | '-' | '_' | '.' => ch,
                 _ => {
                     return Err(DocumentNameError::InvalidCharacter {
                         character: ch,
@@ -136,34 +136,34 @@ impl fmt::Display for DocumentName {
 /// this value is a breaking change to the on-disk layout on Windows.
 pub(crate) const RESERVED_NONCE_SUBSTITUTE: char = '\u{00A9}';
 
-/// Reports whether `name` (already uppercased) is a Windows reserved device name.
+/// Reports whether `name` (already lowercased) is a Windows reserved device name.
 ///
 /// Because `.` is not an accepted character, only the bare stems can collide.
 fn is_reserved_name(name: &str) -> bool {
     matches!(
         name,
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
     )
 }
 
@@ -225,7 +225,7 @@ impl NodePath {
     /// Validates and normalizes a `/`-separated path.
     ///
     /// Each component is validated the same way throughout -- ASCII letters folded
-    /// to uppercase, digits, `-`, `_`; no `.`; no Windows reserved device stem -- so a
+    /// to lowercase, digits, `-`, `_`; no `.`; no Windows reserved device stem -- so a
     /// component is always one safe on-disk entry. The empty path, an empty component (a
     /// leading, trailing, or doubled separator), and any `.` or `..` component are
     /// rejected: canopy has no relative addressing and no traversal, so a path always
@@ -376,8 +376,8 @@ fn validate_component(raw: &str, index: usize) -> Result<String, NodePathError> 
     let mut canonical = String::with_capacity(raw.len());
     for (byte_offset, ch) in raw.char_indices() {
         let normalized = match ch {
-            'a'..='z' => ch.to_ascii_uppercase(),
-            'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+            'A'..='Z' => ch.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' | '-' | '_' => ch,
             _ => {
                 return Err(NodePathError::InvalidCharacter {
                     index,
@@ -566,7 +566,7 @@ impl std::error::Error for DocumentNameError {}
 /// write's staging temps (`<document>.tmp.<nonce>`) never collide with another
 /// write's and crash-recovery can attribute an orphaned temp to the write that left
 /// it. It is a short opaque token, validated only as a safe single path fragment:
-/// ASCII letters (folded to uppercase for cross-filesystem determinism, like the name
+/// ASCII letters (folded to lowercase for cross-filesystem determinism, like the name
 /// types), ASCII digits, and the separators `-` and `_`. A `.` is rejected so the
 /// `.tmp.<nonce>` temp suffix stays unambiguous. Because the nonce is folded, callers
 /// must treat two nonces differing only in case as the same value.
@@ -583,7 +583,7 @@ impl Nonce {
 
     /// Validates and normalizes `raw` into a canonical nonce.
     ///
-    /// The accepted character set is ASCII letters (folded to uppercase), ASCII
+    /// The accepted character set is ASCII letters (folded to lowercase), ASCII
     /// digits, and the separators `-` and `_`. The empty token, a `.` (which would
     /// make the `.tmp.<nonce>` suffix ambiguous), any other character (path
     /// separators, whitespace, control bytes, non-ASCII), and an over-long token are
@@ -596,8 +596,8 @@ impl Nonce {
         let mut canonical = String::with_capacity(raw.len());
         for (byte_offset, ch) in raw.char_indices() {
             let normalized = match ch {
-                'a'..='z' => ch.to_ascii_uppercase(),
-                'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+                'A'..='Z' => ch.to_ascii_lowercase(),
+                'a'..='z' | '0'..='9' | '-' | '_' => ch,
                 _ => {
                     return Err(NonceError::InvalidCharacter {
                         character: ch,

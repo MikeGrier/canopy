@@ -20,8 +20,8 @@ fn path(raw: &str) -> NodePath {
 fn parses_a_single_component() {
     let p = path("TICKETS");
     assert_eq!(p.depth(), 1);
-    assert_eq!(p.name(), "TICKETS");
-    assert_eq!(p.to_string(), "TICKETS");
+    assert_eq!(p.name(), "tickets");
+    assert_eq!(p.to_string(), "tickets");
     assert!(p.parent().is_none());
 }
 
@@ -31,26 +31,26 @@ fn parses_a_multi_component_path() {
     assert_eq!(p.depth(), 3);
     assert_eq!(
         p.components().collect::<Vec<_>>(),
-        ["TICKETS", "AB", "ABCDEF0123456"]
+        ["tickets", "ab", "abcdef0123456"]
     );
-    assert_eq!(p.name(), "ABCDEF0123456");
-    assert_eq!(p.to_string(), "TICKETS/AB/ABCDEF0123456");
+    assert_eq!(p.name(), "abcdef0123456");
+    assert_eq!(p.to_string(), "tickets/ab/abcdef0123456");
 }
 
 #[test]
-fn normalizes_each_component_to_uppercase() {
+fn normalizes_each_component_to_lowercase() {
     // Folding is what makes one name render to one on-disk entry on both
     // case-sensitive and case-insensitive filesystems, so it must apply per component
     // rather than only to the last.
-    let p = path("tickets/ab/abcdef");
-    assert_eq!(p.to_string(), "TICKETS/AB/ABCDEF");
-    assert_eq!(p.name(), "ABCDEF");
+    let p = path("TICKETS/AB/ABCDEF");
+    assert_eq!(p.to_string(), "tickets/ab/abcdef");
+    assert_eq!(p.name(), "abcdef");
 }
 
 #[test]
 fn accepts_the_full_component_charset() {
-    let p = path("a-b_c/D9-_/0123456789");
-    assert_eq!(p.to_string(), "A-B_C/D9-_/0123456789");
+    let p = path("A-B_C/D9-_/0123456789");
+    assert_eq!(p.to_string(), "a-b_c/d9-_/0123456789");
 }
 
 #[test]
@@ -287,9 +287,9 @@ fn the_length_bound_counts_the_separators_and_is_exact_at_the_boundary() {
 fn parent_walks_up_one_level_at_a_time() {
     let p = path("TICKETS/AB/ABCDEF");
     let parent = p.parent().expect("has a parent");
-    assert_eq!(parent.to_string(), "TICKETS/AB");
+    assert_eq!(parent.to_string(), "tickets/ab");
     let grandparent = parent.parent().expect("has a parent");
-    assert_eq!(grandparent.to_string(), "TICKETS");
+    assert_eq!(grandparent.to_string(), "tickets");
     assert!(grandparent.parent().is_none());
 }
 
@@ -302,8 +302,8 @@ fn a_root_level_node_has_no_parent() {
 
 #[test]
 fn child_extends_a_path_by_one_component() {
-    let p = path("TICKETS").child("ab").expect("valid child");
-    assert_eq!(p.to_string(), "TICKETS/AB");
+    let p = path("TICKETS").child("AB").expect("valid child");
+    assert_eq!(p.to_string(), "tickets/ab");
     assert_eq!(p.depth(), 2);
 }
 
@@ -353,7 +353,7 @@ fn contains_is_component_wise_not_a_string_prefix() {
 #[test]
 fn relative_path_is_one_directory_per_component() {
     let p = path("TICKETS/AB/ABCDEF");
-    let expected: std::path::PathBuf = ["TICKETS", "AB", "ABCDEF"].iter().collect();
+    let expected: std::path::PathBuf = ["tickets", "ab", "abcdef"].iter().collect();
     assert_eq!(p.relative_path(), expected);
 }
 
@@ -375,13 +375,13 @@ fn ordering_is_component_wise_so_a_sort_groups_siblings_under_their_parent() {
     assert_eq!(
         rendered,
         [
-            "STORE",
-            "TICKETS",
-            "TICKETS/AA",
-            "TICKETS/AB",
-            "TICKETS/AB/A",
-            "TICKETS/AB/B",
-            "TICKETSX",
+            "store",
+            "tickets",
+            "tickets/aa",
+            "tickets/ab",
+            "tickets/ab/a",
+            "tickets/ab/b",
+            "ticketsx",
         ]
     );
 }

@@ -23,7 +23,7 @@ fn shard_entries(
         .read_dir(&shard)
         .unwrap_or_default()
         .into_iter()
-        .map(|e| e.file_name.to_string_lossy().into_owned())
+        .map(|e| e.file_name)
         .collect();
     names.sort();
     names

@@ -89,7 +89,7 @@ pub struct ContentDigest([u8; Self::LEN]);
 /// Excluding the digits `0`, `1`, `8` and `9` is what removes the `0`/`O` and `1`/`I`/`l`
 /// confusions from the human-correlation path `D321` exists to serve. Changing this table
 /// changes every name on disk, so it is a format-breaking constant.
-const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const BASE32_ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 impl ContentDigest {
     /// The digest length in bytes (SHA-256 -> 32 bytes).
@@ -137,7 +137,7 @@ impl ContentDigest {
         s
     }
 
-    /// The RFC 4648 base32 presentation of the digest: uppercase, unpadded, always
+    /// The RFC 4648 base32 presentation of the digest: lowercase, unpadded, always
     /// [`BASE32_LEN`](Self::BASE32_LEN) characters (`D322`).
     ///
     /// This is the rendering the store's on-disk names use. It is **additive**: `D298`'s
@@ -148,7 +148,7 @@ impl ContentDigest {
     /// filesystem it would live on. Hex is case-safe too but costs 64 characters here, and
     /// twice that in a name carrying two renderings.
     ///
-    /// **The last character is always `A` or `Q`.** 256 does not divide by 5: fifty-one
+    /// **The last character is always `a` or `q`.** 256 does not divide by 5: fifty-one
     /// characters carry 255 bits, so the fifty-second holds one significant bit and four
     /// zero pad bits. See [`from_base32`](Self::from_base32), which rejects anything else.
     pub fn to_base32(&self) -> String {
@@ -173,7 +173,7 @@ impl ContentDigest {
     /// is not exactly [`BASE32_LEN`](Self::BASE32_LEN) characters of that alphabet whose
     /// four trailing pad bits are zero. The inverse of [`to_base32`](Self::to_base32).
     ///
-    /// Accepts either case even though [`to_base32`](Self::to_base32) emits uppercase: the
+    /// Accepts either case even though [`to_base32`](Self::to_base32) emits lowercase: the
     /// names live on case-folding filesystems, so case cannot be load-bearing on the way
     /// back in without the format lying about what round-trips.
     ///

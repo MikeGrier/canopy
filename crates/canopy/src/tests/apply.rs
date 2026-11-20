@@ -56,7 +56,7 @@ fn transaction_propagates_staging_tree_cleanup_errors() {
         .join(crate::store::NAMESPACE_TREE_DIR)
         .join("p0")
         .join(STAGING_DIR)
-        .join("APPLY1");
+        .join("apply1");
     let policy = FaultPolicy::new().inject_gated(
         FaultOp::RemoveDirAll,
         PathMatcher::exact(staging),
@@ -221,8 +221,8 @@ fn a_conditional_swap_rejects_the_whole_transaction_when_its_precondition_fails(
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
-            node: "RECORD".to_owned(),
-            document: Some("RECORD.JSON".to_owned()),
+            node: "record".to_owned(),
+            document: Some("record.json".to_owned()),
             expected: RejectedPrecondition::ExpectedDigest(body(b"stale").digest()),
             current: Some(body(b"actual").digest()),
         }
@@ -252,8 +252,8 @@ fn a_conditional_swap_on_an_absent_document_rejects_with_no_current() {
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
-            node: "RECORD".to_owned(),
-            document: Some("RECORD.JSON".to_owned()),
+            node: "record".to_owned(),
+            document: Some("record.json".to_owned()),
             expected: RejectedPrecondition::ExpectedDigest(body(b"expected").digest()),
             current: None,
         }
@@ -298,8 +298,8 @@ fn a_conditional_absent_swap_rejects_when_the_document_already_exists() {
     assert_eq!(
         outcome,
         TransactionOutcome::Rejected {
-            node: "RECORD".to_owned(),
-            document: Some("ENGINE".to_owned()),
+            node: "record".to_owned(),
+            document: Some("engine".to_owned()),
             expected: RejectedPrecondition::ExpectedAbsent,
             current: Some(body(b"present").digest()),
         }
@@ -365,7 +365,7 @@ fn a_committed_transaction_sweeps_its_staging() {
         );
         assert_eq!(
             node_entries(&vfs, &store, index),
-            vec![OsString::from("RECORD.JSON")],
+            vec![String::from("record.json")],
             "replica {index} holds only the committed document"
         );
     }
@@ -502,7 +502,7 @@ fn a_write_at_a_removed_node_path_is_refused_before_prepare() {
         .expect_err("the write and the removal contradict each other");
     assert!(
         matches!(refused, StoreError::NameIsChildNode { ref path, ref name }
-            if path.to_string() == "A" && name == "B"),
+            if path.to_string() == "a" && name == "b"),
         "got {refused:?}"
     );
     assert!(store.commit_log().read().unwrap().is_empty());
@@ -557,7 +557,7 @@ fn removing_a_node_at_or_beneath_an_existing_document_is_refused_before_prepare(
             .apply_transaction_as(&swaps, &nonce("t2"))
             .expect_err("a document is not a node");
         assert!(
-            matches!(refused, StoreError::PathIsDocument { ref path } if path.to_string() == "A/B"),
+            matches!(refused, StoreError::PathIsDocument { ref path } if path.to_string() == "a/b"),
             "{removed}: got {refused:?}"
         );
         assert!(store.commit_log().read().unwrap().is_empty(), "{removed}");

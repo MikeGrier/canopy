@@ -147,7 +147,7 @@ fn open(root: &Path, backend: Backend) -> io::Result<Box<dyn Coordination>> {
         .open(Arc::new(OsFs::new()), root)
         .map_err(io::Error::other)?;
     participant
-        .confirm_created(std::ffi::OsStr::new("benchmark-marker"))
+        .confirm_created("benchmark-marker")
         .map_err(io::Error::other)?;
     Ok(participant)
 }
@@ -168,7 +168,7 @@ fn seed(root: &Path, backend: Backend) -> io::Result<Box<dyn Coordination>> {
     fs.write(&root.join("benchmark-marker"), b"coordination benchmark")
         .map_err(io::Error::other)?;
     participant
-        .confirm_created(std::ffi::OsStr::new("benchmark-marker"))
+        .confirm_created("benchmark-marker")
         .map_err(io::Error::other)?;
     participant
         .acquire(Waiting::Wait)
@@ -200,7 +200,7 @@ fn worker(args: &[String], reporter: &Reporter) -> io::Result<()> {
         .factory()
         .open(Arc::new(OsFs::new()), root)
         .map_err(io::Error::other)?;
-    match participant.confirm_created(std::ffi::OsStr::new("benchmark-marker")) {
+    match participant.confirm_created("benchmark-marker") {
         Err(CoordError::ImplementationMismatch { .. }) => return reporter.emit(&Event::Refused),
         result => result.map_err(io::Error::other)?,
     }

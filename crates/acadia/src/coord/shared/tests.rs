@@ -4,7 +4,6 @@ use super::*;
 use crate::coord::{
     ArtifactMaker, Created, Creation, CreationNonce, CreationPlan, ModificationEnd, Purpose,
 };
-use std::ffi::OsStr;
 use std::sync::Weak;
 
 #[derive(Debug)]
@@ -27,14 +26,14 @@ struct Maker {
     root: PathBuf,
 }
 impl ArtifactMaker for Maker {
-    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+    fn make(&mut self, name: &str, inputs: &[u8]) -> CoordResult<()> {
         let path = self.root.join(name);
         self.fs.write(&path, inputs)?;
         self.fs.fsync(&path)?;
         Ok(())
     }
 
-    fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+    fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
         Ok(inputs.to_vec())
     }
 }
@@ -159,7 +158,7 @@ fn a_panicking_shared_hold_releases_an_in_progress_creation_lock() {
         resume: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
     }
     impl ArtifactMaker for PausedMaker {
-        fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+        fn make(&mut self, name: &str, inputs: &[u8]) -> CoordResult<()> {
             let _ = self.entered.send(());
             self.resume.lock().unwrap().recv().unwrap();
             self.fs
@@ -167,7 +166,7 @@ fn a_panicking_shared_hold_releases_an_in_progress_creation_lock() {
                 .map_err(Into::into)
         }
 
-        fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
             Ok(inputs.to_vec())
         }
     }
@@ -184,7 +183,7 @@ fn a_panicking_shared_hold_releases_an_in_progress_creation_lock() {
     initial.release().unwrap();
     let (entered, entered_rx) = std::sync::mpsc::channel();
     let (resume, resume_rx) = std::sync::mpsc::channel();
-    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let names = ["data", "marker"];
     let plan = CreationPlan {
         inputs: b"inputs",
         nonce: CreationNonce::from_bytes([1; 16]),
@@ -280,7 +279,7 @@ fn normal_creation_records_the_identity_and_marker_last() {
             .open(fs.clone(), Path::new("/factory"))
             .unwrap();
         let inputs = vec![value; value as usize];
-        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let names = ["data", "marker"];
         let plan = CreationPlan {
             inputs: &inputs,
             nonce: CreationNonce::from_bytes([value; 16]),
@@ -294,7 +293,7 @@ fn normal_creation_records_the_identity_and_marker_last() {
             participant.create(&plan, &mut maker).unwrap(),
             Created::Created
         );
-        participant.confirm_created(OsStr::new("marker")).unwrap();
+        participant.confirm_created("marker").unwrap();
         assert_eq!(fs.read(Path::new("/factory/data")).unwrap(), inputs);
         assert_eq!(
             participant.create(&plan, &mut maker).unwrap(),
@@ -327,7 +326,7 @@ fn identical_creators_at_once_make_one_store_and_the_others_find_it() {
                     let participant = SharedFactory::new()
                         .open(fs.clone(), Path::new("/factory"))
                         .unwrap();
-                    let names = [OsStr::new("data"), OsStr::new("marker")];
+                    let names = ["data", "marker"];
                     let plan = CreationPlan {
                         inputs: b"one identity",
                         nonce: CreationNonce::from_bytes([i; 16]),
@@ -384,7 +383,7 @@ fn foreign_reservations_are_refused_before_shared_initialization() {
         ));
         fs.write(Path::new("/factory/marker"), b"marker").unwrap();
         assert!(matches!(
-            second.confirm_created(OsStr::new("marker")),
+            second.confirm_created("marker"),
             Err(CoordError::ImplementationMismatch { .. })
         ));
         if file_first {
@@ -441,7 +440,7 @@ fn failed_creation_resumes_and_invalid_plans_leave_the_root_unreserved() {
         .unwrap();
     let inputs = b"creation";
     for name in ["../escape", ".coord-owned", ""] {
-        let names = [OsStr::new(name)];
+        let names = [name];
         let plan = CreationPlan {
             inputs,
             nonce: CreationNonce::from_bytes([1; 16]),
@@ -461,17 +460,17 @@ fn failed_creation_resumes_and_invalid_plans_leave_the_root_unreserved() {
     }
     struct Failed;
     impl ArtifactMaker for Failed {
-        fn make(&mut self, _: &OsStr, _: &[u8]) -> CoordResult<()> {
+        fn make(&mut self, _: &str, _: &[u8]) -> CoordResult<()> {
             Err(CoordError::Malformed {
                 what: "failed artifact",
             })
         }
 
-        fn marker(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        fn marker(&mut self, name: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
             self.make(name, inputs).map(|()| Vec::new())
         }
     }
-    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let names = ["data", "marker"];
     let plan = CreationPlan {
         inputs,
         nonce: CreationNonce::from_bytes([1; 16]),
@@ -479,7 +478,7 @@ fn failed_creation_resumes_and_invalid_plans_leave_the_root_unreserved() {
     };
     assert!(participant.create(&plan, &mut Failed).is_err());
     assert!(matches!(
-        participant.confirm_created(OsStr::new("marker")),
+        participant.confirm_created("marker"),
         Err(CoordError::NotCreated)
     ));
     assert_eq!(
@@ -532,7 +531,7 @@ fn a_participant_abandoned_while_it_publishes_its_reservation_publishes_none_aft
     let vfs: Arc<dyn Vfs> = Arc::new(crate::FaultyFs::new(fs.another_process(), policy));
     let opened: Arc<dyn Coordination> = Arc::from(SharedFactory::new().open(vfs, root).unwrap());
     let _ = participant.set(Arc::clone(&opened));
-    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let names = ["data", "marker"];
     let plan = CreationPlan {
         inputs: b"inputs",
         nonce: CreationNonce::from_bytes([1; 16]),
@@ -577,17 +576,17 @@ fn creation_abandonment_releases_exclusion_and_cannot_make_the_next_artifact() {
         participant: &'a dyn Coordination,
     }
     impl ArtifactMaker for Abandon<'_> {
-        fn make(&mut self, _: &OsStr, _: &[u8]) -> CoordResult<()> {
+        fn make(&mut self, _: &str, _: &[u8]) -> CoordResult<()> {
             self.participant.abandon();
             Ok(())
         }
 
-        fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+        fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
             self.participant.abandon();
             Ok(inputs.to_vec())
         }
     }
-    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let names = ["data", "marker"];
     let plan = CreationPlan {
         inputs: b"inputs",
         nonce: CreationNonce::from_bytes([1; 16]),
@@ -627,14 +626,14 @@ struct OpensBeforeTheMarker {
     gate: crate::FaultGate,
 }
 impl ArtifactMaker for OpensBeforeTheMarker {
-    fn make(&mut self, name: &OsStr, inputs: &[u8]) -> CoordResult<()> {
+    fn make(&mut self, name: &str, inputs: &[u8]) -> CoordResult<()> {
         let path = self.root.join(name);
         self.fs.write(&path, inputs)?;
         self.fs.fsync(&path)?;
         Ok(())
     }
 
-    fn marker(&mut self, _: &OsStr, inputs: &[u8]) -> CoordResult<Vec<u8>> {
+    fn marker(&mut self, _: &str, inputs: &[u8]) -> CoordResult<Vec<u8>> {
         self.gate.open();
         Ok(inputs.to_vec())
     }
@@ -645,7 +644,7 @@ fn an_identical_creator_makes_a_marker_its_creator_did_not_make_durable() {
     let fs = filesystem();
     let root = Path::new("/factory");
     fs.fsync(root).unwrap();
-    let names = [OsStr::new("data"), OsStr::new("marker")];
+    let names = ["data", "marker"];
     let plan = CreationPlan {
         inputs: b"one identity",
         nonce: CreationNonce::from_bytes([1; 16]),
@@ -691,7 +690,7 @@ fn a_publication_left_beside_an_artifact_does_not_keep_its_creation_from_finishi
     for at in ["data", "marker"] {
         let fs = filesystem();
         let root = Path::new("/factory");
-        let names = [OsStr::new("data"), OsStr::new("marker")];
+        let names = ["data", "marker"];
         let plan = CreationPlan {
             inputs: b"one identity",
             nonce: CreationNonce::from_bytes([1; 16]),

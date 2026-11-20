@@ -3,7 +3,6 @@
 use super::{clock, metrics::Sample};
 use acadia::Vfs;
 use acadia::coord::*;
-use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -73,7 +72,7 @@ impl Creation for Participant {
     fn reserve(&self, inputs: &[u8], nonce: CreationNonce) -> CoordResult<Created> {
         self.inner.reserve(inputs, nonce)
     }
-    fn confirm_created(&self, marker: &OsStr) -> CoordResult<()> {
+    fn confirm_created(&self, marker: &str) -> CoordResult<()> {
         self.inner.confirm_created(marker)
     }
 }

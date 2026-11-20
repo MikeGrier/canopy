@@ -2,15 +2,17 @@
 
 //! [`Creation`] for the file-based implementation.
 
-use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
-use crate::coord::creation::{make_artifacts, validate_artifact_name, validate_plan};
+use crate::coord::creation::{
+    is_publication_staging_of_folded, make_artifacts, names_equal, validate_artifact_name,
+    validate_plan,
+};
 use crate::coord::{
     ArtifactMaker, CoordError, CoordResult, Created, Creation, CreationNonce, CreationPlan,
     RESERVED_PREFIX, Waiting,
 };
-use crate::{LockMode, LockSpan, VfsErrorKind};
+use crate::{FileType, LockMode, LockSpan, VfsErrorKind};
 
 use super::reservation::Reservation;
 use super::{FileCoordination, HoldId};
@@ -23,7 +25,7 @@ enum Found {
     /// Any other marker: the root is another store.
     Marker,
     /// Something creation does not make.
-    Occupied(OsString),
+    Occupied(String),
     /// A creation was begun.
     Reserved(Reservation),
     /// Nothing but the coordination's own.
@@ -86,46 +88,52 @@ impl FileCoordination {
         }
     }
 
-    fn read_root(&self, plan: &CreationPlan<'_>) -> CoordResult<Found> {
-        let marker = plan
+    fn read_root(&self, plan: &CreationPlan<'_>) -> CoordResult<(Found, Vec<String>)> {
+        let marker = *plan
             .artifacts
             .last()
             .expect("a validated plan has artifacts");
-        let mut artifact_found = None;
-        let mut names: Vec<OsString> = self
-            .vfs()
-            .read_dir(self.layout().root())?
-            .into_iter()
-            .map(|entry| entry.file_name)
-            .collect();
-        names.sort();
-        if names.iter().any(|name| name == marker) {
-            return Ok(match self.read_reservation()? {
-                Some(reservation)
-                    if reservation.implementation == self.id
-                        && reservation.inputs == plan.inputs =>
-                {
-                    Found::Existing
-                }
-                _ => Found::Marker,
-            });
+        let mut artifacts = Vec::new();
+        let mut entries = self.vfs().read_dir(self.layout().root())?;
+        entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| names_equal(&entry.file_name, marker))
+        {
+            if entry.file_type != FileType::File {
+                return Ok((Found::Occupied(entry.file_name.clone()), artifacts));
+            }
+            return Ok((
+                match self.read_reservation()? {
+                    Some(reservation)
+                        if reservation.implementation == self.id
+                            && reservation.inputs == plan.inputs =>
+                    {
+                        Found::Existing
+                    }
+                    _ => Found::Marker,
+                },
+                artifacts,
+            ));
         }
-        for name in names {
+        for entry in entries {
+            let name = entry.file_name;
             if is_reserved(&name) {
                 continue;
             }
             if !plan.artifacts.iter().any(|artifact| {
-                *artifact == name || crate::is_publication_staging_of(&name, artifact)
+                names_equal(&name, artifact) || is_publication_staging_of_folded(&name, artifact)
             }) {
-                return Ok(Found::Occupied(name));
+                return Ok((Found::Occupied(name), artifacts));
             }
-            artifact_found.get_or_insert(name);
+            artifacts.push(name);
         }
-        match (self.read_reservation()?, artifact_found) {
-            (Some(reservation), _) => Ok(Found::Reserved(reservation)),
-            (None, Some(artifact)) => Ok(Found::Occupied(artifact)),
-            (None, None) => Ok(Found::Empty),
-        }
+        let found = match (self.read_reservation()?, artifacts.first()) {
+            (Some(reservation), _) => Found::Reserved(reservation),
+            (None, Some(artifact)) => Found::Occupied(artifact.clone()),
+            (None, None) => Found::Empty,
+        };
+        Ok((found, artifacts))
     }
 
     fn decide(&self, found: Found, plan: &CreationPlan<'_>) -> CoordResult<Course> {
@@ -157,9 +165,17 @@ impl FileCoordination {
 
     /// Makes the marker of a store found made durable with its directory entry, as an open does:
     /// its creator may have died between making the marker and making it durable.
-    fn found(&self, marker: &OsStr) -> CoordResult<Created> {
+    fn found(&self, marker: &str) -> CoordResult<Created> {
         self.alive()?;
-        self.vfs().fsync(&self.layout().root().join(marker))?;
+        let actual = self
+            .vfs()
+            .read_dir(self.layout().root())?
+            .into_iter()
+            .find(|entry| names_equal(&entry.file_name, marker))
+            .filter(|entry| entry.file_type == FileType::File)
+            .ok_or(CoordError::NotCreated)?;
+        self.vfs()
+            .fsync(&self.layout().root().join(actual.file_name))?;
         self.vfs().fsync(self.layout().root())?;
         Ok(Created::Existing)
     }
@@ -208,16 +224,18 @@ impl Creation for FileCoordination {
     ) -> CoordResult<Created> {
         validate_plan(plan)?;
         self.alive()?;
-        let marker = plan
+        let marker = *plan
             .artifacts
             .last()
             .expect("a validated plan has artifacts");
-        let first = self.decide(self.read_root(plan)?, plan)?;
+        let (found, _) = self.read_root(plan)?;
+        let first = self.decide(found, plan)?;
         if first == Course::Existing {
             return self.found(marker);
         }
         let _exclusion = self.keep(&self.layout().creation_lock(), LockMode::Exclusive)?;
-        let course = self.decide(self.read_root(plan)?, plan)?;
+        let (found, existing) = self.read_root(plan)?;
+        let course = self.decide(found, plan)?;
         if course == Course::Existing {
             return self.found(marker);
         }
@@ -232,6 +250,7 @@ impl Creation for FileCoordination {
             maker,
             self.vfs(),
             self.layout().root(),
+            &existing,
             &|| self.alive(),
             &|path, bytes| self.publishing(|vfs| vfs.publish_new(path, bytes)),
         )?;
@@ -251,7 +270,7 @@ impl Creation for FileCoordination {
         self.settle_reservation(course, inputs, nonce)
     }
 
-    fn confirm_created(&self, marker: &OsStr) -> CoordResult<()> {
+    fn confirm_created(&self, marker: &str) -> CoordResult<()> {
         validate_artifact_name(marker)?;
         self.alive()?;
         let _opening = self.keep(&self.layout().creation_lock(), LockMode::Shared)?;
@@ -261,17 +280,20 @@ impl Creation for FileCoordination {
                 recorded: reservation.implementation,
             });
         }
-        let path = self.layout().root().join(marker);
-        if !self.vfs().exists(&path)? {
-            return Err(CoordError::NotCreated);
-        }
-        self.vfs().fsync(&path)?;
+        let actual = self
+            .vfs()
+            .read_dir(self.layout().root())?
+            .into_iter()
+            .find(|entry| names_equal(&entry.file_name, marker))
+            .filter(|entry| entry.file_type == FileType::File)
+            .ok_or(CoordError::NotCreated)?;
+        self.vfs()
+            .fsync(&self.layout().root().join(actual.file_name))?;
         self.vfs().fsync(self.layout().root())?;
         Ok(())
     }
 }
 
-fn is_reserved(name: &OsStr) -> bool {
-    name.as_encoded_bytes()
-        .starts_with(RESERVED_PREFIX.as_bytes())
+fn is_reserved(name: &str) -> bool {
+    name.as_bytes().starts_with(RESERVED_PREFIX.as_bytes())
 }
