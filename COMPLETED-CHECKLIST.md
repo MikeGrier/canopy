@@ -279,3 +279,18 @@ witnesses, a main and the Acquisition item tier.
 - [x] <a id="move-1"></a>**MOVE-1** -- Windows publication prepares long paths for a no-replace move, leaving the published file immediately replaceable.
 - [x] <a id="notice-1"></a>**NOTICE-1** -- Both pollers distinguish withdrawal before selection from dropping a notice while its batch is being delivered.
 - [x] <a id="link-1"></a>**LINK-1** -- The VFS contract distinguishes referent metadata from a listed, renamed or unlinked final entry.
+
+## Moved 2026-11-19 -- TLC toolchain baseline
+
+### <a id="tool-1"></a>TOOL-1 -- Pin Microsoft OpenJDK 25 and the published TLA+ `v1.8.0` jar across local tools and CI. *(completed 2026-11-19 14:53:27 -05:00)*
+
+The Windows baseline installs `Microsoft.OpenJDK.25` with winget and discovers an explicitly
+named Java beneath `$env:ProgramFiles`. The TLA+ PowerShell tools already use the versioned
+`%USERPROFILE%\.tla\1.8.0\tla2tools.jar` default, which now holds the published `v1.8.0`
+asset. The published jar reports `TLC2 Version 2026.11.19.180144 (rev: bc1b506)` and has
+SHA-256 `fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713`.
+
+GitHub Actions now installs Microsoft Java 25 and verifies that digest. The focused clean-origin
+SharedPublication stale-recovery control and two witnesses matched in both unreduced and reduced
+configurations. The main worktree's pre-existing conflict-marked spec was not used for this
+validation, and no conflict was resolved as part of the toolchain update.

@@ -322,6 +322,14 @@ impl Recovery {
                 self.known -= units.saturating_sub(self.done_in_phase);
             }
             self.done_in_phase = 0;
+            if matches!(
+                self.phase,
+                RecoveryPhase::UpgradeBody | RecoveryPhase::Completion
+            ) && store.claims_left()?
+            {
+                self.phase = RecoveryPhase::Claims;
+                self.known += 1;
+            }
         }
         self.settle_position()?;
         if !self.finished {
@@ -432,11 +440,7 @@ impl Recovery {
                 Ok(true)
             }
             RecoveryPhase::Claims => {
-                let changed = match store.vfs.read_dir(&store.root.join(CLAIMS_DIR)) {
-                    Ok(entries) => !entries.is_empty(),
-                    Err(error) if error.kind() == VfsErrorKind::NotFound => false,
-                    Err(error) => return Err(error.into()),
-                };
+                let changed = store.claims_left()?;
                 store.release_stale_claims()?;
                 Ok(changed)
             }
@@ -499,6 +503,14 @@ impl Store {
             self.writer.clear_unresolved();
         }
         Ok(self.stamped((), changed))
+    }
+
+    fn claims_left(&self) -> Result<bool, StoreError> {
+        match self.vfs.read_dir(&self.root.join(CLAIMS_DIR)) {
+            Ok(entries) => Ok(!entries.is_empty()),
+            Err(error) if error.kind() == VfsErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub(crate) fn resolve_data_work(&self) -> Result<(), StoreError> {

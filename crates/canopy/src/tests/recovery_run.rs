@@ -178,6 +178,108 @@ fn a_paused_recovery_cannot_clear_a_later_transactions_log() {
     );
 }
 
+#[test]
+fn recovery_completion_releases_a_claim_left_by_an_intervening_document_writer() {
+    assert!(
+        !claim_left_after_intervening_document_writer(RecoveryPhase::Completion),
+        "recovery reported completion while the intervening writer's claim remained"
+    );
+}
+
+#[test]
+fn recovery_publication_releases_a_claim_left_by_an_intervening_document_writer() {
+    assert!(!claim_left_after_intervening_document_writer(
+        RecoveryPhase::Publication
+    ));
+}
+
+#[test]
+fn recovery_claims_releases_a_claim_left_by_an_intervening_document_writer() {
+    assert!(!claim_left_after_intervening_document_writer(
+        RecoveryPhase::Claims
+    ));
+}
+
+fn claim_left_after_intervening_document_writer(paused_at: RecoveryPhase) -> bool {
+    let mem = Arc::new(MemFs::new());
+    let vfs: Arc<dyn Vfs> = mem.clone();
+    let root = PathBuf::from(crate::tests::MEM_ROOT).join("late-production-claim");
+    vfs.create_dir_all(&root).unwrap();
+    let first = Store::init_unsourced(Arc::clone(&vfs), root.clone(), test_config()).unwrap();
+    let mut run = first.recovery().unwrap();
+    for _ in 0..32 {
+        if run.progress().phase() == paused_at {
+            break;
+        }
+        run.step().unwrap().agent_stamp.unwrap();
+    }
+    assert_eq!(run.progress().phase(), paused_at);
+    assert!(!run.progress().finished());
+
+    let claim = root
+        .join(crate::store::CLAIMS_DIR)
+        .join(nonce("interrupted-document").path_component().as_ref());
+    let observed_claim = claim.clone();
+    let observed_vfs = Arc::clone(&vfs);
+    let claims_directory = root.join(crate::store::CLAIMS_DIR);
+    let claim_sync = PathMatcher::predicate(move |path| {
+        path == claims_directory && observed_vfs.metadata(&observed_claim).is_ok()
+    });
+    let gate = FaultGate::closed();
+    let writer_vfs: Arc<FaultyFs<MemFs>> =
+        Arc::new_cyclic(|weak: &std::sync::Weak<FaultyFs<MemFs>>| {
+            let dying_process = weak.clone();
+            FaultyFs::new(
+                mem.another_process(),
+                FaultPolicy::new().inject_gated(
+                    FaultOp::Fsync,
+                    claim_sync,
+                    Fault::observe_with(move |_, _| {
+                        dying_process.upgrade().unwrap().inner().abandon();
+                    }),
+                    When::Once,
+                    gate.clone(),
+                ),
+            )
+        });
+    let (writer, _) = Store::open(
+        writer_vfs,
+        root.clone(),
+        StoreOptions::with_nonce_source(test_agent(), || nonce("interrupted-document")),
+    )
+    .unwrap();
+    let before = first.modifications().unwrap();
+    gate.open();
+    assert!(
+        writer
+            .write_document_replicated(name("late"), &doc("record.json"), &body(b"unwritten"))
+            .is_err()
+    );
+    assert!(
+        vfs.metadata(&claim).is_ok(),
+        "the real write left its claim"
+    );
+    assert_eq!(first.modifications().unwrap(), before);
+    assert_eq!(
+        first.read_body(name("late"), &doc("record.json")).unwrap(),
+        None
+    );
+    for _ in 0..32 {
+        if run.progress().finished() {
+            break;
+        }
+        run.step().unwrap().agent_stamp.unwrap();
+    }
+    assert!(run.progress().finished());
+    let claim_left = vfs.metadata(&claim).is_ok();
+    first.recover().unwrap().agent_stamp.unwrap();
+    assert!(
+        vfs.metadata(&claim).is_err(),
+        "a fresh recovery releases the same stale claim"
+    );
+    claim_left
+}
+
 /// Every file beneath `root` with its contents, other than the coordination's own and the lock.
 fn tree(vfs: &Arc<dyn Vfs>, root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn walk(vfs: &Arc<dyn Vfs>, dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {

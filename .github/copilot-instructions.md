@@ -496,8 +496,11 @@ below name it unchanged.
 
 **Pinned toolchain** (Windows host):
 
-- JDK: Microsoft Build of OpenJDK 21 -- `winget install --id Microsoft.OpenJDK.21 -e`.
-  Open a new terminal afterwards so `java` is on `PATH`.
+- JDK: Microsoft Build of OpenJDK 25 -- `winget install -e --id Microsoft.OpenJDK.25`.
+  Open a new terminal afterwards so `java` is on `PATH`. If Java must be named explicitly,
+  discover it beneath the environment-selected Program Files directory:
+  `$java = Get-ChildItem (Join-Path $env:ProgramFiles 'Microsoft\jdk-25*\bin\java.exe') |
+  Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName`.
 - `tla2tools.jar` **v1.8.0**, kept outside the repository at
   `%USERPROFILE%\.tla\1.8.0\tla2tools.jar`:
 
@@ -509,7 +512,7 @@ below name it unchanged.
   ```
 
   The SHA-256 must be
-  `7e53aa636dac8a3cb0533f343115c0548e03fc0ce5edc7739becf58d3d0fb84f` (GitHub's published
+  `fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713` (GitHub's published
   digest for the current release asset). Changing the pinned version is a deliberate change to this
   section, not a silent upgrade.
 

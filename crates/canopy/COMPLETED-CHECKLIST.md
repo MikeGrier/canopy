@@ -2468,3 +2468,174 @@ writes, direct VFS fixtures, conformance consumers, random nonces and schema-1 r
 Public API and README wording now state lowercase output. Full Canopy tests, integration tests and
 doctests pass on Windows and WSL; workspace Clippy and debug/release checks, rustdoc, formatting and
 encoding checks pass.
+
+## Moved 2026-11-19 -- Recovery sync evaluation
+
+### <a id="recovery-fast-gate"></a>RECOVERY-FAST-GATE -- Compare origin's recovery semantics with the saved findings before deciding whether to discard the work. *(completed 2026-11-19 12:27:22 UTC-05:00)*
+
+The fast comparison found no fundamental recovery-model change that obsoletes the saved work.
+Between the saved base and the integrated origin, the shared-publication and inherited
+coordination model changes were process-termination vocabulary; the state groupings involved
+in the conflicts were already present in the saved base. The recovery and publication-settlement
+implementations were unchanged. Origin still acquired exclusion when constructing a recovery
+run and assigned a unit to publication and claims regardless of whether they had work.
+
+This corrects the sync conversation's initial attribution of the conflicts to new origin state
+groupings. It does not validate the saved implementation or establish the claimed stale-claim
+defect. The saved claim-state distinction and intervening-holder concern warrant a directed
+current-origin reproduction before wider model runs; rerunning the origin rules alone cannot
+add the omitted distinction. The conditional reason to discard the work was not met, so the
+saved work and unresolved conflicts were retained. Further evaluation remains scheduled in
+[CHECKLIST-recovery-sync-evaluation.md](CHECKLIST-recovery-sync-evaluation.md).
+
+### <a id="recovery-claim-probe"></a>RECOVERY-CLAIM-PROBE -- Reproduce a late claim through a real document write against isolated origin and distinguish stale completion from claim-removal failure. *(completed 2026-11-19 12:43:49 UTC-05:00)*
+
+An isolated checkout of origin `6b42627`, with production code unchanged, reproduced recovery
+reporting completion while retaining a real document operation's claim. Recovery was paused
+at completion; another process view began a document write and was abandoned at the claim's
+directory-sync boundary after the claim existed, before opening a modification. Its later
+I/O was refused, including claim cleanup, and the modification count remained unchanged.
+Resuming the paused recovery left the claim despite reporting completion.
+
+The same interruption before recovery's publication or claims unit released the claim, and
+a newly started recovery released the claim the completed stale run had left. These controls
+pin the stale-phase behavior rather than a synthetic claim directory or an inability to
+remove it. Process termination used acadia's in-memory process-abandonment contract, not an
+operating-system process kill. The finding is tracked in
+[UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md); adapting the regression and the
+saved work remains in [CHECKLIST-recovery-sync-evaluation.md](CHECKLIST-recovery-sync-evaluation.md).
+No production fix, conflict resolution, or TLC run was part of this diagnostic task.
+
+### <a id="recovery-eval-1"></a>RECOVERY-EVAL-1 -- Preserve and identify the saved work, origin, and every tracked and untracked comparison input. *(completed 2026-11-19 13:19:59 UTC-05:00)*
+
+The integrated origin and current HEAD are `6b42627`; the preserved stash is
+`pre-origin-sync-2026-11-19` at `12a2ead5`, based on divergent local tip `cd0a5f0`.
+Origin and that base share merge base `b268e26` and have 37 and 12 unique commits,
+respectively. The stash index parent equals the base, confirming that its 106 tracked
+changes were unstaged; its separate untracked tree retains four additional files.
+
+The tracked inventory is 3 production files, 3 model or replay-rule files, 48
+configurations, 2 scenario or corpus inputs, 5 replay-bridge files, 1 recovery unit-test
+file, 3 cross-process files, 36 generated traces, 4 planning or design files, and 1
+configuration generator. The untracked tree contains the unreduced and reduced left-claim
+witness configurations, the generated witness trace, and independent resumable-TLC
+tooling. The stash application leaves 39 unresolved paths: 2 design documents, the main
+shared-publication model, and 36 generated traces.
+
+The inventory distinguishes semantic authority from downstream generated evidence and
+does not use conflict-marked files as input. The full object IDs, category mapping,
+overlap, and comparison rules are recorded in
+[recovery-eval-1-input-inventory.md](../../.scratch/recovery-eval-1-input-inventory.md).
+No conflict was resolved and no saved path was discarded.
+
+### <a id="recovery-eval-2"></a>RECOVERY-EVAL-2 -- Establish the relevant unmodified-origin Rust and focused TLC baseline. *(completed 2026-11-19 13:35:55 UTC-05:00)*
+
+A clean detached checkout of origin established the Rust baseline: the recovery module,
+focused stale-recovery replay, and existing stale-restart witness replay behaved as
+expected, and the touched crates checked and linted without diagnostics. The current
+model and implementation retain count-driven stale-progress restart, but do not model
+work-sensitive claims or a late claim created after a paused run passes Claims.
+
+The unreduced and reduced models each matched their selected stale-progress control and
+two recovery witnesses under Microsoft OpenJDK 25.0.5.1 and the engineer-updated TLC
+`2026.11.06.222357 (d8fb231)`. This differs from the repository's original pinned JDK
+21 / TLC 1.8.0 toolchain, so broad milestone conclusions must not assume that pin was
+used. The detailed commands, selections, runtime identity, and scope limits are in
+[recovery-eval-2-baseline-report.md](../../.scratch/recovery-eval-2-baseline-report.md).
+The saved implementation remains unvalidated, and the late-claim finding remains open.
+
+### <a id="recovery-eval-3"></a>RECOVERY-EVAL-3 -- Restate each saved finding as a current-contract claim and assign a falsifier and disposition. *(completed 2026-11-19 15:13:07 -05:00)*
+
+The saved work separates into six claims. Deferring recovery construction's exclusion and
+skipping empty publication or claims units are API or resource-efficiency changes. The durable
+publication predicate is a safety prerequisite for skipping publication. Claim visibility
+across termination, failed transaction, and crash is a conformance hypothesis. Remeasuring
+Claims after an intervening holder is a reproduced correctness defect: the paused run can
+report completion while retaining a claim when the modification count did not change.
+
+The disposition is to preserve and adapt all six, but test them in that dependency order.
+The late-claim correction and durable publication guard are safety-bearing; the no-work and
+constructor changes remain conditional on proving equivalent behavior. T27 is still useful as
+a scenario, but its old generated trace is not evidence for the new schedule. The claim
+reachability witness remains a positive control, while the no-left-claim invariant is the
+actual correctness check. The full claim assumptions, affected surfaces, falsifiers, and
+ordered EVAL-4 tests are in
+[recovery-eval-3-claim-matrix.md](../../.scratch/recovery-eval-3-claim-matrix.md).
+No saved implementation was accepted, no conflict was resolved, and no generated evidence
+was regenerated by this item.
+
+### <a id="recovery-eval-4"></a>RECOVERY-EVAL-4 -- Test the adapted recovery claims in source, models, replay, and process boundaries. *(completed 2026-11-19 17:23:36 -05:00)*
+
+The adapted production code passed recovery, publication durability, upgrade-body,
+replay-fixture, and process recovery checks in an isolated origin worktree. The stale
+production claim was no longer reachable by an ordinary writer after no-work phases
+were collapsed, but a defensive intervening-holder regression still passed. Bounded
+unreduced and reduced TLC mains and the regenerated left-claim witness matched; the
+expensive HealthyPublication reference was stopped and is not counted as a pass.
+A mutation of late-completion remeasurement survived the selected model checks, so the
+saved model witness is not proof of that production rule.
+
+Regenerating all SharedPublication traces exposed a separate replay-bridge defect: the
+T27 and claim witness replays passed, but six simulation replays departed, including five
+transaction traces where the store advanced across a commit-log boundary before the
+model did. That work is spawned as `RECOVERY-REPLAY-BRIDGE` and remains blocking for the
+adapted corpus. The complete evidence and limits are in
+[recovery-eval-4-results.md](../../.scratch/recovery-eval-4-results.md). No main-worktree
+conflict was resolved and the isolated adaptation was not accepted into the branch.
+
+## Moved 2026-11-20 -- Recovery sync conflict resolution
+
+### <a id="recovery-conflict-resolution"></a>RECOVERY-CONFLICT-RESOLUTION -- Resolve the conflicts left by restoring the saved recovery work onto origin, by engineer authorization. *(completed 2026-11-20 14:53:25 -05:00)*
+
+The design note and rationale conflicts were additive, so both sides were kept: origin's
+queued-client-contract and termination-vocabulary sections first, then the saved
+recovery-hold decision and its rationale. `SharedPublication.tla` kept the saved recovery
+model with origin's termination vocabulary, and is byte-identical to the model
+`RECOVERY-EVAL-4` validated in its isolated worktree. Configurations, timeline replays, and
+the whole SharedPublication trace corpus were regenerated rather than hand-merged, and are
+byte-identical to that worktree's artifacts, which is what carries its evidence over to the
+branch. Marking the paths resolved accepts no disposition: the regenerated corpus still
+carries the replay failures `RECOVERY-REPLAY-BRIDGE` owns, and `RECOVERY-EVAL-5` still
+decides what of the saved work is kept. Origin commits newer than `6b42627` were not
+integrated.
+
+## Moved 2026-11-20 -- Recovery sync evaluation disposition
+
+### <a id="recovery-eval-5"></a>RECOVERY-EVAL-5 -- Decide the disposition of the saved recovery work. *(completed 2026-11-20 15:29:27 -05:00)*
+
+The engineer dropped the saved recovery work whole: its production changes, the model refinement,
+the configurations, timeline T27's replay, the regenerated SharedPublication corpus, the draft
+decision and rationale, and its checklist item. Merging it had cost more than producing it, and the
+regenerated corpus still failed six replays whose cause had not been separated from the adaptation.
+The branch was then brought to origin `b214cb3`. The state just before the drop is kept as the
+stash entry `recovery-resolved-before-drop-2026-11-20`, and the saved work as first stashed as
+`pre-origin-sync-2026-11-19`.
+
+The finding that does not depend on the dropped work stays open: on unmodified origin, a run paused
+after its claims phase reports completion while a claim left by a holder that came between its
+holds remains. It is queued as `M11-10` in [CHECKLIST.md](CHECKLIST.md) and recorded in
+[UNRESOLVED-TEST-FAILURES.md](UNRESOLVED-TEST-FAILURES.md).
+
+### <a id="recovery-replay-bridge"></a>RECOVERY-REPLAY-BRIDGE -- Isolate the six regenerated SharedPublication replay failures. *(withdrawn 2026-11-20 15:29:27 -05:00)*
+
+Withdrawn, not done: the failures occurred only in the corpus regenerated from the dropped model,
+so nothing is left to isolate. Origin's committed corpus replays in full against origin's code, and
+re-exporting origin's model with the published TLC 1.8.0 jar reproduces it byte for byte. The
+observation moved to [RESOLVED-TEST-FAILURES.md](RESOLVED-TEST-FAILURES.md).
+
+## Moved 2026-11-20 -- Recovery completion after intervening claims
+
+### <a id="m11-10"></a>M11-10 -- Recovery completion rechecks claims after an intervening holder. *(completed 2026-11-20 15:40:17 -05:00)*
+
+A recovery run that has reached upgrade or completion and observes that another holder acquired
+exclusion checks the claims directory before continuing. A leftover claim sends the run back to its
+claims phase, and the repeated unit is added to progress accounting. A holder that left no claim does
+not rewind, so interleaved recovery runs do not chase each other indefinitely.
+
+The regression uses `Store::write_document_replicated` through another `MemFs` process view and
+abandons that process after the nonce claim is synced but before the modification count changes. It
+checks completion, with publication and claims as controls, and confirms the claim remains before the
+paused run resumes. The regression first failed at completion and passed after the change; the full
+recovery-run unit module and Clippy pass. The current SharedPublication model has no left-claim
+state or witness for this late arrival, so this item establishes the production behavior and leaves
+that model extension outside the completed scope.

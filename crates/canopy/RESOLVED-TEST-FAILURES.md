@@ -72,3 +72,93 @@ about 1.3 s in about one round in eight, and retrying cleared it every time. The
 the file, so the blocking handle is outside the process; Defender real-time protection was on.
 The marker has been published with `publish_new` (staging, hard link, remove staging) since store
 creation became idempotent; before that it was published by a rename and the stamp did not fail.
+
+## Resolved 2026-11-20 15:29:27 -05:00 -- Regenerated SharedPublication transaction replay departs early
+
+Withdrawn with the work that produced it: the engineer dropped the saved recovery adaptation and
+the corpus regenerated from its model, and origin's committed corpus replays in full against
+origin's code. Whether the departures exposed a limitation of the replay bridge or a defect in the
+adaptation was not established. The original observation follows, unchanged.
+
+### Observed 2026-11-19 -- Regenerated SharedPublication transaction replay departs early
+
+**Revision:** adapted recovery changes in the isolated `.scratch/recovery-eval-4`
+worktree based on origin `6b42627`. The trace corpus was regenerated from the adapted
+SharedPublication model using the repository tools and published TLC baseline.
+
+**Observed:** the SharedPublication replay module passed 52 of 58 tests. Six regenerated
+simulation replays failed. One healthy-publication seed reported that the ownership record
+was absent where the model expected it. Five transaction or shared-transaction seeds showed
+the store projection ahead of the model at a commit-log boundary; examples include the
+store reporting `ended` while the model still reports `begun`, and a transaction effect
+already applied while the model still reports a prepare. The failures occur at replay
+checkpoint assertions, not at TLC checks or the focused recovery production tests.
+
+**Expected:** each regenerated trace replays step-for-step against the Store bridge or
+records a deliberate, classified departure. The failure concentration suggests the
+replay checkpoint cannot distinguish repeated commit-log or rollback operations in a
+single Store call. That hypothesis is not yet proven, and the ownership-record mismatch
+must be isolated separately before attributing all six to one cause.
+
+**Scope:** isolated adapted code, regenerated SharedPublication corpus, Microsoft JDK 25,
+and the published TLC 1.8.0 jar. The focused recovery, publication, upgrade, process,
+left-claim witness, and T27 replay checks did not fail. No production or bridge fix was
+applied in this observation. Follow-up is queued as `RECOVERY-REPLAY-BRIDGE` in
+[CHECKLIST-recovery-sync-evaluation.md](CHECKLIST-recovery-sync-evaluation.md); the full
+context and commands are in
+[recovery-eval-4-results.md](../../.scratch/recovery-eval-4-results.md).
+
+- **Update, 2026-11-20 -- the failures are confined to the locally regenerated corpus.**
+  At origin `6b42627`, unmodified, the SharedPublication replay module passes in full
+  against origin's committed corpus. Re-exporting origin's unmodified model with the current
+  published TLC 1.8.0 jar reproduces that committed corpus byte for byte, so the toolchain
+  change does not alter the traces. After the conflict resolution the branch carries the
+  adapted corpus and fails the same six seeds: `transaction_seed_1` through `_3`,
+  `shared_transaction_seed_2` and `_3`, and `healthy_publication_seed_3`. Origin's newer
+  commits through `2be34aa` change neither the spec nor the corpus. It remains open whether
+  the adapted model's new walks expose a pre-existing bridge limitation or a defect in the
+  adapted code.
+
+## Resolved 2026-11-20 15:40:17 -05:00 -- Recovery completion leaves an intervening writer's stale claim
+
+A recovery run now rechecks the claims directory when it reaches a later phase after an intervening
+holder. A surviving claim rewinds the run to the claims phase and adds the repeated unit to progress
+accounting; an intervening holder with no claim does not rewind. The original observation follows,
+unchanged.
+
+### Observed 2026-11-19 -- Recovery completion leaves an intervening writer's stale claim
+
+**Revision:** origin `6b42627`, reproduced in an isolated checkout with production code
+unchanged. The regression test is
+`recovery_completion_releases_a_claim_left_by_an_intervening_document_writer`, added to the
+isolated copy of [recovery_run.rs](src/tests/recovery_run.rs).
+
+**Reproduction:** start recovery of a healthy store and pause at `RecoveryPhase::Completion`,
+after its claims phase. Open a second writer using another process view of the same `MemFs`.
+Invoke the production `Store::write_document_replicated` API, observing the claims-directory
+sync only when that operation's actual nonce claim exists. At that boundary call `abandon`
+on the second process view. The document write then fails; the process view rejects its
+cleanup I/O as well, leaving its claim without opening a modification. Verify that the
+claim exists, the modification count is unchanged, and the document was not written.
+Resume the paused recovery: it reports finished while the claim remains.
+
+**Expected:** recovery accounts for the claim left by the intervening holder before reporting
+completion. **Observed assertion:** `recovery reported completion while the intervening
+writer's claim remained`. The same interruption while recovery is at publication or claims
+releases the claim. A fresh recovery also releases the claim the stale completed run left.
+These controls distinguish stale recovery progress from an active or unremovable claim.
+
+**Scope:** deterministic unit-level reproduction through a real write and acadia's simulated
+process-termination semantics. No operating-system process was killed and no document
+corruption was established. The surrounding recovery module had no other failure in this
+run. The saved patch has not been validated by this reproduction, and no fix was applied.
+The fix and the production-path regression are queued as `M11-10` in
+[CHECKLIST.md](CHECKLIST.md).
+
+- **Update, 2026-11-20 -- `origin/main` cannot reach this state.** On `origin/main`
+  (`ed0dadb`, an ancestor of this branch), `Store::open` takes the root's exclusive writer
+  lock and holds it for the store's life (`D116`), recovers within `open`, and then releases
+  every claim, so no holder can come between recovery's steps. The window opened on
+  `mikegrier/coord`: `6065221` made recovery a stepped run with a claims phase and removed the
+  open-time release of every claim, and `867d2ff` let several processes write under exclusion
+  taken per operation. The defect is in work not yet merged to main.

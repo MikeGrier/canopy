@@ -36,7 +36,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: microsoft
-          java-version: '21'
+          java-version: '25'
 
       - name: Install the pinned tla2tools.jar
         shell: pwsh
@@ -46,7 +46,7 @@ jobs:
           $jar = Join-Path $dir 'tla2tools.jar'
           Invoke-WebRequest -Uri 'https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar' -OutFile $jar -UseBasicParsing
           $hash = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash
-          if ($hash -ne 'E1F11B75C4B5BC4478BA0AC5CB6AE28E40A01B0016BC33E0AA97DA22DFDBCD7F') {
+          if ($hash -ne 'FDFFEF247F563EF6EDBFD44958D2A82DB79E7564E07CB673262D896353FA6713') {
             throw "tla2tools.jar has digest $hash, not the pinned one"
           }
 

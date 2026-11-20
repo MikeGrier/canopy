@@ -78,6 +78,8 @@ Each item here names the event it waits on; it joins a milestone once that event
   model, and keep each unreduced counterpart runnable as the reference, in a tier chosen from its
   measured cost. Until then the unreduced configurations stay as they are.
 
+- [x] **M11-10** -- Recovery completion rechecks claims after an intervening holder. -> [completed 2026-11-20](COMPLETED-CHECKLIST.md#m11-10)
+
 ## M12 -- Extend the protocol model
 
 - [ ] **M12-1** (was `FM-4.1`) -- The rest of transactions beyond what M3 models. `Coordination.tla` models a
