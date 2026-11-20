@@ -21,9 +21,22 @@ pub trait ManagedArtifactMaker {
     fn marker(&mut self, logical: &str, inputs: &[u8]) -> CoordResult<Vec<u8>>;
 }
 
+fn discard_attempt(
+    fs: &dyn Vfs,
+    root: &Path,
+    attempt: &crate::names::ArtifactAttempt,
+) -> CoordResult<()> {
+    match fs.remove_dir_all(&attempt.directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == crate::VfsErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(fs.fsync(root)?)
+}
+
 pub(crate) struct ManagedPlan<'a> {
     fs: &'a dyn Vfs,
-    root: &'a Path,
+    root: std::path::PathBuf,
     marker: &'a str,
     others: &'a [&'a str],
     inputs: &'a [u8],
@@ -31,11 +44,7 @@ pub(crate) struct ManagedPlan<'a> {
 }
 
 impl<'a> ManagedPlan<'a> {
-    pub(crate) fn new(
-        plan: &CreationPlan<'a>,
-        fs: &'a dyn Vfs,
-        root: &'a Path,
-    ) -> CoordResult<Self> {
+    pub(crate) fn new(plan: &CreationPlan<'a>, fs: &'a dyn Vfs, root: &Path) -> CoordResult<Self> {
         let (marker, others) = plan.artifacts.split_last().ok_or(CoordError::InvalidPlan {
             why: "a creation makes at least its marker",
         })?;
@@ -45,6 +54,7 @@ impl<'a> ManagedPlan<'a> {
                 why: "an artifact is named twice",
             });
         }
+        let root = crate::names::ComponentDirectory::stable_parent(fs, root)?;
         Ok(Self {
             marker,
             others,
@@ -55,24 +65,26 @@ impl<'a> ManagedPlan<'a> {
         })
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub(crate) fn preflight(&self, reservation: Option<bool>) -> CoordResult<()> {
         if reservation == Some(false) {
             return Err(CoordError::Reserved);
         }
-        let registered = crate::names::validate_control_entries(self.fs, self.root)?;
-        let entries = self.fs.read_dir(self.root)?;
+        let (registered, owned) = crate::names::validate_control_entries(self.fs, &self.root)?;
+        if reservation == Some(true) && !owned {
+            return Err(CoordError::Occupied {
+                name: ".names.owner".to_owned(),
+            });
+        }
+        let entries = self.fs.read_dir(&self.root)?;
         let has_map = crate::names::has_map(&entries);
         if has_map && reservation != Some(true) {
             return Err(CoordError::Occupied {
                 name: ".names.csv".to_owned(),
             });
-        }
-        for logical in registered.values() {
-            if reservation != Some(true) || !self.names.contains(logical.as_str()) {
-                return Err(CoordError::Occupied {
-                    name: logical.clone(),
-                });
-            }
         }
         if let Some(stray) = entries.iter().find(|entry| {
             let name = entry.file_name.as_str();
@@ -112,7 +124,7 @@ impl<'a> ManagedPlan<'a> {
         settle: impl FnOnce() -> CoordResult<Created>,
         publish: impl Fn(&Path, &[u8]) -> CoordResult<()>,
     ) -> CoordResult<Created> {
-        let (fs, root) = (self.fs, self.root);
+        let (fs, root) = (self.fs, self.root.as_path());
         fence.alive()?;
         if let Some(path) = fence.fenced(|| dir.lookup(self.marker))? {
             if !fence.fenced(|| fs.metadata(&path))?.is_file() {
@@ -157,6 +169,9 @@ impl<'a> ManagedPlan<'a> {
                 name: entry.file_name,
             });
         }
+        if reservation.is_none() {
+            fence.fenced(|| dir.claim_ownership())?;
+        }
         let created = settle()?;
         for logical in self.others {
             fence.alive()?;
@@ -165,7 +180,10 @@ impl<'a> ManagedPlan<'a> {
                 let attempt =
                     fence.fenced(|| crate::names::claim_artifact_attempt(fs, root, &target))?;
                 fence.alive()?;
-                maker.make(logical, &attempt.artifact, self.inputs)?;
+                if let Err(error) = maker.make(logical, &attempt.artifact, self.inputs) {
+                    discard_attempt(fs, root, &attempt)?;
+                    return Err(error);
+                }
                 fence.alive()?;
                 match fence.fenced(|| attempt.entry_type(fs))? {
                     Some(FileType::File | FileType::Dir) => {
@@ -176,11 +194,13 @@ impl<'a> ManagedPlan<'a> {
                         fence.fenced(|| fs.remove_dir_all(&attempt.directory))?;
                     }
                     Some(FileType::Other) => {
+                        discard_attempt(fs, root, &attempt)?;
                         return Err(CoordError::Malformed {
                             what: "managed artifact staging kind",
                         });
                     }
                     None => {
+                        discard_attempt(fs, root, &attempt)?;
                         return Err(CoordError::Malformed {
                             what: "missing managed artifact staging",
                         });

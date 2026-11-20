@@ -2412,9 +2412,10 @@ affect its physical spelling.
   `.acadia-h1-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
   The literal logical name of that generated file is itself encoded. Never use a collision
   suffix: two different logical byte strings claiming one physical name are an error.
-3. Reserve the entire physical `.acadia-` prefix for the resolver, including its digest
-  namespace, `.names.csv`, `.names.lock` and `.names.stage`. No caller
-  gets a direct spelling in this namespace or in the `.coord` or dotted staging namespaces.
+3. Reserve the entire physical `.acadia-` prefix for the resolver digest namespace and the
+  exact resolver control names `.names.owner`, `.names.csv`, `.names.lock` and `.names.stage`.
+  No caller gets a direct spelling in these namespaces or in the `.coord` or dotted staging
+  namespaces.
   A pre-existing host alias (including a differently cased directory entry) is not proof
   that a target belongs to the caller. Never overwrite or adopt an unowned alias.
 
@@ -2433,12 +2434,15 @@ acadia_names_v1,logical_utf8_hex
 abc,616263
 ```
 
-**Ownership and recovery.** Absence of the sidecar means no registered bindings, not a
-license to infer logical names from disk. A header alone is a valid empty map. Unsupported
-headers, malformed rows, invalid UTF-8, duplicate or out-of-order keys, and any spelling
-that does not recompute from its recorded bytes fail closed. Never reconstruct the CSV by
-scanning hashes. Existing raw layouts require an explicit adoption or migration decision;
-opening a directory through the resolver does not silently convert it.
+**Ownership and recovery.** A managed parent first publishes `.names.owner` as the exact
+bytes `acadia_names_owner_v1\n` and makes its directory entry durable. A map or fixed stage
+without that owner is unowned even when the CSV is syntactically valid. Absence of the sidecar
+means no registered bindings, not a license to infer logical names from disk. A header alone
+is a valid empty map once ownership exists. Unsupported headers, malformed rows, invalid
+UTF-8, duplicate or out-of-order keys, and any spelling that does not recompute from its
+recorded bytes fail closed. Never reconstruct the CSV by scanning hashes. Existing raw layouts
+require an explicit adoption or migration decision; opening a directory through the resolver
+does not silently convert it.
 
 Serialize binding changes per parent across processes. Publish a complete replacement CSV
 atomically and durably before publishing its new child. A binding without a child reserves
@@ -2457,13 +2461,18 @@ name for dispatch and an absent `artifact` leaf inside an attempt directory that
 atomically claims. Claiming is exclusive across PID namespaces and the short name leaves room
 for a maker's own publication staging. Coordination accepts only an exact file or directory
 entry at that leaf and places it at the resolved final path while its participant is live; a
-stale maker may only finish its private attempt. Look up and list managed children through
-[ComponentDirectory](src/names.rs). The coordination reservation remains common to both APIs;
-it identifies the coordinating implementation, not a naming mode. Raw names use a portable
+stale maker may only finish its private attempt. A maker error is followed by removal and a
+parent sync of that claim; a process death leaves the attempt for retry recognition because no
+owner can prove its writer has stopped. Look up and list managed children through
+[ComponentDirectory](src/names.rs). An OS-backed root is resolved to an absolute path once and
+all later resolver operations retain it. The coordination reservation remains common to both
+APIs; it identifies the coordinating implementation, not a naming mode. Raw names use a portable
 Win32-safe component grammar, including the full byte ceiling and reserved device spellings,
 with space-padded DOS stems classified by their trimmed stem. Managed names accept arbitrary
 valid UTF-8 because native paths receive only resolver-owned physical spellings. Control
 entries, a present CSV, and every existing root child are validated without writes before the
-participant lock is acquired. A visible CSV entry is parent-synced before its fixed stage is
-reused. Native resolver locks open the final entry without following links or reparse points.
-A caller must consistently select the same namespace contract for its root.
+participant lock is acquired. Completed managed creation is found from its owned marker before
+an incomplete-creation plan whitelist is applied. Confirmation validates ownership read-only
+and acquires `.names.lock` without creating it. A visible CSV entry is parent-synced before its
+fixed stage is reused. Native resolver locks open the final entry without following links or
+reparse points. A caller must consistently select the same namespace contract for its root.

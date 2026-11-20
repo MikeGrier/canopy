@@ -218,6 +218,38 @@ fn managed_creation_resumes_and_reopens_exact_names() {
 }
 
 #[test]
+fn completed_managed_retry_ignores_later_registered_children() {
+    super::on_every_contract("managed-existing-extra", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(19),
+            artifacts: &["data", "marker"],
+        };
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert_eq!(
+            participant.create_managed(&plan, &mut maker).unwrap(),
+            Created::Created
+        );
+        drop(participant);
+        let mut directory = crate::names::ComponentDirectory::open(&*fs, &root).unwrap();
+        fs.publish_new(&directory.reserve("extra").unwrap(), b"later")
+            .unwrap();
+        drop(directory);
+
+        let participant = factory.open(fs, &root).unwrap();
+        let mut maker = FileMaker::new(backend.process(), &root);
+        assert_eq!(
+            participant.create_managed(&plan, &mut maker).unwrap(),
+            Created::Existing
+        );
+        assert!(maker.made.is_empty());
+    });
+}
+
+#[test]
 fn managed_creation_serializes_competing_creators() {
     super::on_every_contract("managed-creators", &|factory, backend| {
         let gate = std::sync::Barrier::new(2);
@@ -281,6 +313,8 @@ fn managed_creation_recovers_csv_publication_siblings() {
                 participant.reserve(INPUTS, nonce(8)).unwrap(),
                 Created::Created
             );
+            fs.write(&root.join(".names.owner"), b"acadia_names_owner_v1\n")
+                .unwrap();
             if with_map {
                 fs.write(
                     &root.join(".names.csv"),
@@ -463,6 +497,12 @@ fn nested_publication_staging_resumes_inside_a_claimed_attempt() {
                 .create_managed(&plan, &mut Interrupt { fs: fs.clone() },)
                 .is_err()
         );
+        assert!(
+            fs.read_dir(&root)
+                .unwrap()
+                .iter()
+                .all(|entry| { !entry.file_name.starts_with(".names-attempt-") })
+        );
         drop(participant);
 
         let participant = factory.open(backend.process(), &root).unwrap();
@@ -540,6 +580,8 @@ fn invalid_raw_csv_does_not_poison_managed_probe_or_raw_resume() {
             artifacts: &[".names.csv", "marker"],
         };
         let mut maker = FileMaker::new(fs.clone(), &root);
+        assert!(participant.confirm_managed_created("marker").is_err());
+        assert_eq!(fs.read_dir(&root).unwrap(), before);
         assert!(participant.create_managed(&plan, &mut maker).is_err());
         assert_eq!(fs.read_dir(&root).unwrap(), before);
         assert_eq!(
@@ -547,6 +589,45 @@ fn invalid_raw_csv_does_not_poison_managed_probe_or_raw_resume() {
             Created::Resumed
         );
         participant.confirm_created("marker").unwrap();
+    });
+}
+
+#[test]
+fn raw_control_payload_is_not_managed_ownership() {
+    super::on_every_contract("managed-raw-controls", &|factory, backend| {
+        let fs = backend.process();
+        let root = backend.root();
+        let participant = factory.open(fs.clone(), &root).unwrap();
+        assert_eq!(
+            participant.reserve(INPUTS, nonce(17)).unwrap(),
+            Created::Created
+        );
+        fs.write(
+            &root.join(".names.csv"),
+            b"acadia_names_v1,logical_utf8_hex\n",
+        )
+        .unwrap();
+        fs.write(&root.join(".names.stage"), b"raw stage payload")
+            .unwrap();
+        let before = fs.read_dir(&root).unwrap();
+        let plan = CreationPlan {
+            inputs: INPUTS,
+            nonce: nonce(18),
+            artifacts: &[".names.csv", ".names.stage", "marker"],
+        };
+        let mut maker = FileMaker::new(fs.clone(), &root);
+        assert!(participant.confirm_managed_created("marker").is_err());
+        assert_eq!(fs.read_dir(&root).unwrap(), before);
+        assert!(participant.create_managed(&plan, &mut maker).is_err());
+        assert_eq!(fs.read_dir(&root).unwrap(), before);
+        assert_eq!(
+            fs.read(&root.join(".names.stage")).unwrap(),
+            b"raw stage payload"
+        );
+        assert_eq!(
+            participant.create(&plan, &mut maker).unwrap(),
+            Created::Resumed
+        );
     });
 }
 

@@ -69,9 +69,10 @@ impl CoordinationFactory for HookedSharedFactory {
         &IMPLEMENTATION
     }
     fn open(&self, vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Box<dyn Coordination>> {
+        let root = crate::names::ComponentDirectory::stable_parent(&*vfs, root)?;
         Ok(Box::new(SharedParticipant::new(
             vfs,
-            root,
+            &root,
             Some(Arc::clone(&self.hook)),
         )))
     }
@@ -181,9 +182,10 @@ impl CoordinationFactory for SharedFactory {
         &IMPLEMENTATION
     }
     fn open(&self, vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Box<dyn Coordination>> {
+        let root = crate::names::ComponentDirectory::stable_parent(&*vfs, root)?;
         Ok(Box::new(SharedParticipant::new(
             vfs,
-            root,
+            &root,
             #[cfg(any(test, feature = "test-support"))]
             None,
         )))

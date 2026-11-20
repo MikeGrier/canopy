@@ -731,15 +731,25 @@ impl Vfs for MemFs {
             LockMode::Exclusive,
             LockSpan::File,
             false,
+            true,
         )
     }
 
     fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
-        self.take_lock(path, "try_lock", mode, span, false)
+        self.take_lock(path, "try_lock", mode, span, false, true)
     }
 
     fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
-        self.take_lock(path, "lock", mode, span, true)
+        self.take_lock(path, "lock", mode, span, true, true)
+    }
+
+    fn lock_existing(
+        &self,
+        path: &Path,
+        mode: LockMode,
+        span: LockSpan,
+    ) -> VfsResult<Box<dyn VfsLock>> {
+        self.take_lock(path, "lock_existing", mode, span, true, false)
     }
 
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {

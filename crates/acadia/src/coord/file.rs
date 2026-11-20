@@ -114,7 +114,8 @@ impl CoordinationFactory for FileFactory {
     }
 
     fn open(&self, vfs: Arc<dyn Vfs>, root: &Path) -> CoordResult<Box<dyn Coordination>> {
-        Ok(Box::new(self.participant(vfs, root)))
+        let root = crate::names::ComponentDirectory::stable_parent(&*vfs, root)?;
+        Ok(Box::new(self.participant(vfs, &root)))
     }
 }
 
@@ -291,6 +292,32 @@ impl FileCoordination {
                     })?
             }
         };
+        let mut table = self.holds.table()?;
+        if self.holds.is_abandoned() {
+            drop(table);
+            drop(lock);
+            return Err(CoordError::Abandoned);
+        }
+        table.next += 1;
+        let id = table.next;
+        table.locks.insert(id, lock);
+        Ok(HoldId(id))
+    }
+
+    pub(crate) fn take_existing_lock(
+        &self,
+        path: &Path,
+        mode: LockMode,
+        span: LockSpan,
+    ) -> CoordResult<HoldId> {
+        self.alive()?;
+        let lock = self.vfs.lock_existing(path, mode, span).map_err(|error| {
+            if error.kind() == VfsErrorKind::ProcessEnded {
+                CoordError::Abandoned
+            } else {
+                CoordError::Vfs(error)
+            }
+        })?;
         let mut table = self.holds.table()?;
         if self.holds.is_abandoned() {
             drop(table);

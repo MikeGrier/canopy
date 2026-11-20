@@ -924,6 +924,18 @@ impl<V: Vfs> Vfs for FaultyFs<V> {
         }
     }
 
+    fn lock_existing(
+        &self,
+        path: &Path,
+        mode: LockMode,
+        span: LockSpan,
+    ) -> VfsResult<Box<dyn VfsLock>> {
+        match self.check(FaultOp::Lock, path)? {
+            Some(Fault::Fail(kind)) => Err(fault_err(*kind, "lock_existing", path)),
+            _ => self.inner.lock_existing(path, mode, span),
+        }
+    }
+
     // Forwarded explicitly for the same reason as `lock_exclusive`. A failure publishes
     // nothing, as a failed publication does.
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {

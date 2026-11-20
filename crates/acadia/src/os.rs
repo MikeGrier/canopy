@@ -181,9 +181,13 @@ fn release_unix_lock(file: &fs::File) {
 
 /// Opens or creates `path` without following a final symlink or reparse point, and refuses
 /// anything except a regular file. `exclusive_share` requests Windows handle exclusion.
-fn open_lock_file(path: &Path, exclusive_share: bool) -> io::Result<fs::File> {
+fn open_lock_file(path: &Path, exclusive_share: bool, create: bool) -> io::Result<fs::File> {
     let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
+    options
+        .read(true)
+        .write(true)
+        .create(create)
+        .truncate(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -218,7 +222,7 @@ fn open_lock_file(path: &Path, exclusive_share: bool) -> io::Result<fs::File> {
 /// operation and cannot race.
 #[cfg(windows)]
 fn open_exclusive(path: &Path) -> io::Result<fs::File> {
-    open_lock_file(path, true)
+    open_lock_file(path, true, true)
 }
 
 /// Opens `path` and takes a non-blocking exclusive `flock` on the handle.
@@ -230,7 +234,7 @@ fn open_exclusive(path: &Path) -> io::Result<fs::File> {
 fn open_exclusive(path: &Path) -> io::Result<fs::File> {
     use std::os::unix::io::AsRawFd;
 
-    let handle = open_lock_file(path, false)?;
+    let handle = open_lock_file(path, false, true)?;
     // SAFETY: `handle` owns a valid open descriptor for the duration of the call.
     if unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(io::Error::last_os_error());
@@ -456,6 +460,7 @@ fn take_span_lock(
     mode: LockMode,
     span: LockSpan,
     wait: bool,
+    create: bool,
 ) -> VfsResult<Box<dyn VfsLock>> {
     let Some((start, end)) = span.bounds() else {
         return Err(VfsError::new(
@@ -465,7 +470,7 @@ fn take_span_lock(
         )
         .with_path(path));
     };
-    let file = open_lock_file(path, false).map_err(|e| err(op, path, &e))?;
+    let file = open_lock_file(path, false, create).map_err(|e| err(op, path, &e))?;
     match lock_span(&file, mode, span, wait) {
         Ok(()) => {
             #[cfg(not(windows))]
@@ -852,12 +857,22 @@ impl Vfs for OsFs {
 
     fn try_lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
         validate_path_components(path, "try_lock")?;
-        take_span_lock(path, "try_lock", mode, span, false)
+        take_span_lock(path, "try_lock", mode, span, false, true)
     }
 
     fn lock(&self, path: &Path, mode: LockMode, span: LockSpan) -> VfsResult<Box<dyn VfsLock>> {
         validate_path_components(path, "lock")?;
-        take_span_lock(path, "lock", mode, span, true)
+        take_span_lock(path, "lock", mode, span, true, true)
+    }
+
+    fn lock_existing(
+        &self,
+        path: &Path,
+        mode: LockMode,
+        span: LockSpan,
+    ) -> VfsResult<Box<dyn VfsLock>> {
+        validate_path_components(path, "lock_existing")?;
+        take_span_lock(path, "lock_existing", mode, span, true, false)
     }
 
     fn publish_new(&self, path: &Path, contents: &[u8]) -> VfsResult<()> {

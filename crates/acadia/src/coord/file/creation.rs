@@ -67,6 +67,14 @@ impl FileCoordination {
         })
     }
 
+    fn keep_existing(&self, path: &Path, mode: LockMode) -> CoordResult<Kept<'_>> {
+        let id = self.take_existing_lock(path, mode, LockSpan::File)?;
+        Ok(Kept {
+            participant: self,
+            id,
+        })
+    }
+
     /// Refuses a root whose reservation names another implementation, whose participants would
     /// not see the locks this one takes.
     pub(super) fn check_implementation(&self) -> CoordResult<()> {
@@ -243,12 +251,11 @@ impl Creation for FileCoordination {
             .map(|record| record.implementation == self.id && record.inputs == plan.inputs);
         managed.preflight(compatible)?;
         let _resolver = self.keep(
-            &crate::names::lock_path(self.layout().root()),
+            &crate::names::lock_path(managed.root()),
             LockMode::Exclusive,
         )?;
-        let mut directory = self.fenced(|| {
-            crate::names::ComponentDirectory::open_held(self.vfs(), self.layout().root())
-        })?;
+        let mut directory = self
+            .fenced(|| crate::names::ComponentDirectory::open_held(self.vfs(), managed.root()))?;
         managed.run_held(
             &mut directory,
             self,
@@ -269,23 +276,16 @@ impl Creation for FileCoordination {
         let _hold = self.keep(&self.layout().creation_lock(), LockMode::Shared)?;
         self.check_implementation()?;
         self.read_reservation()?.ok_or(CoordError::NotCreated)?;
-        if !crate::names::has_map(&self.vfs().read_dir(self.layout().root())?) {
+        let root =
+            crate::names::ComponentDirectory::stable_parent(self.vfs(), self.layout().root())?;
+        let (_, owned) = crate::names::validate_control_entries(self.vfs(), &root)?;
+        if !owned || !crate::names::has_map(&self.vfs().read_dir(&root)?) {
             return Err(CoordError::NotCreated);
         }
-        let _resolver = self.keep(
-            &crate::names::lock_path(self.layout().root()),
-            LockMode::Shared,
-        )?;
-        let directory = self.fenced(|| {
-            crate::names::ComponentDirectory::open_held(self.vfs(), self.layout().root())
-        })?;
-        crate::coord::creation::confirm_managed_held(
-            self.vfs(),
-            self.layout().root(),
-            marker,
-            &directory,
-            self,
-        )
+        let _resolver = self.keep_existing(&crate::names::lock_path(&root), LockMode::Shared)?;
+        let directory =
+            self.fenced(|| crate::names::ComponentDirectory::open_held(self.vfs(), &root))?;
+        crate::coord::creation::confirm_managed_held(self.vfs(), &root, marker, &directory, self)
     }
 
     fn create(

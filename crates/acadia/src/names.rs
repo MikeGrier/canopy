@@ -15,6 +15,8 @@ const DIRECT_LIMIT: usize = 212;
 const MAP: &str = ".names.csv";
 const LOCK: &str = ".names.lock";
 const STAGE: &str = ".names.stage";
+const OWNER: &str = ".names.owner";
+const OWNER_BYTES: &[u8] = b"acadia_names_owner_v1\n";
 const ARTIFACT_ATTEMPT_PREFIX: &str = ".names-attempt-";
 const ARTIFACT_LEAF: &str = "artifact";
 const HEADER: &str = "acadia_names_v1,logical_utf8_hex\n";
@@ -92,6 +94,14 @@ fn snapshot(fs: &dyn Vfs, parent: &Path) -> VfsResult<Entries> {
     Ok(entries)
 }
 
+fn snapshot_entry(parent: &Path, entries: &Entries, name: &str) -> VfsResult<Option<FileType>> {
+    match entries.get(name) {
+        None => Ok(None),
+        Some(Some(child)) if child.file_name == name => Ok(Some(child.file_type)),
+        Some(_) => Err(invalid("noncanonical case alias").with_path(parent.join(name))),
+    }
+}
+
 fn entry(
     fs: &dyn Vfs,
     parent: &Path,
@@ -113,6 +123,21 @@ fn entry(
 }
 
 impl<'fs> ComponentDirectory<'fs> {
+    pub(crate) fn stable_parent(fs: &dyn Vfs, parent: &Path) -> VfsResult<PathBuf> {
+        if fs.is_os_filesystem() && parent.is_relative() {
+            std::path::absolute(parent).map_err(|error| {
+                VfsError::new(
+                    VfsErrorKind::InvalidInput,
+                    "absolute_path",
+                    error.to_string(),
+                )
+                .with_path(parent)
+            })
+        } else {
+            Ok(parent.to_owned())
+        }
+    }
+
     /// Locks the parent's permanent metadata lock and validates the authoritative CSV.
     pub fn open(fs: &'fs dyn Vfs, parent: &Path) -> VfsResult<Self> {
         Self::open_with_lock(fs, parent, true)
@@ -123,8 +148,10 @@ impl<'fs> ComponentDirectory<'fs> {
     }
 
     fn open_with_lock(fs: &'fs dyn Vfs, parent: &Path, acquire: bool) -> VfsResult<Self> {
-        let lock_path = lock_path(parent);
-        let initial = fs.read_dir(parent)?;
+        let parent = Self::stable_parent(fs, parent)?;
+        validate_control_entries(fs, &parent)?;
+        let lock_path = lock_path(&parent);
+        let initial = fs.read_dir(&parent)?;
         if initial.iter().any(|child| {
             child.file_name.eq_ignore_ascii_case(LOCK)
                 && (child.file_name != LOCK || child.file_type != FileType::File)
@@ -141,12 +168,29 @@ impl<'fs> ComponentDirectory<'fs> {
             parent: parent.to_owned(),
             _lock: lock,
         };
-        let entries = snapshot(fs, parent)?;
-        if entry(fs, parent, &entries, LOCK)? != Some(FileType::File) {
+        validate_control_entries(fs, &parent)?;
+        let entries = snapshot(fs, &parent)?;
+        if entry(fs, &parent, &entries, LOCK)? != Some(FileType::File) {
             return Err(invalid("resolver lock is not a regular file").with_path(lock_path));
         }
         directory.bindings(&entries)?;
         Ok(directory)
+    }
+
+    pub(crate) fn claim_ownership(&self) -> VfsResult<()> {
+        let entries = snapshot(self.fs, &self.parent)?;
+        match entry(self.fs, &self.parent, &entries, OWNER)? {
+            None => {
+                self.fs.publish_new(&self.parent.join(OWNER), OWNER_BYTES)?;
+                self.fs.fsync(&self.parent)
+            }
+            Some(FileType::File) if self.fs.read(&self.parent.join(OWNER))? == OWNER_BYTES => {
+                self.fs.fsync(&self.parent)
+            }
+            Some(_) => {
+                Err(invalid("invalid managed ownership record").with_path(self.parent.join(OWNER)))
+            }
+        }
     }
 
     fn bindings(&self, entries: &Entries) -> VfsResult<Bindings> {
@@ -161,6 +205,7 @@ impl<'fs> ComponentDirectory<'fs> {
     }
 
     fn save(&self, entries: &Entries, bindings: &Bindings) -> VfsResult<()> {
+        self.claim_ownership()?;
         let map = self.parent.join(MAP);
         let stage = self.parent.join(STAGE);
         match entry(self.fs, &self.parent, entries, MAP)? {
@@ -304,16 +349,29 @@ fn spelling(logical: &str) -> String {
 }
 
 pub(crate) fn is_control(name: &str) -> bool {
-    matches!(name, LOCK | MAP | STAGE)
+    matches!(name, LOCK | MAP | STAGE | OWNER)
 }
 
 pub(crate) fn has_map(entries: &[DirEntry]) -> bool {
     entries.iter().any(|entry| entry.file_name == MAP)
 }
 
-pub(crate) fn validate_control_entries(fs: &dyn Vfs, parent: &Path) -> VfsResult<Bindings> {
+pub(crate) fn validate_control_entries(fs: &dyn Vfs, parent: &Path) -> VfsResult<(Bindings, bool)> {
     let entries = snapshot(fs, parent)?;
-    let bindings = match entry(fs, parent, &entries, MAP)? {
+    let owned = match snapshot_entry(parent, &entries, OWNER)? {
+        None => false,
+        Some(FileType::File) => {
+            let path = parent.join(OWNER);
+            if fs.read(&path)? != OWNER_BYTES {
+                return Err(invalid("invalid name ownership record").with_path(path));
+            }
+            true
+        }
+        Some(_) => {
+            return Err(invalid("name owner is not a regular file").with_path(parent.join(OWNER)));
+        }
+    };
+    let bindings = match snapshot_entry(parent, &entries, MAP)? {
         None => Bindings::new(),
         Some(FileType::File) => {
             let path = parent.join(MAP);
@@ -323,16 +381,15 @@ pub(crate) fn validate_control_entries(fs: &dyn Vfs, parent: &Path) -> VfsResult
             return Err(invalid("name map is not a regular file").with_path(parent.join(MAP)));
         }
     };
-    match entry(fs, parent, &entries, LOCK)? {
-        None | Some(FileType::File) => {}
-        Some(_) => {
-            return Err(invalid("resolver lock is not a regular file").with_path(parent.join(LOCK)));
-        }
+    if !owned
+        && (entries
+            .get(MAP)
+            .is_some_and(|entry| entry.as_ref().is_some_and(|item| item.file_name == MAP))
+            || snapshot_entry(parent, &entries, STAGE)?.is_some())
+    {
+        return Err(invalid("unowned name map or stage").with_path(parent.join(MAP)));
     }
-    if !has_map(&fs.read_dir(parent)?) && entry(fs, parent, &entries, STAGE)?.is_some() {
-        return Err(invalid("unowned name map stage").with_path(parent.join(STAGE)));
-    }
-    Ok(bindings)
+    Ok((bindings, owned))
 }
 
 pub(crate) fn is_map_publication_staging(entry: &DirEntry) -> bool {

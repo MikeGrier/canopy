@@ -67,6 +67,22 @@ fn native_lock_open_does_not_follow_a_symlink() {
 }
 
 #[test]
+fn lock_existing_does_not_create_its_file() {
+    on_both("lock-existing", |fs, root| {
+        let path = root.join("existing.lock");
+        assert_kind(
+            fs.lock_existing(&path, EXCLUSIVE, LockSpan::File),
+            VfsErrorKind::NotFound,
+        );
+        assert!(!fs.exists(&path).unwrap());
+        fs.write(&path, b"kept").unwrap();
+        let guard = fs.lock_existing(&path, EXCLUSIVE, LockSpan::File).unwrap();
+        drop(guard);
+        assert_eq!(fs.read(&path).unwrap(), b"kept");
+    });
+}
+
+#[test]
 fn a_lock_follows_its_file_through_a_rename() {
     on_both("lock-follows-the-file", |fs, root| {
         let (first, second) = (root.join("a.lock"), root.join("b.lock"));

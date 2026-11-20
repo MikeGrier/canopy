@@ -886,3 +886,28 @@ are refused before `.names.lock` can be added, and validation repeats under the 
 Raw DOS device comparison trims trailing ASCII spaces only from the pre-extension stem. Mixed-
 case ASCII and superscript device names remain refused, while the original spelling is preserved
 for managed logical-name hashing and lookup.
+
+### <a id="name-r17"></a>NAME-R17 -- Require durable managed ownership before control reuse. *(completed 2026-11-20 12:46:55 UTC-05:00)*
+
+A durable `.names.owner` record with versioned bytes distinguishes managed control metadata
+from raw files. A map or fixed stage without it is refused unchanged.
+
+### <a id="name-r18"></a>NAME-R18 -- Pin OS-backed resolver roots before use. *(completed 2026-11-20 12:46:55 UTC-05:00)*
+
+Participant factories and [ComponentDirectory](src/names.rs) resolve relative OS roots once.
+Locks, reservations, CSV operations and resolved children retain the same absolute root.
+
+### <a id="name-r19"></a>NAME-R19 -- Make managed confirmation lock read-only. *(completed 2026-11-20 12:46:55 UTC-05:00)*
+
+Confirmation validates ownership and the CSV without mutation, then waits on an existing
+`.names.lock`; an absent lock remains absent and raw confirmation remains resumable.
+
+### <a id="name-r20"></a>NAME-R20 -- Check completed markers before plan whitelists. *(completed 2026-11-20 12:46:55 UTC-05:00)*
+
+An owned completed marker returns `Created::Existing` before registered-name comparison.
+Later logical children therefore do not invalidate an identical creation retry.
+
+### <a id="name-r21"></a>NAME-R21 -- Remove attempts after returned maker errors. *(completed 2026-11-20 12:46:55 UTC-05:00)*
+
+Once a maker returns an error, its claimed attempt directory is removed and the parent synced.
+Crash-left attempts are not reclaimed while a writer may still be alive.

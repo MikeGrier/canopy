@@ -286,6 +286,7 @@ impl MemFs {
         mode: LockMode,
         span: LockSpan,
         wait: bool,
+        create: bool,
     ) -> VfsResult<Box<dyn VfsLock>> {
         let mut table = self.table();
         let process = self.process.load(Ordering::Acquire);
@@ -301,7 +302,11 @@ impl MemFs {
         };
         // Opened first, as a native lock opens its handle: a waiter keeps the file it opened
         // whatever names it has by the time it is let in.
-        let file = self.create_if_absent(&parts, op, path)?;
+        let file = if create {
+            self.create_if_absent(&parts, op, path)?
+        } else {
+            self.existing_file(&parts, op, path)?
+        };
         while wait && table.excludes(file, mode, start, end) {
             #[cfg(test)]
             if let Some(hook) = self
@@ -346,6 +351,24 @@ impl MemFs {
             #[cfg(test)]
             panic_on_drop,
         }))
+    }
+
+    fn existing_file(&self, parts: &[OsString], op: &'static str, path: &Path) -> VfsResult<u64> {
+        let Some((name, parents)) = parts.split_last() else {
+            return Err(err(VfsErrorKind::InvalidInput, op, path, "empty path"));
+        };
+        let guard = self.tree();
+        let dir = dir_of(&guard.live, parents, op, path)?;
+        match dir.get(name) {
+            Some(Node::File(id)) => Ok(*id),
+            Some(Node::Dir(_)) => Err(err(VfsErrorKind::IsADirectory, op, path, "is a directory")),
+            None => Err(err(
+                VfsErrorKind::NotFound,
+                op,
+                path,
+                "lock file does not exist",
+            )),
+        }
     }
 
     /// Creates an empty file at `parts` if nothing is there, as opening a lock's file does, and

@@ -86,8 +86,7 @@ fn refuses_to_claim_an_unowned_stage() {
     on_both("names-unowned-stage", |fs, parent| {
         let stage = parent.join(STAGE);
         fs.write(&stage, b"not an Acadia stage").unwrap();
-        let mut dir = ComponentDirectory::open(fs, parent).unwrap();
-        assert!(dir.reserve("A").is_err());
+        assert!(ComponentDirectory::open(fs, parent).is_err());
         assert_eq!(fs.read(&stage).unwrap(), b"not an Acadia stage");
         assert!(!fs.exists(&parent.join(MAP)).unwrap());
     });
@@ -189,16 +188,28 @@ fn retry_flushes_a_visible_header_before_writing_a_stage() {
     let mem = MemFs::new();
     mem.create_dir_all(parent).unwrap();
     mem.fsync(parent).unwrap();
-    let fs = FaultyFs::new(
-        mem,
-        FaultPolicy::new().inject(FaultOp::Fsync, parent, Fault::io_error(), When::Times(2)),
+    let owner = ComponentDirectory::open(&mem, parent).unwrap();
+    owner.claim_ownership().unwrap();
+    drop(owner);
+    let first = FaultyFs::new(
+        mem.another_process(),
+        FaultPolicy::new().inject(FaultOp::Fsync, parent, Fault::io_error(), When::OnCall(2)),
     );
-    let mut directory = ComponentDirectory::open(&fs, parent).unwrap();
+    let mut directory = ComponentDirectory::open(&first, parent).unwrap();
     assert!(directory.reserve("A").is_err());
+    drop(directory);
+    assert_eq!(first.read(&parent.join(MAP)).unwrap(), HEADER.as_bytes());
+    let second = FaultyFs::new(
+        first.inner().another_process(),
+        FaultPolicy::new().inject(FaultOp::Fsync, parent, Fault::io_error(), When::Always),
+    );
+    let mut directory = ComponentDirectory::open(&second, parent).unwrap();
     assert!(directory.reserve("A").is_err());
-    assert_eq!(fs.read(&parent.join(MAP)).unwrap(), HEADER.as_bytes());
-    let crashed = fs.inner().fork().simulate_restart();
+    drop(directory);
+    let crashed = second.inner().fork().simulate_restart();
     assert!(!crashed.exists(&parent.join(MAP)).unwrap());
+    let final_process = second.inner().another_process();
+    let mut directory = ComponentDirectory::open(&final_process, parent).unwrap();
     directory.reserve("A").unwrap();
 }
 
@@ -271,6 +282,49 @@ fn portable_spelling_vectors() {
         spelling(""),
         ".acadia-h1-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     );
+}
+
+#[test]
+fn relative_native_parent_stays_fixed_after_working_directory_change() {
+    const BASE: &str = "ACADIA_TEST_RELATIVE_NAME_BASE";
+    let fs = crate::OsFs::new();
+    if let Some(base) = std::env::var_os(BASE) {
+        let base = Path::new(&base);
+        let first = base.join("first");
+        let second = base.join("second");
+        std::env::set_current_dir(&first).unwrap();
+        let mut directory = ComponentDirectory::open(&fs, Path::new("data")).unwrap();
+        std::env::set_current_dir(&second).unwrap();
+        let target = directory.reserve("entry").unwrap();
+        fs.publish_new(&target, b"first root").unwrap();
+        assert_eq!(target.parent().unwrap(), first.join("data"));
+        return;
+    }
+
+    let temp = crate::tests::TempDir::new("names-relative-root");
+    for side in ["first", "second"] {
+        std::fs::create_dir_all(temp.path().join(side).join("data")).unwrap();
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "names::tests::relative_native_parent_stays_fixed_after_working_directory_change",
+        ])
+        .env(BASE, temp.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let first = ComponentDirectory::open(&fs, &temp.path().join("first/data")).unwrap();
+    let second = ComponentDirectory::open(&fs, &temp.path().join("second/data")).unwrap();
+    assert_eq!(
+        fs.read(&first.lookup("entry").unwrap().unwrap()).unwrap(),
+        b"first root"
+    );
+    assert!(second.lookup("entry").unwrap().is_none());
 }
 
 #[test]
@@ -375,7 +429,7 @@ fn removal_retry_flushes_the_replacement_map_before_reporting_absence() {
     drop(dir);
     let first = FaultyFs::new(
         mem.another_process(),
-        FaultPolicy::new().inject(FaultOp::Fsync, parent, Fault::io_error(), When::OnCall(3)),
+        FaultPolicy::new().inject(FaultOp::Fsync, parent, Fault::io_error(), When::OnCall(4)),
     );
     let mut dir = ComponentDirectory::open(&first, parent).unwrap();
     assert!(dir.remove("removed").is_err());

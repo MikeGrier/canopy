@@ -658,6 +658,23 @@ pub trait Vfs: Send + Sync {
         .with_path(path))
     }
 
+    /// Waits for `mode` on an existing regular file. Unlike [`lock`](Vfs::lock), this never
+    /// creates `path`; a missing final entry is [`VfsErrorKind::NotFound`].
+    fn lock_existing(
+        &self,
+        path: &Path,
+        mode: LockMode,
+        span: LockSpan,
+    ) -> VfsResult<Box<dyn VfsLock>> {
+        let _ = (mode, span);
+        Err(VfsError::new(
+            VfsErrorKind::Unsupported,
+            "lock_existing",
+            "this backend cannot lock an existing file without creating it",
+        )
+        .with_path(path))
+    }
+
     /// Creates the file at `path` holding exactly `contents`, if nothing is there.
     ///
     /// Anything already at `path` -- a file or a directory -- fails it with
