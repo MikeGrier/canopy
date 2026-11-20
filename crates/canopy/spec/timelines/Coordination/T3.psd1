@@ -2,6 +2,7 @@
     Timeline = 'T3'
     Base = 'Coordination-Control-ReadUntrustedAsStored'
     Note = 'A crash ends every attachment in the model, so B, which the status line has attached before the timeline begins, attaches after the crash.'
+    Departs = 'SMP1'
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)'
     )

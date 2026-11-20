@@ -3,6 +3,7 @@
     Base = 'Coordination-Control-FenceClearedAtRecoveryStart'
     Overrides = @{ MaxRequests = '2' }
     Note = 'A requests twice, which the control''s constants do not allow. PrepareFails is the failure that leaves no record.'
+    Departs = 'RSRT'
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)'
     )

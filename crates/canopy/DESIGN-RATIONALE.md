@@ -669,3 +669,18 @@ silently interpreting uppercase-schema data under lowercase semantics. Schema ad
 boundary without pretending to migrate it. Decoder acceptance of either base32 case remains useful
 because case-folding can happen in transport or filesystem presentation without changing the encoded
 bytes, and because accepting both cases costs no ambiguity.
+
+## Cancelling a request without a cancellable blocking acquire
+
+Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Coordination cancellation is a client nonblocking
+loop". A blocking acquire was rejected as the cancellation mechanism because unwinding an OS wait
+would add a second publication/cancellation protocol beside the coordination contract. Keeping a
+caller request local and retrying `Waiting::Never` requires no lock queue and preserves the same
+`WouldWait` cleanup production callers already receive. A conformance death was also rejected for
+withdrawal: process termination releases locks as a crash, not as a clean client decision.
+
+The upgrade drain is intentionally different. It is already admitted and owns a cancellable lease
+token, so cancelling it reopens operations while retaining the attachment. Conversion after detach
+is incremental and nonblocking through `poll_gate` and `poll_tiers`; a cancelled conversion leaves
+the handle detached. Keeping these two mechanisms separate matches where the caller still owns a
+pending attempt and where it already owns admitted state.

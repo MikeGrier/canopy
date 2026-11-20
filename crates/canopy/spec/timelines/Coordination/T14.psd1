@@ -2,6 +2,7 @@
     Timeline = 'T14'
     Base = 'Coordination-Control-CountPublishedBeforeTheNamespaceIsWholeTornRead'
     Note = 'The control with a read. PrepareFails is the failure whose record reaches the log.'
+    Departs = 'RCNT'
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)'
     )

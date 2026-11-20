@@ -2,6 +2,7 @@
     Timeline = 'T6'
     Base = 'Coordination-Control-UpgraderHoldsExclusion'
     Note = 'U is process 1 and W process 2.'
+    Departs = 'SUPX'
     Steps = @(
         @{ Id = 'BGN1'; Actions = @('BeginAttach(1)') }
         @{ Id = 'GTS1'; Actions = @('TakeGateS(1)') }

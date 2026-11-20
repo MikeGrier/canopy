@@ -45,6 +45,8 @@ mod agent;
 mod apply;
 mod blob;
 mod coordinated;
+#[cfg(test)]
+pub(crate) use coordinated::leases::{DrainToken, Leases, OperationLease};
 mod document;
 mod drain;
 mod errors;

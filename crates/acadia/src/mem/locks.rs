@@ -197,6 +197,17 @@ impl MemFs {
         }
     }
 
+    /// Another view on this simulated process, for a second thread over the same locks.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn same_process(&self) -> MemFs {
+        MemFs {
+            inner: Arc::clone(&self.inner),
+            locks: Arc::clone(&self.locks),
+            process: AtomicU64::new(self.process.load(Ordering::Acquire)),
+        }
+    }
+
     /// Simulates this process dying: every lock it holds is released at once, as the operating
     /// system releases a dead process's locks, and no guard it took runs any release of its own.
     ///

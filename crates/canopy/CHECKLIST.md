@@ -42,17 +42,7 @@ Each item here names the event it waits on; it joins a milestone once that event
 
 - [x] **M11-6** -- The SharedPublication Store replay binds document and recovery steps to both coordination implementations. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m11-6)
 
-- [ ] **M11-7** -- The rest of `Coordination`'s bridge: the registry, the upgrade, clones and
-  leases, reads and discovery, and the escapes -- a waiting writer withdrawing, a handle giving up
-  attaching -- bound as M11-5 binds the writer actions, so that every `Coordination` trace replays.
-  Before binding a writer's withdrawal, agree with the engineer how a pending request is cancelled
-  in production: a cancellable acquisition contract, or a client request loop over nonblocking
-  acquisition. The model's `Withdraw` must exercise that production path, not a test-only
-  simulation. The acquisition contract is in acadia's
-  [exclusion.rs](../acadia/src/coord/exclusion.rs); Store's acquisition is in
-  [coordinated.rs](src/store/coordinated.rs). Also classify the negative-control timelines'
-  expected departures explicitly in their scenario tables before requiring the full corpus to
-  pass; T14's early count publication is not a behaviour of correct recovery.
+- [x] **M11-7** -- Bound the remaining Coordination bridge actions and classified every control timeline. -> [completed 2026-11-20](COMPLETED-CHECKLIST.md#m11-7)
 
 - [ ] **M11-8** (was `FM-3.3`) -- Prove the harness bites: remove the namespace sync that
   collection performs before deleting, and confirm that the replay of a trace of the protocol as

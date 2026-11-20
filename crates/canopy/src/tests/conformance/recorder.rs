@@ -25,6 +25,8 @@ pub(super) enum Verdict {
     Proceed,
     /// The call fails, and later calls go ahead.
     Fail,
+    /// A lock attempt reports contention, and later calls go ahead.
+    Locked,
     /// The call and every later one fail: the process is dead from here.
     Terminate,
 }
@@ -143,6 +145,14 @@ impl Recorder {
             match watcher.before(op, path, to) {
                 Verdict::Proceed => {}
                 Verdict::Fail => fail = true,
+                Verdict::Locked => {
+                    return Err(VfsError::new(
+                        VfsErrorKind::Locked,
+                        operation_name(op),
+                        "injected contention",
+                    )
+                    .with_path(path));
+                }
                 Verdict::Terminate => {
                     self.kill();
                     fail = true;

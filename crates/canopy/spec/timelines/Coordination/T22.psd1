@@ -1,7 +1,8 @@
 @{
     Timeline = 'T22'
     Base = 'Coordination-Control-UnsafeJudgedAgainstTheCurrentSchema'
-    Note = 'A is process 1, B process 2 and C, the reader, process 3. The replay runs in the model itself; the scratch copy the timeline names only removed behaviours.'
+    Note = 'A is process 1, B process 2 and C, the reader, process 3. Schema admission and safety selection are Store client work outside the coordination contract, so the coordination bridge follows the timeline.'
+    Departs = $null
     Steps = @(
         @{ Id = 'ATT1'; Actions = @('BeginAttach(3)') }
         @{ Id = 'GATE1'; Actions = @('TakeGateS(3)') }

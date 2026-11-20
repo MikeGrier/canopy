@@ -110,10 +110,28 @@ fn release_at_the_end_of_a_trace_clears_ownership() {
 fn the_contract_follows_every_writer_trace() {
     let traces = writer_traces();
     assert!(!traces.is_empty(), "the corpus holds no writer trace");
+    replay_traces(&traces);
+}
+
+#[test]
+fn the_contract_follows_every_non_writer_trace() {
+    let traces: Vec<_> = corpus::load("Coordination")
+        .into_iter()
+        .filter(|trace| {
+            !WRITERS
+                .iter()
+                .any(|configuration| trace.configuration == *configuration)
+        })
+        .collect();
+    assert!(!traces.is_empty(), "the corpus holds no non-writer trace");
+    replay_traces(&traces);
+}
+
+fn replay_traces(traces: &[Trace]) {
     let mut failures = Vec::new();
     let mut replayed = 0;
     let mut shared = 0;
-    for trace in &traces {
+    for trace in traces {
         let implementations = implementations(trace);
         if trace.configuration == "Coordination-WritersShared" {
             assert!(

@@ -2,6 +2,7 @@
     Timeline = 'T5'
     Base = 'Coordination-Control-UpgraderKeepsTiers'
     Note = 'U1 is process 1 and U2 process 2.'
+    Departs = 'SUP1'
     Steps = @(
         @{ Id = 'BGN1'; Actions = @('BeginAttach(1)') }
         @{ Id = 'GTS1'; Actions = @('TakeGateS(1)') }

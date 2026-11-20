@@ -2,6 +2,7 @@
     Timeline = 'T8'
     Base = 'Coordination-Control-ListingInfersFromFullness'
     Note = 'H and its listing thread L are both process 1.'
+    Departs = 'OVF'
     Steps = @(
         @{ Id = 'BGN1'; Actions = @('BeginAttach(1)') }
         @{ Id = 'GTS1'; Actions = @('TakeGateS(1)') }

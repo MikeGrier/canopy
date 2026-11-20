@@ -2,6 +2,7 @@
     Timeline = 'T4'
     Base = 'Coordination-Control-UnsafeWriterTierFirst'
     Note = 'U is process 1 and W process 2. Starting the upgrade is two actions: the drain, and its end, which lets go of the tiers.'
+    Departs = 'WRX'
     Steps = @(
         @{ Id = 'BGN1'; Actions = @('BeginAttach(2)') }
         @{ Id = 'GTS1'; Actions = @('TakeGateS(2)') }

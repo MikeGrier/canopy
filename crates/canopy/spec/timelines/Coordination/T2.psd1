@@ -2,6 +2,7 @@
     Timeline = 'T2'
     Base = 'Coordination-Control-UnlockBeforeClear'
     Note = 'In the control, Release drops the lock and keeps the record.'
+    Departs = 'ULK'
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)', 'BeginAttach(2)', 'TakeGateS(2)', 'TakeReaderS(2)', 'DropGate(2)', 'TakeWriterS(2)', 'Admit(2)'
     )

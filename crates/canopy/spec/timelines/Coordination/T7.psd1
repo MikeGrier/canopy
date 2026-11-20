@@ -2,6 +2,7 @@
     Timeline = 'T7'
     Base = 'Coordination-Control-UpgradeFromInsideAnOperation'
     Note = 'U is process 1. The other process takes no part, as the timeline says, and the replay needs none of its steps.'
+    Departs = 'SUPI'
     Steps = @(
         @{ Id = 'BGN1'; Actions = @('BeginAttach(1)') }
         @{ Id = 'GTS1'; Actions = @('TakeGateS(1)') }

@@ -1,7 +1,8 @@
 @{
     Timeline = 'T20'
     Base = 'Coordination-Control-InterruptedUpgradeAdmitsSourceWriters'
-    Note = 'A is process 1 and B process 2. The upgrade body takes writer exclusion as it begins.'
+    Note = 'A is process 1 and B process 2. Source-schema admission is Store client work outside the coordination contract, so the coordination bridge follows the timeline.'
+    Departs = $null
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)', 'StartUpgrade(1)', 'DrainDone(1)', 'TakeGateX(1)', 'TakeFirstTier(1)'
     )

@@ -2639,3 +2639,21 @@ paused run resumes. The regression first failed at completion and passed after t
 recovery-run unit module and Clippy pass. The current SharedPublication model has no left-claim
 state or witness for this late arrival, so this item establishes the production behavior and leaves
 that model extension outside the completed scope.
+
+## Moved 2026-11-20 -- Coordination bridge completion
+
+### <a id="m11-7"></a>M11-7 -- Bound the remaining Coordination bridge actions and classified every control timeline. *(completed 2026-11-20 16:38:43 -05:00)*
+
+The Coordination replay now drives attachment and acquisition withdrawal through `Waiting::Never`,
+including the production rollback of a partial attachment; registry registration, concurrent
+same-process listing and unregistering; operation leases and cancellable upgrade drains; incremental
+upgrade gate and tier conversion; read samples and recovery discovery; and the existing writer and
+recovery calls. The process harness keeps attachment, listing and contract calls on their real
+simulated process identities, and refuses any non-client-only corpus action that is not bound.
+
+Every writer trace and every non-writer Coordination trace replays through both applicable AcadIA
+implementations. The scenario tables now classify all negative controls: the step where correct
+code leaves an invalid behavior, or an explicit `null` departure for a rule owned by Store schema
+or migration work outside this bridge. T14's early count publication, in particular, departs before
+its read can accept torn recovery. The separation keeps each expected departure tied to the layer
+that owns the ruled-out behavior instead of treating a Store-only control as a coordination gap.

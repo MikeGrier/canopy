@@ -2,6 +2,7 @@
     Timeline = 'T21'
     Base = 'Coordination-Control-UpgradeIgnoresRecoveryRequired'
     Note = 'A is process 1. PrepareFails is the failure that leaves no record. The upgrade body takes writer exclusion as it begins.'
+    Departs = 'REC2'
     Before = @(
         'BeginAttach(1)', 'TakeGateS(1)', 'TakeReaderS(1)', 'DropGate(1)', 'TakeWriterS(1)', 'Admit(1)'
     )

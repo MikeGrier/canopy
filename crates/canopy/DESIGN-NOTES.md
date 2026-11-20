@@ -5782,3 +5782,20 @@ require a data-path migration, and treating uppercase-derived paths as schema 2 
 document acquire a different path hash and on-disk address. Decoders continue to accept either
 base32 case so a filesystem or external transport may fold spelling without making a persisted
 name unparsable. This decision schedules no migration unit.
+
+## Coordination cancellation is a client nonblocking loop, 2026-11-20
+
+A pending acquisition is cancelled by a client that stops retrying the production nonblocking
+path. Attachment and writer exclusion use `Waiting::Never`; `CoordError::WouldWait` ends only that
+attempt, and the contract's all-or-nothing cleanup leaves no partial hold. There is no cancellable
+blocking acquire in the coordination interface. A trace that withdraws or gives up an attachment
+therefore drives the same `WouldWait` path a production client uses, and the process remains alive.
+Upgrade drains have a distinct production cancellation because a drain has already been admitted:
+its lease token is cancelled while the handle keeps its shared tiers.
+
+The `Coordination` replay binds every non-writer trace through those acquisition, attachment,
+registry, listing, lease, upgrade-conversion, read and discovery calls. A listing thread uses a
+same-process `MemFs` view, so its claim semantics match a thread of the participant rather than a
+second process. A scenario that represents a rejected implementation rule names the step at which
+correct code departs from it; a scenario whose rejected rule belongs to Store schema or migration
+client work states that the coordination-only bridge follows it.

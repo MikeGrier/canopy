@@ -1,7 +1,8 @@
 @{
     Timeline = 'T9'
     Base = 'Coordination-Control-ListWithoutClaim'
-    Note = 'A is process 1; B and its listing thread L are process 2.'
+    Note = 'A is process 1; B and its listing thread L are process 2. The listing follows because its thread is already under the process''s claim.'
+    Departs = $null
     Steps = @(
         @{ Id = 'BGN1'; Actions = @('BeginAttach(1)') }
         @{ Id = 'GTS1'; Actions = @('TakeGateS(1)') }

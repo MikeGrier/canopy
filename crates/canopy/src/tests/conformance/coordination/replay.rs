@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use acadia::coord::{Coordination, ModificationEnd, Waiting};
+use acadia::coord::{Coordination, ModificationEnd, ReaderSafety, Waiting};
 use acadia::{MemFs, Vfs};
 use serde_json::{Map, Value};
 
@@ -28,12 +28,52 @@ enum Kind {
     Continue(Class),
     /// As `Continue`, and the step's first call fails.
     Fail(Class),
+    /// A listing has more implementation entries than the model; finish them at this action.
+    FinishList,
     /// The process stops recovery, which a call of the contract's completion of it cannot.
     StopRecovery,
     /// Nothing the contract sees: the client's own data, or a step within a call that makes no
     /// call of its own.
     Silent,
     Terminate,
+}
+
+fn silent(action: &str) -> bool {
+    matches!(
+        action,
+        "Abort"
+            | "Admit"
+            | "Begin"
+            | "Detach"
+            | "End"
+            | "EndEmpty"
+            | "DropGate"
+            | "ListRead"
+            | "RegStart"
+            | "RegRelease"
+            | "UnregRelease"
+            | "FirstEffect"
+            | "Ingest"
+            | "Invalidate"
+            | "LastEffect"
+            | "ObserveA"
+            | "ObserveB"
+            | "Prepare"
+            | "RecEnd"
+            | "RecReset"
+            | "RecStart"
+            | "RecStop"
+            | "RecSwap1"
+            | "RecSwap2"
+            | "RecSweep"
+            | "RecordIntent"
+            | "Rollback"
+            | "UpAdvance"
+            | "UpClear"
+            | "UpFails"
+            | "UpStep"
+            | "Unlock"
+    )
 }
 
 fn kind(implementation: Implementation, action: &str) -> Kind {
@@ -44,6 +84,29 @@ fn kind(implementation: Implementation, action: &str) -> Kind {
     match action {
         "BeginAttach" => Kind::Command(Command::Attach),
         "TakeGateS" => Kind::Continue(Class::Gate),
+        "Withdraw" | "GiveUp" => Kind::Silent,
+        "ListStart" => Kind::Command(Command::List),
+        "Discover" => Kind::Command(Command::Discover),
+        "ReadBefore" | "ReadBefore2" => Kind::Command(Command::BeginRead),
+        "ReadAfter" | "ReadAfter1" | "ReadAfter2" => Kind::Command(Command::EndRead),
+        "BeginOp" => Kind::Command(Command::BeginOperation),
+        "EndOp" => Kind::Command(Command::EndOperation),
+        "StartUpgrade" => Kind::Command(Command::StartUpgrade),
+        "RefuseUpgrade" => Kind::Silent,
+        "CancelDrain" => Kind::Command(Command::CancelUpgrade),
+        "DrainDone" => Kind::Command(Command::Convert),
+        "TakeGateX" => Kind::Command(Command::PollGate),
+        "TakeFirstTier" => Kind::Command(Command::PollTiers(ReaderSafety::Safe)),
+        "TakeSecondTier" => Kind::Continue(tiers(Class::WriterTier)),
+        "BeginUpgrade" => Kind::Command(Command::BeginUpgrade(false)),
+        "EndUpgrade" => Kind::Command(Command::EndUpgrade),
+        "UpgradeMoved" => Kind::Command(Command::CancelUpgrade),
+        "ListClaim" => Kind::Continue(Class::RegistryLock),
+        "ListProbe" => Kind::Continue(Class::RegistryLock),
+        "ListDone" => Kind::FinishList,
+        "RegClaim" | "RegLive" => Kind::Continue(Class::RegistryLock),
+        "RegWrite" | "UnregClear" => Kind::Continue(Class::RegistryWrite),
+        "UnregClaim" => Kind::Continue(Class::RegistryLock),
         "TakeReaderS" => Kind::Continue(tiers(Class::ReaderTier)),
         "TakeWriterS" => Kind::Continue(tiers(Class::WriterTier)),
         "Exit" => Kind::Command(Command::Detach),
@@ -55,7 +118,7 @@ fn kind(implementation: Implementation, action: &str) -> Kind {
         "EndOpen" | "EndClose" => Kind::Continue(Class::Count),
         "OpenFails" | "CloseFails" => Kind::Fail(Class::Count),
         "BeginClose" => Kind::Command(Command::End(ModificationEnd::Settled)),
-        "FailUnresolved" | "PrepareFails" => {
+        "FailUnresolved" | "PrepareFails" | "UpFails" => {
             Kind::Command(Command::End(ModificationEnd::Unresolved))
         }
         "Release" => Kind::Command(Command::Release),
@@ -88,6 +151,7 @@ struct Replay<'t> {
     keeper: Keeper,
     observer: Arc<dyn Coordination>,
     processes: Vec<Option<Process>>,
+    listings: Vec<Option<Process>>,
     /// The call each process last made.
     calls: Vec<Option<Command>>,
     seen: Projection,
@@ -174,6 +238,7 @@ impl<'t> Replay<'t> {
             keeper,
             observer,
             processes: (0..procs).map(|_| None).collect(),
+            listings: (0..procs).map(|_| None).collect(),
             calls: vec![None; procs],
             seen,
         }
@@ -227,11 +292,12 @@ impl<'t> Replay<'t> {
             let Some((q, action)) = self.action(j)? else {
                 continue;
             };
-            if q != p {
+            if q != p || action.starts_with("List") {
                 continue;
             }
             return Ok(match kind(self.implementation, &action) {
                 Kind::Continue(class) | Kind::Fail(class) => Some(Stop::At(class)),
+                Kind::FinishList => Some(Stop::AnyStep),
                 Kind::Terminate => Some(Stop::AnyStep),
                 Kind::Command(_) => None,
                 Kind::Silent | Kind::StopRecovery => continue,
@@ -265,21 +331,98 @@ impl<'t> Replay<'t> {
     }
 
     fn act(&mut self, k: usize, p: usize, action: &str) -> Result<(), String> {
-        let stop = if action == "Release" {
-            None
-        } else {
-            self.stop_after(k, p)?
+        if action == "TakeFirstTier"
+            && of(&self.trace.states[k + 1], "rtier", p).as_bool() == Some(true)
+            && of(&self.trace.states[k + 1], "att", p) == "uWr"
+        {
+            return Err("the writer tier was taken before the reader tier".to_owned());
+        }
+        if action == "RefuseUpgrade" {
+            return if self.process(p)?.refuse_upgrade()? {
+                Ok(())
+            } else {
+                Err("upgrade from an operation was admitted".to_owned())
+            };
+        }
+        if matches!(action, "Withdraw" | "GiveUp") {
+            self.process(p)?.withdraw()?;
+            let reply = self
+                .process(p)?
+                .returned()
+                .ok_or_else(|| "withdrawal did not return".to_owned())?;
+            return if reply == Reply::Withdrawn {
+                Ok(())
+            } else {
+                Err(format!("withdrawal returned {reply:?}"))
+            };
+        }
+        let stop = match action {
+            "BeginAttach" => Some(Stop::At(Class::Gate)),
+            "Request" => Some(Stop::At(Class::Exclusion)),
+            "StartUpgrade" | "CancelDrain" | "BeginOp" | "EndOp" | "Discover" | "ReadBefore"
+            | "ReadAfter" | "ReadAfter1" | "ReadAfter2" => None,
+            "FailUnresolved" | "PrepareFails" | "UpFails" => None,
+            "BeginUpgrade" if self.trace.constant("UpSteps") != "0" => {
+                Some(Stop::At(Class::Exclusion))
+            }
+            "TakeWriterS" if self.trace.constant("NSlots") != "0" => {
+                Some(Stop::At(Class::RegistryLock))
+            }
+            "TakeWriterS" => None,
+            "TakeFirstTier"
+                if of(&self.trace.states[k + 1], "rtier", p)
+                    .as_bool()
+                    .unwrap_or(false) =>
+            {
+                Some(if self.implementation == Implementation::File {
+                    Stop::Second(Class::Tiers)
+                } else {
+                    Stop::At(Class::WriterTier)
+                })
+            }
+            "ListStart" | "ListClaim" => Some(Stop::At(Class::RegistryLock)),
+            "ListProbe" => Some(Stop::AnyStep),
+            "Release" => None,
+            _ => self.stop_after(k, p)?,
         };
-        match kind(self.implementation, action) {
+        if matches!(
+            action,
+            "ListStart" | "ListClaim" | "ListRead" | "ListProbe" | "ListDone"
+        ) {
+            return self.list(k, p, action, stop);
+        }
+        let kind = match action {
+            "TakeFirstTier" => {
+                let safety = if of(&self.trace.states[k + 1], "rtier", p)
+                    .as_bool()
+                    .unwrap_or(false)
+                {
+                    ReaderSafety::Unsafe
+                } else {
+                    ReaderSafety::Safe
+                };
+                Kind::Command(Command::PollTiers(safety))
+            }
+            "BeginUpgrade" => {
+                Kind::Command(Command::BeginUpgrade(self.trace.constant("UpSteps") != "0"))
+            }
+            _ => kind(self.implementation, action),
+        };
+        match kind {
             Kind::Command(command) => {
                 if self.processes[p - 1].is_none() {
-                    self.processes[p - 1] = Some(Process::start(&self.mem, self.implementation)?);
+                    self.processes[p - 1] = Some(Process::start(
+                        &self.mem,
+                        self.implementation,
+                        self.trace.constant("NSlots") != "0",
+                    )?);
                 }
                 self.calls[p - 1] = Some(command);
                 self.process(p)?.command(command, stop)?;
             }
             Kind::Continue(_) => self.process(p)?.step(stop, false)?,
             Kind::Fail(_) => self.process(p)?.step(stop, true)?,
+            Kind::FinishList => self.process(p)?.step(None, false)?,
             Kind::StopRecovery => {
                 if self.process(p)?.returned().is_none() {
                     return Err(
@@ -292,12 +435,16 @@ impl<'t> Replay<'t> {
                 return Ok(());
             }
             Kind::Terminate => {
+                if let Some(listing) = self.listings[p - 1].as_mut() {
+                    listing.kill();
+                }
                 if let Some(process) = self.processes[p - 1].as_mut() {
                     process.kill();
                 }
                 return Ok(());
             }
-            Kind::Silent => return Ok(()),
+            Kind::Silent if silent(action) => return Ok(()),
+            Kind::Silent => return Err(format!("{action} is not bound to the contract")),
         }
         self.check_return(k, p, stop)
     }
@@ -306,6 +453,55 @@ impl<'t> Replay<'t> {
         self.processes[p - 1]
             .as_ref()
             .ok_or_else(|| "it has made no call".to_owned())
+    }
+
+    fn list(&mut self, k: usize, p: usize, action: &str, stop: Option<Stop>) -> Result<(), String> {
+        if action == "ListStart" {
+            if self.listings[p - 1].is_none() {
+                let listing = match self.processes[p - 1].as_ref() {
+                    Some(process) => process.listing(self.implementation)?,
+                    None => Process::start(&self.mem, self.implementation, false)?,
+                };
+                self.listings[p - 1] = Some(listing);
+            }
+            self.listings[p - 1]
+                .as_ref()
+                .expect("listing started")
+                .command(Command::List, stop)?;
+        } else if action == "ListRead" {
+            return Ok(());
+        } else {
+            self.listings[p - 1]
+                .as_ref()
+                .ok_or_else(|| "listing has not started".to_owned())?
+                .step(if action == "ListDone" { None } else { stop }, false)?;
+        }
+        if action == "ListDone" {
+            let reply = self.listings[p - 1]
+                .as_ref()
+                .expect("listing started")
+                .returned()
+                .ok_or_else(|| "listing did not return".to_owned())?;
+            let expected = of(&self.trace.states[k + 1], "lres", p)
+                .as_str()
+                .unwrap_or_default();
+            let actual = match reply {
+                Reply::Listed { incomplete, .. } => {
+                    if incomplete {
+                        "incomplete"
+                    } else {
+                        "complete"
+                    }
+                }
+                other => return Err(format!("listing returned {other:?}")),
+            };
+            if actual != expected {
+                return Err(format!(
+                    "listing was {actual} where the model's is {expected}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Whether the process's call returned where the model's ends, and with what it ends with.
@@ -328,6 +524,24 @@ impl<'t> Replay<'t> {
                     (Command::Begin, Reply::Failed(_)) => pc == "closed",
                     (Command::End(ModificationEnd::Settled), Reply::Done) => pc == "closed",
                     (Command::End(ModificationEnd::Settled), Reply::Failed(_)) => pc == "told",
+                    (Command::Discover, Reply::Discovered { required }) => {
+                        *required == (of(&self.trace.states[k + 1], "disc", p) == "required")
+                    }
+                    (Command::StartUpgrade, Reply::Failed(_)) => pc == "idle",
+                    (Command::Convert, Reply::Done) => {
+                        of(&self.trace.states[k + 1], "att", p) != "uWGateT"
+                    }
+                    (Command::BeginRead | Command::EndRead, Reply::Sampled(count)) => {
+                        let field = if self.trace.steps[k].name == "ReadBefore" {
+                            "rbefore"
+                        } else {
+                            "scache"
+                        };
+                        let sampled = of(&self.trace.states[k + 1], field, p)
+                            .as_u64()
+                            .expect("the read sample is a count");
+                        count.is_multiple_of(2) == sampled.is_multiple_of(2)
+                    }
                     (_, Reply::Done) => true,
                     _ => false,
                 };
@@ -345,10 +559,20 @@ impl<'t> Replay<'t> {
     /// Kills every process, keeps or loses what the model's crash keeps or loses, and loses
     /// what is not durable.
     fn crash(&mut self, after: &Map<String, Value>) {
-        for process in self.processes.iter().flatten() {
+        for process in self
+            .processes
+            .iter()
+            .flatten()
+            .chain(self.listings.iter().flatten())
+        {
             process.condemn();
         }
-        for process in self.processes.iter_mut().flatten() {
+        for process in self
+            .processes
+            .iter_mut()
+            .chain(self.listings.iter_mut())
+            .flatten()
+        {
             process.join();
         }
         self.keeper.end();
@@ -372,10 +596,20 @@ impl<'t> Replay<'t> {
 
 impl Drop for Replay<'_> {
     fn drop(&mut self) {
-        for process in self.processes.iter().flatten() {
+        for process in self
+            .processes
+            .iter()
+            .flatten()
+            .chain(self.listings.iter().flatten())
+        {
             process.condemn();
         }
-        for process in self.processes.iter_mut().flatten() {
+        for process in self
+            .processes
+            .iter_mut()
+            .chain(self.listings.iter_mut())
+            .flatten()
+        {
             process.join();
         }
         self.keeper.end();

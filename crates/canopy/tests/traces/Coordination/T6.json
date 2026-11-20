@@ -4,7 +4,7 @@
   "configuration": "Coordination-Control-UpgraderHoldsExclusion",
   "origin": {"kind":"timeline","timeline":"T6"},
   "constants": {"Callbacks":"FALSE","Control":"\"upgrader-holds-exclusion\"","CrashFences":"FALSE","Escapes":"FALSE","MaxCrashes":"0","MaxDiscoveries":"0","MaxLeases":"0","MaxListings":"0","MaxReads":"0","MaxRequests":"2","MaxTerminations":"0","MaxUpgrades":"0","MixedWrites":"FALSE","NSlots":"0","Notifications":"FALSE","Procs":"{1, 2}","PublicationsFail":"TRUE","Scenario":"\"SafeAndWriter\"","Txn":"FALSE","UnloggedRecovery":"FALSE","UpSteps":"0"},
-  "departs": null,
+  "departs": "SUPX",
   "initial": {"a":0,"areq":["none","none"],"att":["off","off"],"b":0,"cache":[-1,-1],"cl":[],"count":0,"crashes":0,"current":[2],"dfloor":[1],"disc":["none","none"],"discoveries":0,"edr":[],"etok":[],"fence":false,"gen":0,"lcur":[1,1],"lease":[0,0],"lfree":[false,false],"lists":0,"ll":[],"lockHolder":0,"log":"empty","lph":["none","none"],"lrep":[[0,0,"none"],[0,0,"none"]],"lres":["none","none"],"ltok":[0,0],"lunk":[false,false],"mygen":[-1,-1],"oldest":[1],"ovf":false,"owner":0,"pc":["new","new"],"ptgt":0,"rbefore":[-1,-1],"rcur":[0,0],"reads":0,"req":["none","none"],"requests":0,"rpart":[-1,-1],"rphase":["none","none"],"rscan":[[],[]],"rseenA":[-1,-1],"rseenB":[-1,-1],"rst":["out","out"],"rtier":[false,false],"scache":[-1,-1],"shared":0,"stage":0,"terminatedIn":"none","terminations":0,"trusted":true,"ufloor":0,"ulayer":0,"upState":"ordinary","upgrades":0,"ustep":0,"utgt":0,"woken":["sample","sample"]},
   "steps": [
     {"action":"BeginAttach(1)","args":[1],"changes":{"areq":["pending","none"],"att":["wGate","off"],"pc":["attaching","new"]},"name":"BeginAttach","step":"BGN1"},
