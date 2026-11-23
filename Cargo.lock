@@ -662,9 +662,9 @@ checksum = "6e2b59af67831285aa278b195c524e8a9d1532c90be9cc9c91e7bebf43561218"
 
 [[package]]
 name = "win-sync-sys"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d715a19899c94ee0a3a830a10f6e632848908a24d23a7ebee8b7dfe8a3b76272"
+checksum = "a879a1309bfe1b6b0e9b0db598fc7d8046d9c9c38ae71abae0a0a3e4ec6ee0b9"
 dependencies = [
  "win-handles-sys",
  "win-shared-os-owned-handle",
