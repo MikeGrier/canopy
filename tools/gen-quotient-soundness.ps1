@@ -167,9 +167,11 @@ foreach ($c in $configs) {
     $out += "    SoundnessPerturbation = `"$partition`""
     $out += 'SPECIFICATION SoundnessSpec'
     if ($c[0] -eq 'QuotientSoundness-NodeRemoval') {
-        $out += 'CONSTRAINT RemovalEffectsOnly'
+        $out += 'CONSTRAINT RemovalSoundnessScope'
     } elseif ($c[0].StartsWith('QuotientSoundness-DirectoryCreation-')) {
-        $out += 'CONSTRAINT WriteEffectsWithoutNodeRemoval'
+        $out += 'CONSTRAINT WriteSoundnessScope'
+    } else {
+        $out += 'CONSTRAINT QuotientTypeOK'
     }
     $out += 'VIEW ProductView'
     $out += 'INVARIANTS'

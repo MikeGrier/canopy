@@ -320,6 +320,9 @@ WriteEffectsWithoutNodeRemoval ==
     /\ \A index \in DOMAIN prep : prep[index].effect = "write"
     /\ \A index \in DOMAIN b_prep : b_prep[index].effect = "write"
 
+RemovalSoundnessScope == QuotientTypeOK /\ RemovalEffectsOnly
+WriteSoundnessScope == QuotientTypeOK /\ WriteEffectsWithoutNodeRemoval
+
 \* Challenge metadata is relevant only while a challenge is outstanding. At reset,
 \* every enabled action overwrites it, so the completed challenge must not distinguish states.
 ProductView ==
