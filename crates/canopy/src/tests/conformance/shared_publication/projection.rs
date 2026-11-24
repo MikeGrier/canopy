@@ -1,7 +1,7 @@
 // Copyright (c) Michael Grier.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,6 +15,7 @@ use crate::store::{
 };
 use crate::{
     BlobName, ContentDigest, DocumentBody, DocumentName, NodePath, Nonce, PathHash, Pointer,
+    Precondition,
 };
 
 pub(super) struct Document {
@@ -32,7 +33,9 @@ pub(super) struct World {
     guarded: bool,
     nonces: AtomicU64,
     pub(super) initial_directory_debt: usize,
+    pub(super) initial_node_removed: bool,
     track_directories: bool,
+    track_nodes: bool,
 }
 
 impl World {
@@ -62,7 +65,9 @@ impl World {
             guarded,
             nonces: AtomicU64::new(0),
             initial_directory_debt: 0,
+            initial_node_removed: false,
             track_directories: true,
+            track_nodes: false,
         }
     }
 
@@ -94,6 +99,11 @@ impl World {
             trace.constant("Fix") == "\"record\"",
         );
         world.track_directories = initial.contains_key("directoryLive");
+        world.track_nodes = initial.contains_key("nodeLive");
+        world.initial_node_removed = trace
+            .constants
+            .get("InitialNodeRemoved")
+            .is_some_and(|value| value == "TRUE");
         world.initial_directory_debt = initial
             .get("directoryDurable")
             .and_then(Value::as_u64)
@@ -120,6 +130,26 @@ impl World {
             .parent()
             .expect("a document has a parent")
             .to_path_buf()
+    }
+
+    pub(super) fn model_node(&self) -> NodePath {
+        self.documents[0].node.clone()
+    }
+
+    pub(super) fn model_node_at_document(&self) -> NodePath {
+        let document = &self.documents[0];
+        NodePath::parse(&format!("{}/{}", document.node, document.name.as_str()))
+            .expect("a document entry is a valid node path")
+    }
+
+    pub(super) fn model_node_below_document(&self) -> NodePath {
+        let document = &self.documents[0];
+        NodePath::parse(&format!(
+            "{}/{}/child",
+            document.node,
+            document.name.as_str()
+        ))
+        .expect("a path below a document is a valid node path")
     }
 
     pub(super) fn seed_directory_debt(&self, mem: &MemFs) {
@@ -149,6 +179,37 @@ impl World {
             .join(document.name.as_str())
     }
 
+    pub(super) fn node_path(&self, replica: usize) -> PathBuf {
+        self.root
+            .join(NAMESPACE_TREE_DIR)
+            .join(format!("p{replica}"))
+            .join(self.documents[0].node.relative_path())
+    }
+
+    pub(super) fn node_replica(&self, path: &Path) -> Option<usize> {
+        (0..self.pointers).find(|replica| self.node_path(*replica) == path)
+    }
+
+    pub(super) fn node_parent(&self, path: &Path) -> Option<usize> {
+        (0..self.pointers).find(|replica| self.node_path(*replica).parent() == Some(path))
+    }
+
+    pub(super) fn node_exists(&self, fs: &dyn Vfs, replica: usize) -> Result<bool, String> {
+        let path = self.node_path(replica);
+        match fs.metadata(&path) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    VfsErrorKind::NotFound | VfsErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     fn version(&self, digest: ContentDigest) -> Result<usize, String> {
         self.versions
             .iter()
@@ -172,12 +233,71 @@ pub(super) struct Documents {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PreparedPrecondition {
+    Unconditional,
+    ExpectedDigest(usize),
+    ExpectedAbsent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PreparedSwap {
+    pub(super) document: usize,
+    pub(super) version: Option<usize>,
+    pub(super) precondition: PreparedPrecondition,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PreparedNodeRemoval {
+    Node,
+    AtDocument,
+    BelowDocument,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProjectedNodes {
+    live: Vec<Vec<bool>>,
+    durable: Vec<Vec<bool>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Projection {
     pub(super) live: Documents,
     pub(super) durable: Documents,
     pub(super) log: String,
-    pub(super) prepared: Option<(usize, usize)>,
+    pub(super) prepared: Vec<PreparedSwap>,
+    pub(super) node_removals: Vec<PreparedNodeRemoval>,
+    nodes: Option<ProjectedNodes>,
     pub(super) directories: Option<(usize, usize)>,
+}
+
+fn model_prepared_swap(swap: &Value) -> PreparedSwap {
+    let precondition = match swap.get("precondition").and_then(Value::as_str) {
+        Some("digest") => PreparedPrecondition::ExpectedDigest(
+            usize::try_from(
+                swap["expected"]
+                    .as_u64()
+                    .expect("digest expectation is natural"),
+            )
+            .expect("version fits"),
+        ),
+        Some("absent") => PreparedPrecondition::ExpectedAbsent,
+        Some("unconditional") | None => PreparedPrecondition::Unconditional,
+        _ => panic!("prepared swap has an unknown precondition"),
+    };
+    let version = if swap.get("effect").and_then(Value::as_str) == Some("remove") {
+        None
+    } else {
+        Some(
+            usize::try_from(swap["ver"].as_u64().expect("prepared version is natural"))
+                .expect("version fits"),
+        )
+    };
+    PreparedSwap {
+        document: usize::try_from(swap["doc"].as_u64().expect("prepared document is an index"))
+            .expect("index fits"),
+        version,
+        precondition,
+    }
 }
 
 pub(super) fn model(world: &World, state: &Map<String, Value>) -> Projection {
@@ -239,16 +359,55 @@ pub(super) fn model(world: &World, state: &Map<String, Value>) -> Projection {
         live: documents("ptrLive", "blobLive", "live"),
         durable: documents("ptrDur", "blobDur", "dur"),
         log: state["log"].as_str().expect("log is a phase").to_owned(),
-        prepared: state["prep"]["ver"].as_u64().map(|version| {
-            (
-                usize::try_from(
-                    state["prep"]["doc"]
-                        .as_u64()
-                        .expect("prepared document is an index"),
-                )
-                .expect("index fits"),
-                usize::try_from(version).expect("version fits"),
-            )
+        prepared: if state["log"] == "prepared" {
+            match state["prep"].as_array() {
+                Some(swaps) => swaps.iter().map(model_prepared_swap).collect(),
+                None => vec![model_prepared_swap(&state["prep"])],
+            }
+        } else {
+            Vec::new()
+        },
+        node_removals: if state["log"] == "prepared" {
+            state
+                .get("removeNodes")
+                .and_then(Value::as_array)
+                .map(|paths| {
+                    paths
+                        .iter()
+                        .map(
+                            |path| match path.as_array().expect("node path is a sequence").len() {
+                                1 => PreparedNodeRemoval::Node,
+                                2 => PreparedNodeRemoval::AtDocument,
+                                3 => PreparedNodeRemoval::BelowDocument,
+                                _ => panic!("unknown model node path"),
+                            },
+                        )
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
+        nodes: state.get("nodeLive").map(|_| {
+            let nodes = |field: &str| {
+                state[field]
+                    .as_array()
+                    .expect("node directories are a sequence")
+                    .iter()
+                    .map(|replicas| {
+                        replicas
+                            .as_array()
+                            .expect("node replicas are a sequence")
+                            .iter()
+                            .map(|value| value.as_bool().expect("node existence is boolean"))
+                            .collect()
+                    })
+                    .collect()
+            };
+            ProjectedNodes {
+                live: nodes("nodeLive"),
+                durable: nodes("nodeDur"),
+            }
         }),
         directories: state
             .get("directoryLive")
@@ -359,30 +518,52 @@ pub(super) fn observe(world: &World, mem: &MemFs) -> Result<Projection, String> 
     let records = CommitLog::new(Arc::new(mem.another_process()), &world.root)
         .read()
         .map_err(|error| error.to_string())?;
-    let (log, prepared) = match records.last() {
-        None => ("empty", None),
-        Some(LogRecord::Begin { .. }) => ("begun", None),
-        Some(LogRecord::End { .. }) => ("ended", None),
+    let (log, prepared, node_removals) = match records.last() {
+        None => ("empty", Vec::new(), Vec::new()),
+        Some(LogRecord::Begin { .. }) => ("begun", Vec::new(), Vec::new()),
+        Some(LogRecord::End { .. }) => ("ended", Vec::new(), Vec::new()),
         Some(LogRecord::Prepare { prepared, .. }) => {
-            let swaps = prepared.swaps();
-            if swaps.len() != 1 {
-                return Err("the model prepares one document".to_owned());
+            let mut swaps = Vec::with_capacity(prepared.swaps().len());
+            for swap in prepared.swaps() {
+                let document = world
+                    .documents
+                    .iter()
+                    .position(|document| {
+                        swap.node() == &document.node && swap.document() == &document.name
+                    })
+                    .ok_or("prepare names an unknown document")?;
+                let precondition = match swap.precondition() {
+                    Precondition::Unconditional => PreparedPrecondition::Unconditional,
+                    Precondition::ExpectedDigest(digest) => {
+                        PreparedPrecondition::ExpectedDigest(world.version(digest)?)
+                    }
+                    Precondition::ExpectedAbsent => PreparedPrecondition::ExpectedAbsent,
+                };
+                swaps.push(PreparedSwap {
+                    document: document + 1,
+                    version: swap
+                        .digest()
+                        .map(|digest| world.version(digest))
+                        .transpose()?,
+                    precondition,
+                });
             }
-            let swap = &swaps[0];
-            let document = world
-                .documents
+            let node_removals = prepared
+                .node_removals()
                 .iter()
-                .position(|document| {
-                    swap.node() == &document.node && swap.document() == &document.name
+                .map(|path| {
+                    if path == &world.model_node() {
+                        PreparedNodeRemoval::Node
+                    } else if path == &world.model_node_at_document() {
+                        PreparedNodeRemoval::AtDocument
+                    } else if path == &world.model_node_below_document() {
+                        PreparedNodeRemoval::BelowDocument
+                    } else {
+                        panic!("prepare names an unknown node removal")
+                    }
                 })
-                .ok_or("prepare names an unknown document")?;
-            (
-                "prepared",
-                Some((
-                    document + 1,
-                    world.version(swap.digest().ok_or("prepare removes a document")?)?,
-                )),
-            )
+                .collect();
+            ("prepared", swaps, node_removals)
         }
     };
     let directory_count = |fs: &dyn Vfs| -> Result<usize, String> {
@@ -405,6 +586,27 @@ pub(super) fn observe(world: &World, mem: &MemFs) -> Result<Projection, String> 
         durable: read_documents(world, &durable)?,
         log: log.to_owned(),
         prepared,
+        node_removals,
+        nodes: world
+            .track_nodes
+            .then(|| {
+                let live = (0..world.documents.len())
+                    .map(|_| {
+                        (0..world.pointers)
+                            .map(|replica| world.node_exists(mem, replica))
+                            .collect()
+                    })
+                    .collect::<Result<_, String>>()?;
+                let durable = (0..world.documents.len())
+                    .map(|_| {
+                        (0..world.pointers)
+                            .map(|replica| world.node_exists(&durable, replica))
+                            .collect()
+                    })
+                    .collect::<Result<_, String>>()?;
+                Ok::<_, String>(ProjectedNodes { live, durable })
+            })
+            .transpose()?,
         directories,
     })
 }

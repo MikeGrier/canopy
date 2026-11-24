@@ -9,7 +9,10 @@ use super::super::coordination::{process::Class as Contract, projection as contr
 use super::super::corpus::Trace;
 use super::super::pointer_publication::class::Class as Document;
 use super::action::{self, Action};
-use super::process::{self, Class, Command, Implementation, Process, Reply};
+use super::process::{
+    self, Class, Command, Implementation, PlannedEffect, PlannedNodeRemoval, PlannedPrecondition,
+    PlannedSwap, Process, Reply,
+};
 use super::projection::{self, World};
 use crate::Store;
 
@@ -21,7 +24,14 @@ pub(super) struct Departure {
 
 fn checkpoint(action: &Action, implementation: Implementation) -> Option<Class> {
     match action.name {
-        "DirectorySync" => return Some(Class::DirectorySync),
+        "DirectoryIntentAppend" => return Some(Class::DirectoryIntentAppend),
+        "DirectoryIntentTorn" => return Some(Class::DirectoryIntentAppend),
+        "DirectoryIntentSync" => return Some(Class::DirectoryClearSync),
+        "DirectoryCreate" => return Some(Class::DirectoryCreate),
+        "DirectoryRename" | "DirectorySync" | "NodeSync" => {
+            return Some(Class::DirectorySync);
+        }
+        "NodeRen" => return Some(Class::NodeRemove(action.replica.saturating_sub(1))),
         "DirectoryClear" => return Some(Class::DirectoryClear),
         "DirectoryClearSync" => return Some(Class::DirectoryClearSync),
         _ => {}
@@ -42,7 +52,9 @@ fn checkpoint(action: &Action, implementation: Implementation) -> Option<Class> 
         "Lock" => Some(Contract::Exclusion),
         "SetFence" => Some(Contract::Fence),
         "Record" => Some(Contract::Record),
-        "EndOpen" | "EndClose" | "OpenFails" | "CloseFails" | "RecCount" => Some(Contract::Count),
+        "Reject" | "EndOpen" | "EndClose" | "OpenFails" | "CloseFails" | "RecCount" => {
+            Some(Contract::Count)
+        }
         "RecClear" => Some(Contract::ClearFence),
         "Release" => Some(Contract::ClearRecord),
         _ => None,
@@ -113,6 +125,13 @@ fn phase_checkpoint(phase: &str, replica: usize, implementation: Implementation)
         "txSync" => "TxSync",
         "rsRen" => "RsRen",
         "rsSync" => "RsSync",
+        "dirAppend" | "dirAppendRepair" => "DirectoryIntentAppend",
+        "dirAppendSync" => "DirectoryIntentSync",
+        "dirCreate" => "DirectoryCreate",
+        "dirRename" => "DirectoryRename",
+        "nodeRen" => "NodeRen",
+        "nodeSync" => "NodeSync",
+        "nodeDone" => "End",
         "dirSync" => "DirectorySync",
         "dirClear" => "DirectoryClear",
         "dirClearSync" => "DirectoryClearSync",
@@ -143,6 +162,28 @@ struct Replay<'trace> {
 }
 
 impl<'trace> Replay<'trace> {
+    fn checkpoint(&self, index: usize) -> Option<Class> {
+        let action = &self.actions[index];
+        if action.name != "TxRen" {
+            return checkpoint(action, self.implementation);
+        }
+        let state = &self.trace.states[index];
+        let position = state["txnDoc"].as_u64().unwrap_or_default() as usize;
+        let removed = state["prep"]
+            .as_array()
+            .and_then(|swaps| swaps.get(position.saturating_sub(1)))
+            .and_then(|swap| swap.get("effect"))
+            .and_then(|effect| effect.as_str())
+            == Some("remove");
+        if removed {
+            Some(Class::Document(Document::PtrRemove(
+                action.replica.saturating_sub(1),
+            )))
+        } else {
+            checkpoint(action, self.implementation)
+        }
+    }
+
     fn start(trace: &'trace Trace, implementation: Implementation) -> Result<Self, String> {
         let world = Arc::new(World::of(trace));
         let (mem, keeper) = super::tests::initialized_with(&world, implementation);
@@ -224,13 +265,15 @@ impl<'trace> Replay<'trace> {
     }
 
     fn plan(&self, index: usize, actor: usize) -> Command {
-        let mut document = 1;
+        let mut swaps = Vec::new();
+        let mut node_removals = Vec::new();
         let mut version = 0;
         let mut modification = false;
         let mut logged = false;
         let mut picked = false;
         let mut ingested = false;
         let mut empty = false;
+        let mut rejected = false;
         let mut quiesce_before = false;
         let mut quiesce_after = false;
         for (offset, action) in self.actions.iter().enumerate().skip(index + 1) {
@@ -249,22 +292,68 @@ impl<'trace> Replay<'trace> {
                 }
                 "BeginOpen" => modification = true,
                 "Begin" => logged = true,
+                "PlanTxn" => {
+                    logged = true;
+                    let prepared = self.trace.states[offset + 1]["prep"]
+                        .as_array()
+                        .expect("transaction plan is a sequence");
+                    let swap = prepared.last().expect("planning adds a transaction swap");
+                    let document = swap["doc"]
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                        .expect("planned document is an index");
+                    let expected = swap["expected"]
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok());
+                    let precondition = match swap["precondition"].as_str() {
+                        Some("unconditional") => PlannedPrecondition::Unconditional,
+                        Some("digest") => PlannedPrecondition::ExpectedDigest(
+                            expected.expect("digest precondition has an expected version"),
+                        ),
+                        Some("absent") => PlannedPrecondition::ExpectedAbsent,
+                        _ => panic!("planned swap has an unknown precondition"),
+                    };
+                    let effect = match swap.get("effect").and_then(|value| value.as_str()) {
+                        Some("remove") => PlannedEffect::Remove,
+                        Some("write") | None => PlannedEffect::Write,
+                        _ => panic!("planned swap has an unknown effect"),
+                    };
+                    swaps.push(PlannedSwap {
+                        document,
+                        effect,
+                        precondition,
+                    });
+                    picked = true;
+                }
+                "PlanRemoveNode" => node_removals.push(PlannedNodeRemoval::Node),
+                "PlanRemoveAtDocument" => {
+                    node_removals.push(PlannedNodeRemoval::AtDocument);
+                }
+                "PlanRemoveBelowDocument" => {
+                    node_removals.push(PlannedNodeRemoval::BelowDocument);
+                }
                 "Pick" => {
-                    document = action.document;
+                    swaps.push(PlannedSwap {
+                        document: action.document,
+                        effect: PlannedEffect::Write,
+                        precondition: PlannedPrecondition::Unconditional,
+                    });
                     picked = true;
                 }
                 "IngRen" | "IngSync" => ingested = true,
+                "Reject" => rejected = true,
                 "EndEmpty" => empty = true,
                 "Quiesce" if modification => quiesce_after = true,
                 "Quiesce" => quiesce_before = true,
                 _ => {}
             }
         }
-        if empty && !ingested {
+        if rejected || empty && !ingested {
             Command::Empty
         } else if picked || logged {
             Command::BracketedWrite {
-                document,
+                swaps,
+                node_removals,
                 version,
                 logged,
                 quiesce_before,
@@ -301,7 +390,7 @@ impl<'trace> Replay<'trace> {
                 || contract::model(&self.trace.states[position])
                     != contract::model(&self.trace.states[position + 1]);
             if (observable || matches!(action.name, "TakeGateS" | "TakeReaderS" | "TakeWriterS"))
-                && let Some(class) = checkpoint(action, self.implementation)
+                && let Some(class) = self.checkpoint(position)
             {
                 return Some(class);
             }
@@ -354,6 +443,7 @@ impl<'trace> Replay<'trace> {
             action.name,
             "RecStop"
                 | "FailUnresolved"
+                | "DirectoryIntentTorn"
                 | "PrepareFails"
                 | "RollbackStart"
                 | "RollbackCollectionFails"
@@ -467,7 +557,7 @@ impl<'trace> Replay<'trace> {
                     || contract::model(&self.trace.states[index])
                         != contract::model(&self.trace.states[index + 1]);
                 let attachment = matches!(action.name, "TakeGateS" | "TakeReaderS" | "TakeWriterS");
-                if let Some(class) = checkpoint(action, self.implementation)
+                if let Some(class) = self.checkpoint(index)
                     && (changed || attachment)
                 {
                     let process = self.process(actor)?;

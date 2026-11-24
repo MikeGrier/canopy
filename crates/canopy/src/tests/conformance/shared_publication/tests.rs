@@ -2,15 +2,18 @@
 
 use crate::store::PUBLICATION_RECORD_NAME;
 use crate::tests::{test_agent, test_config};
-use crate::{ContentDigest, Nonce, Store, StoreOptions};
+use crate::{ContentDigest, Nonce, Store, StoreOptions, Swap, SwapSet};
 use acadia::{MemFs, Vfs};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 use super::super::corpus;
 use super::action::infer;
-use super::process::{self, Class, Command, Implementation, Process, Reply};
-use super::projection::{self, World};
+use super::process::{
+    self, Class, Command, Implementation, PlannedEffect, PlannedPrecondition, PlannedSwap, Process,
+    Reply,
+};
+use super::projection::{self, PreparedPrecondition, PreparedSwap, World};
 
 fn initialized(world: &World) -> (Arc<MemFs>, Store) {
     initialized_with(world, Implementation::File)
@@ -48,6 +51,19 @@ pub(super) fn initialized_with(
                 &Nonce::new(&format!("initial{index}")).unwrap(),
             )
             .unwrap();
+    }
+    if world.initial_node_removed {
+        let swaps = SwapSet::with_node_removals(
+            world
+                .documents
+                .iter()
+                .map(|document| Swap::remove(document.node.clone(), document.name.clone())),
+            [world.model_node()],
+        )
+        .expect("the initial removal is valid");
+        store
+            .apply_transaction_as(&swaps, &Nonce::new("initial-remove").unwrap())
+            .expect("remove the initial node");
     }
     store.quiesce().unwrap().agent_stamp.unwrap();
     store.recover().unwrap().agent_stamp.unwrap();
@@ -115,6 +131,149 @@ fn a_shared_atomic_failure_is_refused_without_resuming_the_call() {
     assert_eq!(process.paused(), Some(stop));
     process.step(None, false).unwrap();
     assert_eq!(process.returned(), Some(Reply::Done));
+}
+
+#[test]
+fn a_two_document_transaction_projects_every_prepared_swap_before_apply() {
+    let world = Arc::new(World::new(2, 3, 1, 1, true));
+    let (mem, _keeper) = initialized(&world);
+    let process = Process::start(&mem, world.clone(), Implementation::File, 1);
+    process.command(Command::Open, None).unwrap();
+    let log_append = Class::Document(super::super::pointer_publication::class::Class::LogAppend);
+    process
+        .command(
+            Command::BracketedWrite {
+                swaps: vec![
+                    PlannedSwap {
+                        document: 1,
+                        effect: PlannedEffect::Write,
+                        precondition: PlannedPrecondition::ExpectedDigest(0),
+                    },
+                    PlannedSwap {
+                        document: 2,
+                        effect: PlannedEffect::Write,
+                        precondition: PlannedPrecondition::ExpectedDigest(0),
+                    },
+                ],
+                node_removals: Vec::new(),
+                version: 1,
+                logged: true,
+                quiesce_before: false,
+                quiesce_after: false,
+            },
+            Some(log_append),
+        )
+        .unwrap();
+    process.step(Some(log_append), false).unwrap();
+    let first_rename = Class::Document(super::super::pointer_publication::class::Class::PtrRename(
+        0,
+    ));
+    process.step(Some(first_rename), false).unwrap();
+    let prepared = projection::observe(&world, &mem).unwrap();
+    assert_eq!(prepared.log, "prepared");
+    assert_eq!(
+        prepared.prepared,
+        vec![
+            PreparedSwap {
+                document: 1,
+                version: Some(1),
+                precondition: PreparedPrecondition::ExpectedDigest(0),
+            },
+            PreparedSwap {
+                document: 2,
+                version: Some(1),
+                precondition: PreparedPrecondition::ExpectedDigest(0),
+            },
+        ]
+    );
+    process.step(None, false).unwrap();
+    assert_eq!(process.returned(), Some(Reply::Done));
+    let committed = projection::observe(&world, &mem).unwrap();
+    assert_eq!(committed.live.pointers, vec![vec![Some(1); 3]; 2]);
+    assert_eq!(committed.durable.pointers, committed.live.pointers);
+}
+
+#[test]
+fn recovery_applies_every_swap_from_a_crashed_two_document_prepare() {
+    let world = Arc::new(World::new(2, 3, 1, 1, true));
+    let (mem, keeper) = initialized(&world);
+    let process = Process::start(&mem, world.clone(), Implementation::File, 1);
+    process.command(Command::Open, None).unwrap();
+    let log_append = Class::Document(super::super::pointer_publication::class::Class::LogAppend);
+    process
+        .command(
+            Command::BracketedWrite {
+                swaps: vec![
+                    PlannedSwap {
+                        document: 1,
+                        effect: PlannedEffect::Write,
+                        precondition: PlannedPrecondition::Unconditional,
+                    },
+                    PlannedSwap {
+                        document: 2,
+                        effect: PlannedEffect::Write,
+                        precondition: PlannedPrecondition::Unconditional,
+                    },
+                ],
+                node_removals: Vec::new(),
+                version: 1,
+                logged: true,
+                quiesce_before: false,
+                quiesce_after: false,
+            },
+            Some(log_append),
+        )
+        .unwrap();
+    process.step(Some(log_append), false).unwrap();
+    let first_rename = Class::Document(super::super::pointer_publication::class::Class::PtrRename(
+        0,
+    ));
+    process.step(Some(first_rename), false).unwrap();
+    assert_eq!(projection::observe(&world, &mem).unwrap().log, "prepared");
+    drop(process);
+    keeper.abandon_for_replay();
+
+    let restarted = Arc::new(mem.simulate_restart());
+    let recovery = Process::start(&restarted, world.clone(), Implementation::File, 2);
+    recovery.command(Command::Open, None).unwrap();
+    recovery.command(Command::Recover, None).unwrap();
+    assert_eq!(recovery.returned(), Some(Reply::Done));
+    let recovered = projection::observe(&world, &restarted).unwrap();
+    assert_eq!(recovered.live.pointers, vec![vec![Some(1); 3]; 2]);
+    assert_eq!(recovered.durable.pointers, recovered.live.pointers);
+}
+
+#[test]
+fn transaction_precondition_rejection_changes_no_document_state_or_prepare_record() {
+    for precondition in [
+        PlannedPrecondition::ExpectedDigest(1),
+        PlannedPrecondition::ExpectedAbsent,
+    ] {
+        let world = Arc::new(World::new(2, 3, 1, 1, true));
+        let (mem, _keeper) = initialized(&world);
+        let before = projection::observe(&world, &mem).unwrap();
+        let process = Process::start(&mem, world.clone(), Implementation::File, 1);
+        process.command(Command::Open, None).unwrap();
+        process
+            .command(
+                Command::BracketedWrite {
+                    swaps: vec![PlannedSwap {
+                        document: 1,
+                        effect: PlannedEffect::Write,
+                        precondition,
+                    }],
+                    node_removals: Vec::new(),
+                    version: 1,
+                    logged: true,
+                    quiesce_before: false,
+                    quiesce_after: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(process.returned(), Some(Reply::Done));
+        assert_eq!(projection::observe(&world, &mem).unwrap(), before);
+    }
 }
 
 #[test]
@@ -257,6 +416,46 @@ fn document_steps_are_inferred_from_the_work_phase() {
             (Some(1), 1, 1)
         );
     }
+}
+
+#[test]
+fn transaction_planning_and_rejection_are_distinct_actions() {
+    let mut before = state("open", "none");
+    before.insert("prep".into(), json!([]));
+    let mut planned = before.clone();
+    planned.insert("wph".into(), json!("planned"));
+    planned.insert(
+        "prep".into(),
+        json!([{"doc": 1, "ver": 1, "precondition": "digest", "expected": 0}]),
+    );
+    let action = infer(&before, &planned).unwrap();
+    assert_eq!(action.name, "PlanTxn");
+    assert_eq!(action.actor, Some(1));
+
+    let mut rejected = state("wrote", "done");
+    rejected.insert("prep".into(), json!([]));
+    assert_eq!(infer(&planned, &rejected).unwrap().name, "Reject");
+}
+
+#[test]
+fn two_document_transaction_trace_plans_both_swaps_before_begin() {
+    let trace = corpus::load_one(
+        "SharedPublication",
+        "witness-transaction-two-documents.json",
+    );
+    let actions: Vec<_> = trace
+        .states
+        .windows(2)
+        .map(|states| infer(&states[0], &states[1]).unwrap().name)
+        .collect();
+    let end_open = actions
+        .iter()
+        .position(|name| *name == "EndOpen")
+        .expect("transaction opens a handle");
+    assert_eq!(
+        &actions[end_open + 1..end_open + 4],
+        ["PlanTxn", "PlanTxn", "Begin"]
+    );
 }
 
 #[test]
@@ -569,8 +768,25 @@ corpus_cases! {
     shared_transaction_seed_2 => "sim-SharedPublication-SharedTransactions-s2.json",
     shared_transaction_seed_3 => "sim-SharedPublication-SharedTransactions-s3.json",
     shared_transaction_seed_4 => "sim-SharedPublication-SharedTransactions-s4.json",
+    namespace_transaction_seed_1 => "sim-SharedPublication-NamespaceTransactions-s1.json",
+    namespace_transaction_seed_2 => "sim-SharedPublication-NamespaceTransactions-s2.json",
+    transaction_two_documents_witness => "witness-transaction-two-documents.json",
+    transaction_digest_preconditions_witness => "witness-transaction-digest-conditions.json",
+    transaction_digest_rejected_witness => "witness-transaction-digest-rejected.json",
+    transaction_absent_rejected_witness => "witness-transaction-absent-rejected.json",
+    transaction_two_swaps_crash_witness => "witness-transaction-two-swaps-crash.json",
     directory_clear_crash_witness => "witness-directory-clear-crash.json",
     directory_unit_witness => "witness-directory-unit.json",
+    write_remove_collision_witness => "witness-write-remove-collision.json",
+    write_below_removed_node_witness => "witness-write-below-removed-node.json",
+    remove_at_document_witness => "witness-remove-at-document.json",
+    remove_below_document_witness => "witness-remove-below-document.json",
+    transaction_removes_node_witness => "witness-transaction-removes-node.json",
+    recovery_removes_node_witness => "witness-recovery-removes-node.json",
+    directory_intent_torn_witness => "witness-directory-intent-torn.json",
+    directory_intent_repaired_witness => "witness-directory-intent-repaired.json",
+    directory_created_renamed_witness => "witness-directory-created-renamed.json",
+    recovery_creates_directory_witness => "witness-recovery-creates-directory.json",
     committed_collection_witness => "witness-recovery-collects-committed.json",
     recovered_rollback_collection_witness => "witness-recovery-collects-rollback.json",
     rollback_collection_witness => "witness-rollback-collects.json",
@@ -660,6 +876,13 @@ fn the_unit_corpus_exercises_publication_transaction_collection_and_recovery() {
         "Prepare",
         "PtrRen",
         "CollRem",
+        "PlanRemoveNode",
+        "SkipIng",
+        "NodeRen",
+        "DirectoryIntentAppend",
+        "DirectoryIntentTorn",
+        "DirectoryCreate",
+        "DirectoryRename",
         "RecoveryBegin",
         "RecoveryStep",
     ] {

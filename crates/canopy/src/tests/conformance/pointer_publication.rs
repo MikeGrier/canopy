@@ -16,7 +16,7 @@ mod projection;
 mod replay;
 
 use super::corpus::{self, Trace};
-use replay::replay;
+use replay::{replay, replay_without_collection_sync};
 
 /// Whether the store did with `trace` what it must: follow it to the end, or leave it at the step
 /// its `departs` names.
@@ -91,6 +91,28 @@ fn a_trace_whose_step_the_store_does_not_take_is_left_at_that_step() {
     trace.states[sync + 1].insert("blobDur".to_owned(), unsynced);
     let error = judge(&trace).expect_err("the store syncs the blob the altered trace does not");
     assert!(error.contains("step ING"), "{error}");
+}
+
+#[test]
+fn collection_sync_removal_departs_at_the_sync_that_changes_the_durable_namespace() {
+    let trace = trace("T32.json");
+    let sync = trace
+        .steps
+        .iter()
+        .enumerate()
+        .position(|(index, step)| {
+            step.name == "CollSync"
+                && trace.states[index]["ptrDur"] != trace.states[index + 1]["ptrDur"]
+        })
+        .expect("T32 syncs a repaired live entry before collecting");
+    let departure = replay_without_collection_sync(&trace)
+        .expect_err("the replay must see the absent collection sync");
+    assert_eq!(
+        (departure.from, departure.to),
+        (sync, sync),
+        "{}",
+        departure.detail
+    );
 }
 
 #[test]

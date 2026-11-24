@@ -5068,7 +5068,8 @@ Decided with the engineer as the conformance work began. Rationale is in
 
 [^m11-2]: `M11-2` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-2) [completed 2026-11-15; `dfcd5be`]
 
-[^m11-8]: `M11-8` in [CHECKLIST.md](CHECKLIST.md)
+[^m11-8]: `M11-8` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-8)
+    [completed 2026-11-20]
 
 ## The publication model describes the store's commit log, 2026-11-15
 
@@ -5799,3 +5800,70 @@ same-process `MemFs` view, so its claim semantics match a thread of the particip
 second process. A scenario that represents a rejected implementation rule names the step at which
 correct code departs from it; a scenario whose rejected rule belongs to Store schema or migration
 client work states that the coordination-only bridge follows it.
+
+## Unreduced closures wait for a frozen boundary, 2026-11-22
+
+The pair gate[^m11-9] checks each `SharedPublicationCheck` configuration against its unreduced
+`SharedPublication` counterpart. It closes the unreduced side of every control and witness, which
+stop at the violation they name, and of the positive references whose closure is affordable while
+the model is revised. Each other positive configuration is listed in the `$boundaryClosure` table of
+[gen-shared-publication-cfgs.ps1](../../tools/gen-shared-publication-cfgs.ps1), and its unreduced
+form carries `Pair closure: boundary.` in its header; without `-Closure`,
+[check-shared-publication-pairs.ps1](../../tools/check-shared-publication-pairs.ps1) checks only
+its reduced side and reports the pair deferred. Those closures are run with `-Closure` at a frozen
+milestone or release candidate, where the next change to an action they reach does not invalidate
+the result before it is used[^g-3].
+
+While the model is revised, the evidence that the view preserves outcomes is the matching outcomes
+of the controls and witnesses, the closed positive references, and a one-step check of the view's
+soundness[^m11-11]. Random simulation of the unreduced model is not used in place of a closure.
+Rationale is in [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#unreduced-closure-cost).
+
+[^m11-9]: `M11-9` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-9) [completed 2026-11-22]
+[^g-3]: `G-3` in [CHECKLIST.md](CHECKLIST.md)
+[^m11-11]: `M11-11` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-11) [completed 2026-11-22]
+
+## Views normalize counters; budgets bound faults, 2026-11-22
+
+A model of a protocol whose implementation keeps unbounded counters -- modification counts,
+generations, content versions -- is checked through a `VIEW` that keeps only the relations the
+protocol reads from them: equality, order, parity, successor, or a none/current/stale class against
+a saved value. A value that nothing can name again, such as a blob version no pointer, record,
+prepare or keep set refers to, is kept only as present or absent. Such a view makes each counter's
+states finite without bounding its history; `QuotientView` in
+[SharedPublicationCheck.tla](spec/SharedPublicationCheck.tla) is the worked example, and an
+unreduced form stays beside it as "A reduction keeps the original it answers to" requires.
+
+A budget constant (`MaxRequests`, `MaxWrites`, `MaxCrashes`, `MaxTerminations`) is not replaced by
+the view. In the publication composition every write may fail part-way, so a write budget also
+bounds faults, and what a failed write leaves behind is genuine protocol state. Each budget
+therefore bounds operations or faults that the checks are scoped to, and a configuration's header
+says which. `QuotientView` collapses unnamed blob versions[^m11-12]. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#cycle-closed-checking) and
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#unnamed-blob-versions).
+
+[^m11-12]: `M11-12` in [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md#m11-12) [completed 2026-11-22]
+
+## The recovery view is checked one step at a time, 2026-11-22
+
+[QuotientSoundness.tla](spec/QuotientSoundness.tla) checks that `SharedPublicationCheck`'s
+`QuotientView` is sound with TLC, on a product of two copies of the composition. The first copy
+explores the reduced model. The second is given a perturbation of it that changes exactly one thing
+the view forgets: a gap opened between versions, the count and every saved count and sample moved
+by two, a stale saved count moved to another stale value, a remembered generation forgotten or made
+older, request intent, readiness or intervention outside the window in which a step reads it, the
+cached revision, or the abstract transaction cells moved together. One copy then steps, and the
+other must answer with a step that reaches the same view and gives every checked step predicate the
+same value; an unanswered step leaves TLC no successor, so it reports a deadlock whose trace ends at
+the challenging action. While a perturbation stands, both copies must have the same view and give
+every checked state predicate the same value.
+
+The perturbation list is the reduction's argument made executable: a distinction the view stops
+keeping gets a perturbation in the same change, and the step properties a configuration checks are
+written as named step predicates so the product can compare them. The second copy is generated from
+the composition's `VARIABLES` by
+[gen-quotient-soundness.ps1](../../tools/gen-quotient-soundness.ps1), which also writes the
+configurations; `QuotientSoundness-Control-ViewForgetsTheFence` checks a view that also forgets the
+fence and must deadlock, which shows the check can fail. A request's intent is read from the request
+to its release, so the view keeps it while the holder is in `InOperationStates`. Rationale is in
+[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#one-step-view-soundness).

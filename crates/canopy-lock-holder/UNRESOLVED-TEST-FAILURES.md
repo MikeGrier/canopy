@@ -3,7 +3,7 @@
 ## 2026-11-18 -- `shared_count` `upgrades::a_killed_upgrader_resumes_after_every_durable_body_boundary` times out in the full suite
 
 Seen on Windows while finishing acadia's fifth-review fixes (acadia
-[CHECKLIST.md](../acadia/CHECKLIST.md) M28 to M31). Run with the rest of the package, the test
+[CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md) M28 to M31). Run with the rest of the package, the test
 fails at
 [shared_count.rs](tests/shared_count.rs) `Writer::expect`: the resuming writer does not report
 `recovered` within `STEP_DEADLINE` (30 s). Run alone it passes, taking about 33 s for all its

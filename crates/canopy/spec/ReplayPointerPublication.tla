@@ -125,4 +125,28 @@ ReplaySpecT31 == ReplayInit /\ [][ReplayNextT31]_<<vars, tstep>>
 
 \* T31's last action has been taken.
 Witness_T31Replayed == tstep # 41
+
+\* T32, from timelines/PointerPublication/T32.psd1.
+\* Each disjunct is one action, numbered from 0, with the step it belongs to.
+ReplayT32 ==
+    \/ tstep = 0 /\ Damage(2)  \* DMG
+    \/ tstep = 1 /\ StartOp("repair")  \* REP
+    \/ tstep = 2 /\ RfRecSync  \* REP
+    \/ tstep = 3 /\ RepRead  \* REP
+    \/ tstep = 4 /\ RepRename  \* REP
+    \/ tstep = 5 /\ RepRename  \* REP
+    \/ tstep = 6 /\ Fail  \* REP
+    \/ tstep = 7 /\ StartOp("collect")  \* COL
+    \/ tstep = 8 /\ RfRecSync  \* COL
+    \/ tstep = 9 /\ CollRead  \* COL
+    \/ tstep = 10 /\ CollSync  \* COL
+    \/ tstep = 11 /\ CollSync  \* COL
+    \/ tstep = 12 /\ CollSync  \* COL
+
+ReplayNextT32 == ReplayT32 /\ tstep' = tstep + 1
+
+ReplaySpecT32 == ReplayInit /\ [][ReplayNextT32]_<<vars, tstep>>
+
+\* T32's last action has been taken.
+Witness_T32Replayed == tstep # 13
 ====

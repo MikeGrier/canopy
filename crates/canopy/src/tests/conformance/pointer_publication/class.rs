@@ -18,6 +18,7 @@ pub(in crate::tests::conformance) enum Class {
     RecordSync,
     RecordTruncate,
     PtrRename(usize),
+    PtrRemove(usize),
     PtrSync(usize),
     PtrRead,
     BlobRename(usize),
@@ -75,6 +76,7 @@ pub(in crate::tests::conformance) fn classify_root(
         {
             match op {
                 FaultOp::Rename => Class::PtrRename(index),
+                FaultOp::RemoveFile => Class::PtrRemove(index),
                 FaultOp::Fsync => Class::PtrSync(index),
                 FaultOp::Read => Class::PtrRead,
                 _ => Class::Other,
@@ -102,6 +104,7 @@ pub(in crate::tests::conformance) fn classify_root(
 pub(super) fn begins(first: Class, class: Class) -> bool {
     match (first, class) {
         (Class::PtrRename(from), Class::PtrRename(at))
+        | (Class::PtrRemove(from), Class::PtrRemove(at))
         | (Class::PtrSync(from), Class::PtrSync(at))
         | (Class::BlobRename(from), Class::BlobRename(at))
         | (Class::BlobSync(from), Class::BlobSync(at))

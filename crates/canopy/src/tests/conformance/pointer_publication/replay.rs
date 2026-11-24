@@ -15,6 +15,14 @@ use super::class::{Class, begins, classify, first_call};
 use super::projection::{Projection, World, model, observe, observe_live};
 use crate::tests::{test_agent, test_config};
 use crate::{Nonce, Store, StoreError, StoreOptions, Swap, SwapSet};
+
+/// A protocol variant used by a replay mutation check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mutation {
+    AsBuilt,
+    SkipCollectionSync,
+}
+
 /// How an operation of the trace ends.
 #[derive(Clone, Copy, Debug)]
 enum Ending {
@@ -70,6 +78,7 @@ impl Progress {
 struct Tracker {
     world: Arc<World>,
     mem: MemFs,
+    skip_collection_sync: bool,
     progress: Mutex<Progress>,
 }
 
@@ -91,6 +100,9 @@ impl Watcher for Tracker {
         }
         if progress.dead {
             return Verdict::Proceed;
+        }
+        if self.skip_collection_sync && op == FaultOp::Fsync && matches!(class, Class::PtrSync(_)) {
+            return Verdict::Skip;
         }
         let made = progress.runs.changes().len();
         if let Some(fault) = progress.faults.get(progress.injected)
@@ -140,6 +152,7 @@ pub(super) struct Departure {
 
 struct Replay<'t> {
     trace: &'t Trace,
+    mutation: Mutation,
     world: Arc<World>,
     recorder: Arc<Recorder>,
     store: Option<Store>,
@@ -180,11 +193,12 @@ impl<'t> Replay<'t> {
 
     /// Sets up the model's initial state: the initial version, durable everywhere, written by a
     /// transaction whose ended record is still in the log.
-    fn start(trace: &'t Trace) -> Result<Replay<'t>, Departure> {
+    fn start(trace: &'t Trace, mutation: Mutation) -> Result<Replay<'t>, Departure> {
         let world = Arc::new(World::of(trace));
         let recorder = Arc::new(Recorder::new());
         let replay = Replay {
             trace,
+            mutation,
             world: Arc::clone(&world),
             recorder,
             store: None,
@@ -337,6 +351,9 @@ impl<'t> Replay<'t> {
         let tracker = Arc::new(Tracker {
             world: Arc::clone(&self.world),
             mem: self.recorder.mem().another_process(),
+            skip_collection_sync: self.mutation == Mutation::SkipCollectionSync
+                && trace.steps[k].name == "StartOp"
+                && trace.steps[k].args.first().and_then(Value::as_str) == Some("collect"),
             progress: Mutex::new(Progress {
                 runs: Runs::new(start),
                 expected,
@@ -367,13 +384,15 @@ impl<'t> Replay<'t> {
         }
         let made = progress.runs.changes().len();
         let missing = |_: &Self, progress: &Progress| {
-            between(
-                made,
-                format!(
-                    "the store made no further change, where the model has {:?}",
-                    progress.expected[made]
-                ),
-            )
+            let detail = format!(
+                "the store made no further change, where the model has {:?}",
+                progress.expected[made]
+            );
+            if self.mutation == Mutation::SkipCollectionSync {
+                self.depart(taken_at[made], detail)
+            } else {
+                between(made, detail)
+            }
         };
         if made < after {
             return Err(missing(self, &progress));
@@ -491,7 +510,15 @@ impl<'t> Replay<'t> {
 
 /// Replays `trace`, returning where the store left it, if it did.
 pub(super) fn replay(trace: &Trace) -> Result<(), Departure> {
-    let mut replay = Replay::start(trace)?;
+    replay_with(trace, Mutation::AsBuilt)
+}
+
+pub(super) fn replay_without_collection_sync(trace: &Trace) -> Result<(), Departure> {
+    replay_with(trace, Mutation::SkipCollectionSync)
+}
+
+fn replay_with(trace: &Trace, mutation: Mutation) -> Result<(), Departure> {
+    let mut replay = Replay::start(trace, mutation)?;
     let mut k = 0;
     while k < trace.steps.len() {
         k = replay.step(k)?;

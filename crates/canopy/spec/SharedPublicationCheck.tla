@@ -4,31 +4,50 @@ EXTENDS SharedPublication
 
 ASSUME MaxReads = 0 /\ MaxUpgrades = 0 /\ ~Callbacks /\ ~Notifications
 
-ReferencedVersions ==
-    ({0, gen, prep.ver}
+\* Versions something other than a blob replica names. A blob version outside this set is
+\* never named again -- every step writes the generation or a version already named -- and
+\* collection removes all of it together, so the view keeps only whether a replica holds any.
+NamedVersions ==
+    ({0, gen}
+     \cup {prep[index].ver : index \in DOMAIN prep}
      \cup {ptrLive[document][replica] : document \in Docs, replica \in Ptr}
      \cup {ptrDur[document][replica] : document \in Docs, replica \in Ptr}
-     \cup (UNION {blobLive[document][replica] : document \in Docs, replica \in Blob})
-     \cup (UNION {blobDur[document][replica] : document \in Docs, replica \in Blob})
      \cup {record[document].live : document \in Docs}
      \cup {record[document].dur : document \in Docs}
      \cup wkeep) \cap Vers
 
+ReferencedVersions ==
+    NamedVersions
+    \cup (((UNION {blobLive[document][replica] : document \in Docs, replica \in Blob})
+           \cup (UNION {blobDur[document][replica] : document \in Docs, replica \in Blob})) \cap Vers)
+
 VersionRank(version) ==
     IF version \in Vers
-    THEN Cardinality({prior \in ReferencedVersions : prior < version})
+    THEN Cardinality({prior \in NamedVersions : prior < version})
     ELSE version
 
 RankedVersions(versions) == {VersionRank(version) : version \in versions}
 
+\* A blob replica's named versions, and whether it holds any version nothing names.
+BlobClass(versions) ==
+    <<RankedVersions(versions \cap NamedVersions), versions \ NamedVersions # {}>>
+
+RankedSwaps(swaps) ==
+    [index \in DOMAIN swaps |->
+        [doc |-> swaps[index].doc,
+         ver |-> VersionRank(swaps[index].ver),
+         effect |-> swaps[index].effect,
+         precondition |-> swaps[index].precondition,
+         expected |-> VersionRank(swaps[index].expected)]]
+
 RankedDocuments ==
     <<[document \in Docs |-> [replica \in Ptr |-> VersionRank(ptrLive[document][replica])]],
       [document \in Docs |-> [replica \in Ptr |-> VersionRank(ptrDur[document][replica])]],
-      [document \in Docs |-> [replica \in Blob |-> RankedVersions(blobLive[document][replica])]],
-      [document \in Docs |-> [replica \in Blob |-> RankedVersions(blobDur[document][replica])]],
+      [document \in Docs |-> [replica \in Blob |-> BlobClass(blobLive[document][replica])]],
+      [document \in Docs |-> [replica \in Blob |-> BlobClass(blobDur[document][replica])]],
       [document \in Docs |-> [live |-> VersionRank(record[document].live),
                               dur |-> VersionRank(record[document].dur)]],
-      [doc |-> prep.doc, ver |-> VersionRank(prep.ver)]>>
+      RankedSwaps(prep), removeNodes, nodeLive, nodeDur>>
 
 SavedCountClasses ==
     [holder \in Procs |-> IF runCount[holder] = NoVal THEN "none"
@@ -42,8 +61,7 @@ RememberedGenerations ==
     [holder \in Procs |-> mygen[holder] = gen]
 
 RelevantRequestIntent ==
-    [holder \in Procs |-> pc[holder] \notin {"new", "idle", "exited", "terminated"}
-                          /\ requestRecovery[holder]]
+    [holder \in Procs |-> pc[holder] \in InOperationStates /\ requestRecovery[holder]]
 
 RelevantUnitReadiness ==
     [holder \in Procs |-> pc[holder] \in {"held", "told"} /\ unitReady[holder]]
@@ -55,9 +73,9 @@ RelevantIntervention ==
 QuotientView ==
     <<adm, pc, req, lockHolder, owner, fence, trusted, count % 2,
       VersionRank(gen), RelativeTransaction, reader, terminatedIn, counts, RankedDocuments,
-      wph, wdoc, wix, RankedVersions(wkeep), txnDoc, runPhase, SavedCountClasses,
-    RelevantUnitReadiness, RelevantRequestIntent, directoryLive, directoryDurable, runDirectories,
-    RelevantIntervention, RememberedGenerations,
+      wph, wdoc, wix, RankedVersions(wkeep), runPhase, SavedCountClasses,
+    RelevantUnitReadiness, RelevantRequestIntent, directoryLive, directoryDurable,
+    directoryTorn, runDirectories, RelevantIntervention, RememberedGenerations,
     writes, ordinaryRequests, rkinds>>
 
 BoundedTypes == INSTANCE SharedPublication
@@ -96,7 +114,7 @@ RecoveryRequest(holder) ==
     /\ req' = Set(req, holder, "pending")
     /\ requestRecovery' = Set(requestRecovery, holder, TRUE)
     /\ UNCHANGED <<adm, coord, store, handle, reader, terminatedIn, counts,
-                   docs, work, writes, ordinaryRequests>>
+                   docs, work, txnDoc, writes, ordinaryRequests>>
     /\ TxnTargets /\ RunState /\ Kinds /\ DirectoryState /\ RecoveryInterleaving
 
 QuotientNext ==

@@ -60,7 +60,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { $failed += "probes of $($corpus.Name)" }
           }
           $specs = Get-ChildItem $specDir -Filter '*.tla' | Where-Object {
-            (Test-Path (Join-Path $specDir "$($_.BaseName).cfg")) -or @(Get-ChildItem $specDir -Filter "$($_.BaseName)-*.cfg").Count -gt 0
+            $_.Name -ne 'SharedPublication.tla' -and (
+              (Test-Path (Join-Path $specDir "$($_.BaseName).cfg")) -or
+              @(Get-ChildItem $specDir -Filter "$($_.BaseName)-*.cfg").Count -gt 0
+            )
           } | Sort-Object Name
           foreach ($spec in $specs) {
             pwsh -NoProfile -File tools/run-tlc-all.ps1 -Spec $spec.FullName -Parallel 2

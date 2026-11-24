@@ -684,3 +684,138 @@ token, so cancelling it reopens operations while retaining the attachment. Conve
 is incremental and nonblocking through `poll_gate` and `poll_tiers`; a cancelled conversion leaves
 the handle detached. Keeping these two mechanisms separate matches where the caller still owns a
 pending attempt and where it already owns admitted state.
+
+## Unreduced closure cost
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Unreduced closures wait for a frozen
+boundary". On 2026-11-22 the unreduced `SharedPublication-HealthyPublication` closure had explored
+more than 737 million distinct states over about 35 hours, at reachable depth 106 with its queue
+still growing, and was stopped; its reduced counterpart closes in about six minutes. The same day,
+the unreduced `UnitMultiWriter` positives and `StaleRecoverySchedule` were each still growing after
+ten minutes, while `PublicationUnits` and `TransactionUnits` closed in seconds. Twelve unreduced
+pairs had already matched their reduced outcomes, including controls whose unreduced closures ran
+for more than an hour.
+
+A closure of this size would be invalidated by the next change to an action it reaches, and the
+open protocol-model work changes collection, directory intent and the modification count, which
+this composition reaches. Its finding would not outlive the work stream it was paid for in. The
+unreduced form stays runnable, as "A reduction keeps the original it answers to" requires, and is
+closed at a frozen boundary instead.
+
+Fixed-seed random simulation of the unreduced model was tried as a cheap substitute and rejected.
+5000 behaviours of 200 steps for each of three negative controls whose violations exhaustive
+checking finds within seconds found none of them; every behaviour used its full depth without
+reaching the faulty step. A one-step check of the view's soundness is the durable replacement: its
+cost does not grow with the bounds, and a revision that breaks the view names the action.
+
+## Cycle-closed checking
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "Views normalize counters; budgets bound
+faults". The engineer asked whether a model whose counters only matter within a cycle could close on
+its cycles, so that no budget had to pick an arbitrary stopping point. On 2026-11-22 that was tried
+on `SharedPublicationCheck` with the write and request budgets removed, the request budget replaced
+by an unreachable sentinel whose invariant showed it never bound, and the budget counters removed
+from the view.
+
+- The first run kept growing. Bound invariants checked with `-continue` showed the version ranks,
+  the generation's rank and the transaction offsets stayed small; the blob version sets did not.
+  A failed collection leaves superseded versions on a blob replica, and with unbounded writes they
+  accumulate, each a distinct value that also shifts every other version's rank.
+- Every action that reads a blob set either tests membership of a version something still names, or
+  removes everything outside the keep set at once, and every action that writes a version writes
+  one that is named. So a version nothing names is garbage, and the view keeps only whether a
+  replica holds any. With that collapse, the live-version, generation-rank and offset bounds all
+  held: the counters no longer distinguished one cycle from the next.
+- The budget-free closure was still far larger than the budgeted one. `ReferencePublication`, one
+  writer and one document, passed 1.1 million distinct states unclosed in fifteen minutes against
+  25 thousand with its budget; bounding only the work unsettled within a cycle, at most three live
+  versions, still passed 530 thousand unclosed. Naming versions by equality rather than rank, since
+  the protocol only compares them for equality, gave no further reduction. The growth is genuine:
+  repeated failed publications leave pointer replicas, durable copies and records in combinations
+  one failed write cannot reach.
+- With the budgets kept, collapsing unnamed blob versions reduced `HealthyPublication` from 943,392
+  to 843,422 distinct states and `Control-NoGuard` from 1,004,122 to 911,081, with the same
+  outcomes and search depths.
+
+So the history the counters carry is removed by the view, and what a budget still bounds is the
+number of faults the checks consider. Dropping budgets was rejected because the resulting closures
+were larger, not smaller, than the budgeted ones. Bounding faults per cycle instead of per run was
+rejected for the same reason at the sizes measured.
+
+## One-step view soundness
+
+The decision is [DESIGN-NOTES.md](DESIGN-NOTES.md) "The recovery view is checked one step at a
+time". The pair gate compares outcomes at chosen bounds, so a view that merges two states the
+protocol tells apart is found only if some configuration reaches a property that depends on the
+difference, and a full unreduced closure to rule that out costs days. A one-step check asks the
+question directly at each view the reduced model reaches.
+
+- **TLC rather than Apalache.** A product of two copies runs on the pinned TLC with the existing
+  sweep, tiers and outcome headers, and its failures are ordinary TLC traces that end at the
+  action responsible. Apalache would prove an inductive version for every state rather than every
+  reached one, but needs a second toolchain and type annotations across the whole Coordination
+  chain; it remains the stronger check if the reached-state form proves too weak.
+- **Perturbations rather than a fixed renaming.** Checking that each step commutes with one fixed
+  renaming of versions or counts is cheaper, but the view's classes are relative to the current
+  state -- a saved count is current or stale against the count, a remembered generation equal to the
+  generation or not -- and a step that advances the count moves a saved count from one class to the
+  other. No fixed renaming commutes with that step although the view handles it soundly, so
+  commutation would report errors that are not there. Giving the second copy a perturbation of each
+  reached state and letting it answer with any step avoids that.
+- **What it does not check.** Perturbations are applied one at a time, and only to the state TLC
+  keeps for each view. That two perturbations compose, and that each class is reached from its kept
+  state by the listed perturbations, rests on the argument in "Recovery quotient argument".
+
+The first run found a fault in the view. A process whose request ended with its intent set kept the
+flag through release, exit and a new attachment; the view hid it only in `new`, `idle`, `exited` and
+`terminated`, so a re-attaching process showed the stale intent again, and two states with one view
+stepped to different views. The intent is written when a process requests and read until it
+releases, which is `InOperationStates`, and the view now keeps it exactly there. No checked outcome
+had depended on the stale flag; the fault would have merged or split states wrongly on a path no
+configuration's property distinguished.
+
+## Unnamed blob versions
+
+This extends "Recovery quotient argument" above to the collapse that [DESIGN-NOTES.md](DESIGN-NOTES.md)
+"Views normalize counters; budgets bound faults" describes. A version is named when the generation, the
+prepare, a pointer replica, a record or the keep set holds it. `QuotientView` ranks versions among the
+named ones only, and keeps of each blob replica its named versions by rank and whether it holds any other.
+
+- **No step names an unnamed version again.** A write stores the holder's generation, which is named, and
+  a publication or recovery copies a version that a pointer, record or prepare names. Nothing assigns a
+  pointer, record, prepare or keep set a version read out of a blob set.
+- **Nothing tests an unnamed version.** A blob set is read by membership of a named version, and
+  collection removes every version outside the keep set together, so two replicas whose unnamed versions
+  differ take the same steps and reach the same named contents.
+- **Fresh versions do not collide.** No stored version leads the generation, an explicit check that
+  still ranges over every blob version, so the next generation is fresh whichever unnamed versions
+  are held.
+
+Ranking among named versions only also removes the shift an unnamed version made in every larger
+version's rank, which is where most of the reduction comes from. [QuotientSoundness.tla](spec/QuotientSoundness.tla)
+covers the collapse with a perturbation that replaces a replica's unnamed versions with others. A scratch
+mutant whose view kept them verbatim was caught by that perturbation alone, with the gap perturbation
+removed, so the check is not carried by the rank perturbations.
+
+## Multi-document transaction bodies
+
+This extends "Recovery quotient argument" above for a transaction that changes more than one
+document. `SharedPublication.tla` keeps the insertion-ordered swap set in `prep`. Before commit
+it is process-local planning state; after `Begin`, a separate `wph`/`wdoc` cursor ingests every body
+before `Prepare` hardens the complete set. A process death or host crash discards `prep` unless the
+log says the prepare record is durable. Precondition checks therefore happen while the log is
+still empty, and every mismatch ends the operation without a document change or log append.
+
+The prepare record retains each target, body version, precondition and expected version as forensic
+input, but recovery never evaluates the preconditions again. They passed before the transaction's
+single commit point, and recovery must roll the prepared set forward even if the live document has
+subsequently changed. `txnDoc` iterates that ordered set for apply, rollback collection and recovery
+collection. The quotient keeps the complete ranked swap records and the current document; because
+swap targets are distinct, the current document identifies the cursor's position, so the cursor
+itself need not enlarge the view.
+
+The one-step soundness check perturbs the version gap in both the target version and the expected
+precondition version. Multi-document witnesses require two swaps to be planned, accepted, left in a
+prepare record by a crash and recovered through the second swap. Negative controls require a digest
+mismatch and an expected-absent mismatch to reject with the log, pointers, blobs and records
+unchanged.

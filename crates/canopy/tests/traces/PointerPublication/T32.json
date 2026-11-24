@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "spec": "PointerPublication",
+  "configuration": "PointerPublication",
+  "origin": {"kind":"timeline","timeline":"T32"},
+  "constants": {"Control":"\"none\"","Fix":"\"record\"","Initial":"\"A\"","LoggedWrites":"TRUE","Maintenance":"TRUE","MaxCrashes":"1","MaxWrites":"2","NBlob":"2","NPtr":"3","RecordDetail":"TRUE","SyncBeforeCollect":"TRUE","Versions":"{\"A\", \"B\", \"C\"}"},
+  "departs": null,
+  "initial": {"blobDur":[["A"],["A"]],"blobLive":[["A"],["A"]],"crashes":0,"fenced":false,"idx":1,"journalled":true,"keep":[],"mode":"up","phase":"none","ptrDur":["A","A","A"],"ptrLive":["A","A","A"],"record":{"dur":"none","live":"none"},"target":"A","task":"none","txPrep":"none","ver":"A","writes":0},
+  "steps": [
+    {"action":"Damage(2)","args":[2],"changes":{"ptrDur":["A","none","A"],"ptrLive":["A","none","A"]},"name":"Damage","step":"DMG"},
+    {"action":"StartOp(\"repair\")","args":["repair"],"changes":{"phase":"rfRecSync","task":"repair"},"name":"StartOp","step":"REP"},
+    {"action":"RfRecSync","args":[],"changes":{"phase":"repRead"},"name":"RfRecSync","step":"REP"},
+    {"action":"RepRead","args":[],"changes":{"keep":["A"],"phase":"repRename"},"name":"RepRead","step":"REP"},
+    {"action":"RepRename","args":[],"changes":{"idx":2},"name":"RepRename","step":"REP"},
+    {"action":"RepRename","args":[],"changes":{"phase":"repSync","ptrLive":["A","A","A"]},"name":"RepRename","step":"REP"},
+    {"action":"Fail","args":[],"changes":{"phase":"none","task":"none"},"name":"Fail","step":"REP"},
+    {"action":"StartOp(\"collect\")","args":["collect"],"changes":{"idx":1,"phase":"rfRecSync","task":"collect"},"name":"StartOp","step":"COL"},
+    {"action":"RfRecSync","args":[],"changes":{"phase":"collRead"},"name":"RfRecSync","step":"COL"},
+    {"action":"CollRead","args":[],"changes":{"phase":"collSync"},"name":"CollRead","step":"COL"},
+    {"action":"CollSync","args":[],"changes":{"idx":2},"name":"CollSync","step":"COL"},
+    {"action":"CollSync","args":[],"changes":{"idx":3,"ptrDur":["A","A","A"]},"name":"CollSync","step":"COL"},
+    {"action":"CollSync","args":[],"changes":{"idx":1,"phase":"collRemove"},"name":"CollSync","step":"COL"}
+  ]
+}

@@ -18,6 +18,13 @@ Each item here names the event it waits on; it joins a milestone once that event
   the engineer whether the runner stays hosted or becomes self-hosted, recorded in the same
   decision. Waits on the workflow reaching `main`.
 
+- [ ] **G-3** -- Close the deferred unreduced `SharedPublication` pairs: run
+  `tools/check-shared-publication-pairs.ps1 -Tier all -Closure`, so that every positive
+  configuration in the generator's `$boundaryClosure` table is closed in the unreduced model as
+  well as through the view ([DESIGN-NOTES.md](DESIGN-NOTES.md) "Unreduced closures wait for a frozen
+  boundary"). Before starting, estimate the cost from the latest measurements and agree it with the
+  engineer. Waits on a frozen milestone or release candidate of the publication composition.
+
 ## M9+ -- Concrete Canopy schema migrations
 
 - [ ] **CANOPY-MIGRATION** -- Specify a concrete Canopy source/target schema change and supply its
@@ -36,7 +43,7 @@ Each item here names the event it waits on; it joins a milestone once that event
 
 - [x] **M11-4** -- Map `Coordination`'s writer actions to the code, and agree the step hook with the engineer: the inventory, the hook's interface, the abstract write's binding, and the writer-only corpus. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-4)
   > **CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> M4 -> `AC-5` (the
-  > shared implementation's step hook). See [CHECKLIST.md](../acadia/CHECKLIST.md#ac-5).
+  > shared implementation's step hook). See [COMPLETED-CHECKLIST.md](../acadia/COMPLETED-CHECKLIST.md#ac-5).
 
 - [x] **M11-5** -- `Coordination`'s writer actions bound to the code: every writer trace replays against acadia's contract through each implementation whose behaviour it is, with the model refined to the code's recovery and crash. -> [completed 2026-11-15](COMPLETED-CHECKLIST.md#m11-5)
 
@@ -44,125 +51,169 @@ Each item here names the event it waits on; it joins a milestone once that event
 
 - [x] **M11-7** -- Bound the remaining Coordination bridge actions and classified every control timeline. -> [completed 2026-11-20](COMPLETED-CHECKLIST.md#m11-7)
 
-- [ ] **M11-8** (was `FM-3.3`) -- Prove the harness bites: remove the namespace sync that
-  collection performs before deleting, and confirm that the replay of a trace of the protocol as
-  built in which collection syncs an entry whose live pointer is ahead of its durable one fails
-  at that `CollSync` step. The `DANGLING-DURABLE` counterexample is not that trace: it is read
-  from a model without the record guard, and with the record guard the model reaches no
-  `DANGLING-DURABLE` state even without the sync (decided with the engineer, 2026-11-15).
+- [x] **M11-8** -- The conformance replay detects removal of collection's namespace sync at the durable-changing `CollSync` action. -> [completed 2026-11-20](COMPLETED-CHECKLIST.md#m11-8)
 
-- [ ] **M11-9** -- Establish the recovery quotient, so that the publication composition is checked
-  through a reduction shown to match its reference, not one resting on its argument alone
-  ([DESIGN-NOTES.md](DESIGN-NOTES.md) "State-space reduction for recovery-unit verification" and
-  "A reduction keeps the original it answers to"; the argument is in
-  [DESIGN-RATIONALE.md](DESIGN-RATIONALE.md#recovery-quotient-argument)). First finish checking
-  the removal of writer-request eligibility ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A writer's
-  request ends served, withdrawn or dead"), whose `Coordination` item tier and replay bridges were
-  checked before it was committed: the `SharedPublication` and `SharedPublicationCheck` item
-  tiers, `ReplayCoordination`, `ReplaySharedPublication`, and the rewritten probe
-  `withdraw-wrong-outcome`. Each `SharedPublicationCheck` configuration and its unreduced
-  `SharedPublication` counterpart reach
-  the same outcome -- every invariant and property holding, or the same one violated -- and the
-  controls and the collection, refusal, completion and stale-progress witnesses keep theirs under
-  the view. Then make the view's configurations the ones the sweep checks on each revision of the
-  model, and keep each unreduced counterpart runnable as the reference, in a tier chosen from its
-  measured cost. Until then the unreduced configurations stay as they are.
+- [x] **M11-9** -- Establish the recovery quotient through an executable reduced/unreduced pair gate. -> [completed 2026-11-22](COMPLETED-CHECKLIST.md#m11-9)
 
 - [x] **M11-10** -- Recovery completion rechecks claims after an intervening holder. -> [completed 2026-11-20](COMPLETED-CHECKLIST.md#m11-10)
 
-## M12 -- Extend the protocol model
+- [x] **M11-11** -- Check the soundness of `SharedPublicationCheck`'s `QuotientView` one step at a time. -> [completed 2026-11-22](COMPLETED-CHECKLIST.md#m11-11)
 
-- [ ] **M12-1** (was `FM-4.1`) -- The rest of transactions beyond what M3 models. `Coordination.tla` models a
-  transaction's records in the commit log, its staging as one unit that is swept, its swaps of
-  the namespace, the rollback of one that fails before its prepare record, and recovery's
-  roll-forward and roll-back ([DESIGN-NOTES.md](DESIGN-NOTES.md) "A transaction and the commit
-  log, modelled in `Coordination.tla`" and "Recovery and its discovery, modelled in
-  `Coordination.tla`"). What is left is the content beneath those: the collection of what a
-  transaction ingested, and how rollback and the sweep of its staging act on it.
+- [x] **M11-12** -- Collapse unnamed blob versions in `QuotientView`. -> [completed 2026-11-22](COMPLETED-CHECKLIST.md#m11-12)
 
-- [ ] **M12-2** (was `FM-4.2`) -- Node paths and node removal: documents and nodes as one namespace tree,
-  the collision rules (a write against a node removal in the same set, a node removal at or
-  beneath an existing document), and the directory-intent record (`.dir-sync-debt`) with
-  torn appends.
+## M12 -- Extend the publication model
 
-- [ ] **M12-3** (was `FM-4.3`) -- Repair and scrub, including the modification count a repair holds odd
-  while it runs.
+- [x] **M12-1** -- Extend the publication model to multi-document transaction swap sets. -> [completed 2026-11-23](COMPLETED-CHECKLIST.md#m12-1)
 
-## M13 -- Filesystem reference model
+- [ ] **M12-2** (was `FM-4.2`) -- Extend M12-1's swap sets to node paths and node removal in one
+  namespace tree. Model write/remove collisions within a swap set, removal at or beneath an existing
+  document, directory creation and rename, and the directory-intent record (`.dir-sync-debt`) with
+  torn appends. Reuse the directory-debt phase already in
+  [SharedPublication.tla](spec/SharedPublication.tla); do not make it a second cleanup protocol.
+  Bind the namespace actions in the conformance bridge and corpus, extend the quotient/soundness
+  checks where removal or torn intent leaves additional state, and add witnesses for each collision
+  and recovery path. **Verify:** the namespace, directory-debt and transaction filters, audience
+  tags, replay corpus and the in-scope crate's tests.
 
-- [x] **M13-1** (was `FM-5.1`) -- `MemFs` has an independent durability reference model and replay bridge in Acadia. -> [completed 2026-11-17](../acadia/COMPLETED-CHECKLIST.md#m13-1)
+### M12-2 parallel directory-soundness execution
 
-## M14 -- The model clients compose with
+Run this operational plan from one committed source snapshot. Do not edit the model, generator,
+base configurations, generated quotient configurations, or this plan while either machine is
+running. `burpy` is the publishing machine; `condor-1` is the consuming clone.
 
-Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "The queued client contract is the public model".
-Discussion: the opaque contract discussion recorded in
-[DESIGN-RATIONALE.md](DESIGN-RATIONALE.md) and
-[DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md](design-sessions/DESIGN-SESSION-2026-11-11-checking-cost-and-the-client-model.md).
+1. **Publish the frozen source checkpoint from `burpy`.** Before either machine starts TLC, finish
+   and validate the source snapshot, generate the quotient inputs, commit it, and push it to origin.
+   This is an execution checkpoint, not an M12 completion commit; M12 remains open until every
+   proof and milestone gate passes.
 
-M14's primary deliverable is an opaque TLA+ contract that a dependent can instantiate without
-importing canopy's ring, coordination, publication or filesystem mechanism. The asynchronous API
-is one implementation of that contract. The ring and coordination models refine the client
-contract; clients refine neither and depend on none of their variables.
+   ```powershell
+   Set-Location Q:\github\canopy
+   pwsh -NoProfile -File tools/gen-quotient-soundness.ps1
+   git --no-pager diff --check
+   git add -A
+   git commit -m "Checkpoint M12-2 distributed TLC execution"
+   $proofCommit = git --no-pager rev-parse HEAD
+   git push origin mikegrier/coord
+   $proofCommit
+   ```
 
-These items follow the primary deliverable, the milestones above: the observable store outcomes
-rest on ODI-2's decision about coordination fairness and on what MP-4 and CQ-1 find, the refinement
-is written against the state MP-3 and MP-4 change, the oracle for tests at the API uses M11's
-harness, and the documentation for dependents describes the multi-process behaviour of M7 to M10.
-CM-1, which needed none of them and steers MP-3 and MP-4, was done in M3.
+   Record the full `$proofCommit` value. Do not begin either proof run unless `git push` succeeds.
+   Both machines use that commit, not a file bundle and not independently regenerated quotient
+   files. Do not move, amend, or rewrite this commit while the distributed run is active. Each
+   machine needs at least 120 GB free for its own `.scratch/tlc/states`; TLC spill state is local and
+   is never transferred. The M12 milestone completion commit remains a later, separate action.
 
-**Parallel track (decided with the engineer, 2026-11-16).** The store's hardening, M11 to M13,
-stays the first and primary work. M14-0 is complete, so M14-1, M14-2 and M14-3 may proceed in
-another session or on another machine without waiting for the hardening, provided they take
-nothing from it: no long checks on the machine doing the hardening, no edits to existing specs,
-generated configurations or traces the hardening is changing, and where both touch the same code
-the hardening's change goes first. M14-1's contract and toy dependent remain standalone until the
-hardening has settled the observables they project. M14-7 starts from a model whose writer requests
-end served, withdrawn or dead. The rest of M14 follows its dependencies as written.
+2. **Reproduce the toolchain.** Both machines must report the same Java implementation and version,
+   and both must use the same TLC jar. The current `burpy` proof identity is Microsoft OpenJDK
+   21.0.13.1, 64-bit, using
+   `C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin\java.exe`; `condor-1` must install or
+   select that same implementation and version. Verify the jar and Java before starting:
 
-- [x] **M14-0** (was `ODI-5`) -- The queued client contract, request lifecycle, ambiguity rules and ready-pair scheduling are decided. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-0)
+   ```powershell
+   java -version
+   $jar = Join-Path $env:USERPROFILE '.tla\1.8.0\tla2tools.jar'
+   (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash
+   ```
 
-- [x] **M14-1** (was `CM-2`) -- The standalone client contract, negative controls and mechanism-free toy dependent are implemented. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-1)
+   The jar hash must be
+   `fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713`.
 
-- [x] **M14-2** (was `API-2`) -- Opaque transactions are built outside exclusion and `transform` retries changed reads with a bound. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-2)
+3. **Prepare `condor-1` from the pushed checkpoint.** Clone `origin` or update an existing clone,
+   fetch the publishing branch, and check out the exact full commit hash recorded by `burpy`.
+   Replace the placeholder with that full hash before running the commands. Do not regenerate the
+   quotient files after checkout; the committed bytes are the evidence inputs.
 
-- [x] **M14-3** (was `QS-1`) -- The ring contract, two-doorbell mechanism, round-robin scheduler and controls are modelled. -> [completed 2026-11-16](COMPLETED-CHECKLIST.md#m14-3)
+   ```powershell
+   $proofCommit = '<full commit hash copied from burpy>'
+   $root = 'C:\src\canopy-m12-2'
+   if (-not (Test-Path (Join-Path $root '.git'))) {
+       git clone https://github.com/MikeGrier/canopy.git $root
+   }
+   Set-Location $root
+   git fetch origin
+   git checkout --detach $proofCommit
+   if ((git --no-pager rev-parse HEAD) -ne $proofCommit) {
+       throw 'condor-1 is not at the burpy proof commit'
+   }
+   pwsh -NoProfile -File tools/run-tlc-all.ps1 -Spec crates/canopy/spec/QuotientSoundness.tla `
+       -Tier evidence -Filter '*DirectoryCreation-*' -List
+   ```
 
-- [x] **M14-4** (was `API-3`) -- Sessions expose asynchronous queue pairs, readiness, bounded waits and parked command execution. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-4)
+   `HEAD` must equal `$proofCommit`. The list must contain exactly these eight evidence
+   configurations: `AppendPlan`, `AppendRepair`, `AppendSync`, `Complete`, `Create`, `Recovery`,
+   `Sync`, and `Transaction`. If either check differs, stop; `condor-1` is not using the same
+   frozen source snapshot as `burpy`.
 
-- [x] **M14-5** (was `API-1`) -- The public API no longer exposes `Store::plan_and_apply`. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-5)
+4. **Run the largest closure on `burpy`.** After both machines have passed the commit, Java, jar,
+   and configuration checks, start this command at the agreed common start time. Use one 24 GB TLC
+   heap and eight workers. Direct the runner's summary and impact record to `burpy`-specific files
+   so nothing can be confused with the other machine.
 
-- [x] **M14-6** (was `ODI-6`) -- Bodies remain opaque and append is the first bounded store-evaluated primitive. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-6)
+   ```powershell
+   Set-Location Q:\github\canopy
+   $env:Path = 'C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin;' + $env:Path
+   $record = '.scratch/tlc/record/m12-2-burpy.json'
+   $summary = '.scratch/tlc/m12-2-burpy-terminal.out'
+   pwsh -NoProfile -File tools/run-tlc-all.ps1 `
+       -Spec crates/canopy/spec/QuotientSoundness.tla `
+       -Tier evidence `
+       -Filter '*DirectoryCreation-Transaction*' `
+       -Workers 8 -HeapGB 24 -Record $record 2>&1 | Tee-Object -FilePath $summary
+   if ($LASTEXITCODE -ne 0) { throw "burpy directory proof failed with exit $LASTEXITCODE" }
+   ```
 
-- [x] **M14-7** (was `CM-3`) -- Ring and store outcomes refine one opaque client history. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-7)
+5. **Run the seven smaller closures on `condor-1`.** Start this at the same agreed time as `burpy`.
+   Run at most three configurations at once, each with an 8 GB heap and four workers. This uses
+   roughly 12 TLC workers and 24 GB heap aggregate. The runner advances to the remaining
+   configurations as slots become free.
 
-- [x] **M14-8** (was `FM-3.4`) -- Store sessions are checked against the opaque client projection at the API. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-8)
+   ```powershell
+   Set-Location C:\src\canopy-m12-2
+   $env:Path = 'C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin;' + $env:Path
+   $record = '.scratch/tlc/record/m12-2-condor-1.json'
+   $summary = '.scratch/tlc/m12-2-condor-1-terminal.out'
+   pwsh -NoProfile -File tools/run-tlc-all.ps1 `
+       -Spec crates/canopy/spec/QuotientSoundness.tla `
+       -Tier evidence `
+       -Filter '*DirectoryCreation-AppendPlan*,*DirectoryCreation-AppendRepair*,*DirectoryCreation-AppendSync*,*DirectoryCreation-Complete*,*DirectoryCreation-Create*,*DirectoryCreation-Recovery*,*DirectoryCreation-Sync*' `
+       -Parallel 3 -Workers 4 -HeapGB 8 -Record $record 2>&1 | Tee-Object -FilePath $summary
+   if ($LASTEXITCODE -ne 0) { throw "condor-1 directory proof failed with exit $LASTEXITCODE" }
+   ```
 
-- [x] **M14-9** (was `CM-4`) -- Dependents have a complete outcome and retry guide for the client contract. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m14-9)
+6. **Return only results from `condor-1`.** Package the seven named TLC output files, the summary,
+   and the `condor-1` record; do not package `.scratch/tlc/states`.
 
-## M15 -- Idempotent store creation
+   ```powershell
+   $names = 'AppendPlan','AppendRepair','AppendSync','Complete','Create','Recovery','Sync'
+   $results = @('.scratch/tlc/m12-2-condor-1-terminal.out',
+                '.scratch/tlc/record/m12-2-condor-1.json')
+   $results += foreach ($name in $names) {
+       ".scratch/tlc/QuotientSoundness-DirectoryCreation-$name.out"
+   }
+   Compress-Archive -Path $results -DestinationPath .scratch/m12-2-condor-1-results.zip
+   Get-FileHash -LiteralPath .scratch/m12-2-condor-1-results.zip -Algorithm SHA256
+   ```
 
-Decision: [DESIGN-NOTES.md](DESIGN-NOTES.md) "Store creation is idempotent". Discussion:
-[DESIGN-SESSION-2026-11-17-idempotent-creation.md](design-sessions/DESIGN-SESSION-2026-11-17-idempotent-creation.md).
-The intermittent failure it removes is in [RESOLVED-TEST-FAILURES.md](RESOLVED-TEST-FAILURES.md).
+   Transfer that archive to `burpy` and record its SHA-256. The result archive should be far below
+   1 MB unless TLC emitted a counterexample trace.
 
-- [x] **M15-1** -- `Creation.tla` lets a creator that finds the marker under its own reservation succeed with the store. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-1)
+7. **Reconcile on `burpy`.** Extract the `condor-1` results under a separate directory so its record
+   cannot overwrite the `burpy` record. Each machine's terminal summary must report
+   `mismatched: 0`: `burpy` reports `checked: 1`; `condor-1` reports `checked: 7`. Each of the eight
+   configuration logs must end with `Model checking completed. No error has been found.` Missing,
+   interrupted, stale, deadlocked, invariant-violating, or out-of-memory output is not a pass.
+   Preserve `$proofCommit`, both result hashes, both terminal summaries, both impact records, and
+   all eight `.out` files as the M12-2 evidence set. After every other M12 item and the required
+   milestone gates pass, create the M12 completion commit and push the resulting branch to origin.
 
-  > **-> CROSS-COMPONENT HANDOFF:** next work is in component `crates/acadia` -> `M19` -> `M19-1`
-  > (an identical creator finds the store it asked for). See
-  > [CHECKLIST.md](../acadia/CHECKLIST.md).
-
-- [x] **M15-2** -- The `Creation` trace corpus is re-exported and both implementations follow it, an identical creator ending at an existing store. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-2)
-
-- [x] **M15-3** -- A creation's reservation records the store's identity alone; provenance is the marker's. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-3)
-
-- [x] **M15-4** (was `M12-4`) -- `Store::init` creates through `Creation::create` and returns the store whether it made it or found it. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-4)
-
-- [x] **M15-5** -- `Store::store_nonce` returns the store's nonce, set by its first user under writer exclusion and durable before it is returned. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-5)
-
-  > **CROSS-COMPONENT PREREQUISITE:** `crates/acadia` -> `M21` -> `M21-1` (`publish_new` moves
-  > rather than links on Windows). See [CHECKLIST.md](../acadia/CHECKLIST.md).
-
-- [x] **M15-6** -- Creation is tested at scale, across processes, under the exclusion and through a crash at each step; the intermittent test is replaced and its entry resolved. -> [completed 2026-11-17](COMPLETED-CHECKLIST.md#m15-6)
+- [ ] **M12-3** (was `FM-4.3`) -- Add repair and scrub to the publication composition. Model the
+  writer exclusion and modification count a repair holds odd, the live and durable replica checks,
+  repair of a version another pointer or record still names, report-driven repair, and a scrub's
+  fault and retry behavior. State how each action interacts with an active holder and recovery, and
+  prove that repair never makes an unnamed blob version nameable. Extend the quotient view and
+  one-step perturbations, add discriminating controls and witnesses, and bind the new actions to the
+  Store conformance bridge and trace corpus. **Verify:** the repair, scrub, publication and soundness
+  filters, audience tags, replay corpus and the in-scope crate's tests.
 
 ## M14+ -- TLA futures
 

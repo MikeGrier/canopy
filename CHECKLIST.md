@@ -27,7 +27,3 @@
   [concurrent_read.rs](crates/canopy/tests/concurrent_read.rs) (what a failed settle "used to"
   produce). A grep for *no longer*, *previously*, *used to*, *now* in comments finds
   candidates; most hits describe runtime state and stay.
-
-## M3 -- TLC toolchain baseline
-
-- [x] **TOOL-1** -- Pin Microsoft OpenJDK 25 and the published TLA+ `v1.8.0` jar across local tools and CI. -> [completed 2026-11-19](COMPLETED-CHECKLIST.md#tool-1)

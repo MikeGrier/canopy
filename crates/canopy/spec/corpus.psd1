@@ -38,6 +38,7 @@
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-HealthyTransactions'; Depth = 160; Seeds = 4; Walks = 2000; Select = 'distinct'; KindState = @('pc', 'att', 'wph', 'log', 'runPhase') }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-SharedPublication'; Depth = 160; Seeds = 4; Walks = 2000; Select = 'distinct'; KindState = @('pc', 'att', 'wph', 'log', 'runPhase') }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-SharedTransactions'; Depth = 160; Seeds = 4; Walks = 2000; Select = 'distinct'; KindState = @('pc', 'att', 'wph', 'log', 'runPhase') }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-NamespaceTransactions'; Depth = 200; Seeds = 2; Walks = 1000; Select = 'distinct'; KindState = @('pc', 'att', 'wph', 'log', 'runPhase') }
         @{ Spec = 'Coordination'; Config = 'Coordination'; Depth = 60; Seeds = 4 }
         @{ Spec = 'Coordination'; Config = 'Coordination-ThreeProcs'; Depth = 60; Seeds = 2 }
         @{ Spec = 'Coordination'; Config = 'Coordination-Txn'; Depth = 60; Seeds = 2 }
@@ -53,12 +54,27 @@
         Creation = @{ scenario = 'Scenarios[Scenario]' }
     }
     Witnesses = @(
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ATransactionPreparesTwoDocuments'; Name = 'transaction-two-documents' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ATransactionAcceptsDigestPreconditions'; Name = 'transaction-digest-conditions' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ATransactionRejectsDigestMismatch'; Name = 'transaction-digest-rejected' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ATransactionRejectsExpectedAbsent'; Name = 'transaction-absent-rejected' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ACrashLeavesTwoTransactionSwapsPrepared'; Name = 'transaction-two-swaps-crash' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-AWriteCollects'; Name = 'write-collects' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ALiveRollbackCollects'; Name = 'rollback-collects' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ARecoveryCollectsACommittedTransaction'; Name = 'recovery-collects-committed' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ARecoveryCollectsARolledBackTransaction'; Name = 'recovery-collects-rollback' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-DirectoryDebtUnitRuns'; Name = 'directory-unit' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-DirectoryClearSurvivesOnlyLive'; Name = 'directory-clear-crash' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-AWriteRemoveCollisionIsRejected'; Name = 'write-remove-collision' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-AWriteBeneathRemovedNodeIsRejected'; Name = 'write-below-removed-node' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ARemovalAtExistingDocumentIsRejected'; Name = 'remove-at-document' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ARemovalBeneathExistingDocumentIsRejected'; Name = 'remove-below-document' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ATransactionRemovesANode'; Name = 'transaction-removes-node' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ARecoveryRemovesANode'; Name = 'recovery-removes-node' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ADirectoryIntentTears'; Name = 'directory-intent-torn' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ADirectoryIntentIsRepaired'; Name = 'directory-intent-repaired' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ADirectoryIsCreatedAndRenamed'; Name = 'directory-created-renamed' }
+        @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-ARecoveryCreatesADirectory'; Name = 'recovery-creates-directory' }
         @{ Spec = 'SharedPublication'; Config = 'SharedPublication-Witness-StaleRecoveryRestarts'; Name = 'stale-recovery-restarts' }
     )
     Counterexamples = @(

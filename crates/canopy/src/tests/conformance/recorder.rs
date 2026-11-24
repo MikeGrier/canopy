@@ -25,6 +25,8 @@ pub(super) enum Verdict {
     Proceed,
     /// The call fails, and later calls go ahead.
     Fail,
+    /// The call succeeds without performing its effect, when the operation returns unit.
+    Skip,
     /// A lock attempt reports contention, and later calls go ahead.
     Locked,
     /// The call and every later one fail: the process is dead from here.
@@ -135,6 +137,17 @@ impl Recorder {
         to: Option<&Path>,
         run: impl FnOnce(&FaultyFs<MemFs>) -> VfsResult<T>,
     ) -> VfsResult<T> {
+        self.call_with_skip(op, path, to, None, run)
+    }
+
+    fn call_with_skip<T>(
+        &self,
+        op: FaultOp,
+        path: &Path,
+        to: Option<&Path>,
+        skipped: Option<T>,
+        run: impl FnOnce(&FaultyFs<MemFs>) -> VfsResult<T>,
+    ) -> VfsResult<T> {
         let watcher = self
             .watcher
             .lock()
@@ -145,6 +158,14 @@ impl Recorder {
             match watcher.before(op, path, to) {
                 Verdict::Proceed => {}
                 Verdict::Fail => fail = true,
+                Verdict::Skip => {
+                    return skipped.ok_or_else(|| {
+                        panic!(
+                            "attempted to skip {} with no return value",
+                            operation_name(op)
+                        )
+                    });
+                }
                 Verdict::Locked => {
                     return Err(VfsError::new(
                         VfsErrorKind::Locked,
@@ -212,7 +233,7 @@ impl Vfs for Recorder {
     }
 
     fn fsync(&self, path: &Path) -> VfsResult<()> {
-        self.call(FaultOp::Fsync, path, None, |fs| fs.fsync(path))
+        self.call_with_skip(FaultOp::Fsync, path, None, Some(()), |fs| fs.fsync(path))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> VfsResult<()> {

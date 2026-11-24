@@ -130,6 +130,37 @@ pub(super) fn infer(
     if number(after, "terminations")? > number(before, "terminations")? {
         return result("ProcessEnds");
     }
+    if previous == "open"
+        && next == "open"
+        && (next_work == "planRemove"
+            || next_work == "planRemoveAtDocument"
+            || next_work == "planRemoveBelowDocument")
+    {
+        return result(if next_work == "planRemoveAtDocument" {
+            "PlanRemoveAtDocument"
+        } else if next_work == "planRemoveBelowDocument" {
+            "PlanRemoveBelowDocument"
+        } else {
+            "PlanRemoveNode"
+        });
+    }
+    if previous == "open"
+        && next == "open"
+        && work.starts_with("planRemove")
+        && next_work == "planned"
+    {
+        return result("FinishNodePlan");
+    }
+    if previous == "open"
+        && next == "open"
+        && next_work == "planned"
+        && before.get("prep") != after.get("prep")
+    {
+        return result("PlanTxn");
+    }
+    if previous == "open" && next == "wrote" && work == "planned" {
+        return result("Reject");
+    }
     if previous == "open" && next == "wrote" {
         return result("EndEmpty");
     }
@@ -140,6 +171,8 @@ pub(super) fn infer(
             } else {
                 "RecStop"
             }
+        } else if work == "dirAppend" {
+            "DirectoryIntentTorn"
         } else if work.starts_with("rbColl") {
             "RollbackCollectionFails"
         } else if previous == "ingested" {
@@ -175,6 +208,7 @@ pub(super) fn infer(
     let work_action = match work {
         "ingRen" => Some("IngRen"),
         "ingSync" => Some("IngSync"),
+        "skipIng" => Some("SkipIng"),
         "recWrite" => Some("RecWrite"),
         "recSync" => Some("RecSync"),
         "ptrRen" => Some("PtrRen"),
@@ -202,13 +236,37 @@ pub(super) fn infer(
         "rbCollSync" => Some("RbCollSync"),
         "rbCollRem" => Some("RbCollRem"),
         "rbCollFsync" => Some("RbCollFsync"),
+        "dirAppend" | "dirAppendRepair" => Some(if next_work == "dirAppendTorn" {
+            "DirectoryIntentTorn"
+        } else {
+            "DirectoryIntentAppend"
+        }),
+        "dirAppendSync" => Some("DirectoryIntentSync"),
+        "dirCreate" => Some("DirectoryCreate"),
+        "dirRename" => Some("DirectoryRename"),
+        "nodeRen" => Some("NodeRen"),
+        "nodeSync" => Some("NodeSync"),
+        "nodeDone" => Some("NodeDone"),
         "dirSync" => Some("DirectorySync"),
         "dirClear" => Some("DirectoryClear"),
         "dirClearSync" => Some("DirectoryClearSync"),
         _ => None,
     };
     let document_changed = [
-        "ptrLive", "ptrDur", "blobLive", "blobDur", "record", "wkeep", "wdoc", "wix",
+        "ptrLive",
+        "ptrDur",
+        "blobLive",
+        "blobDur",
+        "record",
+        "removeNodes",
+        "nodeLive",
+        "nodeDur",
+        "directoryLive",
+        "directoryDurable",
+        "directoryTorn",
+        "wkeep",
+        "wdoc",
+        "wix",
     ]
     .iter()
     .any(|field| before.get(*field) != after.get(*field));
@@ -260,7 +318,14 @@ pub(super) fn infer(
             _ if work == "none" && matches!(next_work, "rvRecSync" | "rsRen" | "rvDone") => {
                 "RvBegin"
             }
-            _ if work == "none" && next_work == "txRen" => "TxBegin",
+            _ if work == "none"
+                && matches!(
+                    next_work,
+                    "txRen" | "dirAppend" | "dirAppendRepair" | "nodeRen"
+                ) =>
+            {
+                "TxBegin"
+            }
             _ => {
                 return Err(format!(
                     "unrecognized transition for {actor}: {previous}/{work} -> {next}/{next_work}"

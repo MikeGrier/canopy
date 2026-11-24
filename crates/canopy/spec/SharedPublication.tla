@@ -71,12 +71,16 @@ CONSTANTS
     MaxWrites,
     RecoverySchedule,
     InitialDirectoryDebt,
+    InitialNodeRemoved,
+    TransactionPreconditions,
     Fix,         \* the STRANDED-VOTE guard: "record", "resolve" or "none"
     PubControl   \* a fault in the publication or its recovery
 
 ASSUME Docs = 1..Cardinality(Docs) /\ Docs # {}
 ASSUME RecoverySchedule \in {"all", "stale-completion"}
 ASSUME InitialDirectoryDebt \in Nat
+ASSUME InitialNodeRemoved \in BOOLEAN
+ASSUME TransactionPreconditions \in {"unconditional", "all"}
 ASSUME RecoverySchedule = "stale-completion" => Procs = {1, 2}
 ASSUME NPtr \in Nat /\ NPtr % 2 = 1 /\ NBlob \in Nat \ {0}
 ASSUME Fix \in {"record", "resolve", "none"}
@@ -89,8 +93,20 @@ Blob == 1..NBlob
 Vers == Nat
 LastDoc == Cardinality(Docs)
 NoRecord == [live |-> NoVal, dur |-> NoVal]
-NoPrep == [doc |-> 0, ver |-> NoVal]
+NoPrep == <<>>
 NoMajority == -2
+Preconditions == {"unconditional", "digest", "absent"}
+PreconditionChoices == IF TransactionPreconditions = "all"
+                       THEN Preconditions ELSE {"unconditional"}
+PreparedSwaps == [doc : Docs, ver : Vers, effect : {"write", "remove"},
+                  precondition : Preconditions, expected : Vers \cup {NoVal}]
+NamespaceRoot == <<1>>
+DocumentEntry(d) == Append(NamespaceRoot, d)
+DocumentBelow(d) == Append(DocumentEntry(d), 1)
+NamespaceNodes == {NamespaceRoot} \cup {DocumentEntry(d) : d \in Docs}
+                  \cup {DocumentBelow(d) : d \in Docs}
+PathContains(parent, child) ==
+    Len(parent) <= Len(child) /\ \A index \in 1..Len(parent) : parent[index] = child[index]
 
 VARIABLES
     ptrLive,     \* [Docs -> [Ptr -> Vers]]: each pointer replica's live value
@@ -98,7 +114,10 @@ VARIABLES
     blobLive,    \* [Docs -> [Blob -> SUBSET Vers]]: versions on each blob replica
     blobDur,     \* [Docs -> [Blob -> SUBSET Vers]]
     record,      \* [Docs -> [live, dur]]: each document's publication record
-    prep,        \* the document and version the prepare record names, or NoPrep
+    prep,        \* staged swaps, or the durable prepare record's swap sequence
+    removeNodes, \* node paths applied after the prepare's document swaps
+    nodeLive,    \* [Docs -> [Ptr -> BOOLEAN]]: each replica's live target node
+    nodeDur,     \* what a crash would leave of the target nodes
     wph,         \* the next step of the work in progress
     wdoc,        \* the document it is on, or 0
     wix,         \* the replica it is at
@@ -110,17 +129,19 @@ VARIABLES
     requestRecovery,
     directoryLive,
     directoryDurable,
+    directoryTorn,
     runDirectories,
     unitIntervened,
     writes,
     ordinaryRequests,
     rkinds       \* ghost, MixedWrites: which kinds of write recovery has rolled forward
 
-docs == <<ptrLive, ptrDur, blobLive, blobDur, record, prep>>
+docs == <<ptrLive, ptrDur, blobLive, blobDur, record, prep, removeNodes,
+          nodeLive, nodeDur>>
 work == <<wph, wdoc, wix, wkeep>>
 spvars == <<vars, docs, work, txnDoc, runPhase, runCount, unitReady,
-            requestRecovery, directoryLive, directoryDurable, runDirectories, unitIntervened,
-            writes, ordinaryRequests, rkinds>>
+            requestRecovery, directoryLive, directoryDurable, directoryTorn,
+            runDirectories, unitIntervened, writes, ordinaryRequests, rkinds>>
 
 Holding(f, v) == Cardinality({r \in Ptr : f[r] = v})
 Majority(f) ==
@@ -135,39 +156,113 @@ V(p) == mygen[p]
 \* p holds writer exclusion and so is the only one working on a document.
 W(p) == lockHolder = p
 
-Phases == {"none", "ingRen", "ingSync", "staged", "recWrite", "recSync", "ptrRen",
+Phases == {"none", "planned", "planRemove", "planRemoveAtDocument", "planRemoveBelowDocument",
+           "ingRen", "ingSync", "skipIng", "staged", "recWrite", "recSync", "ptrRen",
            "ptrSync", "recClr", "recClrSync", "collRead", "collSync", "collRem",
            "collFsync", "done", "rvRecSync", "rvRen", "rvSync", "rvClr",
            "rvClrSync", "rvCollRead", "rvCollSync", "rvCollRem", "rvCollFsync",
            "rsRen", "rsSync", "rvDone", "txRen", "txSync", "txDone",
            "rbCollRead", "rbCollSync", "rbCollRem", "rbCollFsync", "rbDone",
+           "dirAppend", "dirAppendSync", "dirAppendRepair", "dirAppendTorn", "dirCreate",
+           "dirRename", "nodeRen", "nodeSync", "nodeDone",
            "unitStart", "unitTxnDone", "claimsDone", "dirSync", "dirClear", "dirClearSync", "dirDone"}
 
 RunPhases == {"none", "directories", "publication", "transaction", "collection", "claims", "completion"}
 
-NoWork == wph' = "none" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
+NoWork ==
+    /\ wph' = "none" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
+    /\ UNCHANGED <<prep, txnDoc>>
+
+StagedDocuments == {prep[index].doc : index \in DOMAIN prep}
+PlannedRemovalTargets == {removeNodes[index] : index \in DOMAIN removeNodes}
+SwapSetHasUniqueTargets == Len(prep) = Cardinality(StagedDocuments)
+DocumentAfterTransaction(document) ==
+    IF document \in StagedDocuments
+    THEN \E index \in DOMAIN prep : prep[index].doc = document /\ prep[index].effect = "write"
+    ELSE Majority(ptrLive[document]) \in Vers
+RemovalIsBelowWrite(path) ==
+    \E index \in DOMAIN prep :
+        /\ prep[index].effect = "write"
+        /\ (PathContains(path, DocumentEntry(prep[index].doc))
+            \/ PathContains(DocumentEntry(prep[index].doc), path))
+RemovalCrossesDocument(path) ==
+    \E document \in Docs :
+        Majority(ptrLive[document]) \in Vers
+        /\ PathContains(DocumentEntry(document), path)
+NodeRemovalPreconditionsHold ==
+    \A path \in PlannedRemovalTargets :
+        CASE path = NamespaceRoot ->
+                 \A document \in Docs : ~DocumentAfterTransaction(document)
+          [] OTHER -> ~RemovalCrossesDocument(path)
+SwapSetPreconditionsHold ==
+    /\ SwapSetHasUniqueTargets
+    /\ ~\E path \in PlannedRemovalTargets : RemovalIsBelowWrite(path)
+    /\ NodeRemovalPreconditionsHold
+
+SwapPreconditionHolds(swap) ==
+    CASE swap.precondition = "unconditional" -> TRUE
+      [] swap.precondition = "digest" -> Majority(ptrLive[swap.doc]) = swap.expected
+      [] OTHER -> Majority(ptrLive[swap.doc]) \notin Vers
+ExpectedMismatch(p, d) ==
+    LET held == Majority(ptrLive[d])
+    IN IF V(p) # held THEN V(p) ELSE V(p) + 1
+PreconditionsHold ==
+    \A index \in DOMAIN prep : SwapPreconditionHolds(prep[index])
+
+PreparationTypeOK ==
+    /\ ptrLive \in [Docs -> [Ptr -> Vers \cup {NoVal}]]
+    /\ ptrDur \in [Docs -> [Ptr -> Vers \cup {NoVal}]]
+    /\ prep \in Seq(PreparedSwaps)
+
+RemovalTypeOK ==
+    /\ removeNodes \in Seq(NamespaceNodes)
+    /\ Cardinality({path : path \in {removeNodes[index] : index \in DOMAIN removeNodes}})
+           = Len(removeNodes)
+
+NodeTypeOK == nodeLive \in [Docs -> [Ptr -> BOOLEAN]] /\ nodeDur \in [Docs -> [Ptr -> BOOLEAN]]
+
+NamespacePhaseTypeOK == wph \in Phases
+NamespaceDocumentTypeOK == wdoc \in Docs \cup {0}
+NamespaceReplicaTypeOK == wix \in Ptr \cup Blob
+NamespaceIndexTypeOK == txnDoc \in 0..(Cardinality(Docs) + Len(removeNodes))
+NamespaceWorkTypeOK == NamespacePhaseTypeOK /\ NamespaceDocumentTypeOK
+    /\ NamespaceReplicaTypeOK /\ NamespaceIndexTypeOK
+
+DirectoryTypeOK ==
+    /\ directoryLive \in 0..(InitialDirectoryDebt + 1)
+    /\ directoryDurable \in 0..(InitialDirectoryDebt + 1)
+    /\ directoryTorn \in BOOLEAN
+
+NamespaceTypeOK == PreparationTypeOK /\ RemovalTypeOK /\ NodeTypeOK
+    /\ NamespaceWorkTypeOK /\ DirectoryTypeOK
 
 \* Audience: internal.
 SpTypeOK ==
     /\ TypeOK
-    /\ ptrLive \in [Docs -> [Ptr -> Vers]]
-    /\ ptrDur \in [Docs -> [Ptr -> Vers]]
+    /\ ptrLive \in [Docs -> [Ptr -> Vers \cup {NoVal}]]
+    /\ ptrDur \in [Docs -> [Ptr -> Vers \cup {NoVal}]]
     /\ blobLive \in [Docs -> [Blob -> SUBSET Vers]]
     /\ blobDur \in [Docs -> [Blob -> SUBSET Vers]]
     /\ record \in [Docs -> [live : Vers \cup {NoVal}, dur : Vers \cup {NoVal}]]
-    /\ prep \in {NoPrep} \cup [doc : Docs, ver : Vers]
+    /\ prep \in Seq(PreparedSwaps)
+    /\ removeNodes \in Seq(NamespaceNodes)
+    /\ Cardinality({path : path \in {removeNodes[index] : index \in DOMAIN removeNodes}})
+           = Len(removeNodes)
+    /\ nodeLive \in [Docs -> [Ptr -> BOOLEAN]]
+    /\ nodeDur \in [Docs -> [Ptr -> BOOLEAN]]
     /\ wph \in Phases
     /\ wdoc \in Docs \cup {0}
     /\ wix \in Ptr \cup Blob
     /\ wkeep \in SUBSET Vers
-    /\ txnDoc \in Docs \cup {0}
+    /\ txnDoc \in 0..Cardinality(Docs) + Len(removeNodes)
     /\ runPhase \in [Procs -> RunPhases]
     /\ runCount \in [Procs -> (0..MaxCount) \cup {NoVal}]
     /\ unitReady \in [Procs -> BOOLEAN]
     /\ requestRecovery \in [Procs -> BOOLEAN]
-    /\ directoryLive \in 0..InitialDirectoryDebt
-    /\ directoryDurable \in 0..InitialDirectoryDebt
-    /\ runDirectories \in [Procs -> 0..InitialDirectoryDebt]
+    /\ directoryLive \in 0..InitialDirectoryDebt + 1
+    /\ directoryDurable \in 0..InitialDirectoryDebt + 1
+    /\ directoryTorn \in BOOLEAN
+    /\ runDirectories \in [Procs -> 0..InitialDirectoryDebt + 1]
     /\ unitIntervened \in [Procs -> BOOLEAN]
     /\ writes \in 0..MaxRequests
     /\ ordinaryRequests \in 0..MaxRequests
@@ -175,12 +270,14 @@ SpTypeOK ==
 
 SpInit ==
     /\ Init
-    /\ ptrLive = [d \in Docs |-> [r \in Ptr |-> 0]]
+    /\ ptrLive = [d \in Docs |-> [r \in Ptr |-> IF InitialNodeRemoved THEN NoVal ELSE 0]]
     /\ ptrDur = ptrLive
-    /\ blobLive = [d \in Docs |-> [k \in Blob |-> {0}]]
+    /\ blobLive = [d \in Docs |-> [k \in Blob |-> IF InitialNodeRemoved THEN {} ELSE {0}]]
     /\ blobDur = blobLive
     /\ record = [d \in Docs |-> NoRecord]
-    /\ prep = NoPrep
+    /\ prep = NoPrep /\ removeNodes = NoPrep
+    /\ nodeLive = [d \in Docs |-> [r \in Ptr |-> ~InitialNodeRemoved]]
+    /\ nodeDur = nodeLive
     /\ wph = "none" /\ wdoc = 0 /\ wix = 1 /\ wkeep = {}
     /\ txnDoc = 0
     /\ runPhase = [holder \in Procs |-> "none"]
@@ -188,6 +285,7 @@ SpInit ==
     /\ unitReady = [holder \in Procs |-> FALSE]
     /\ requestRecovery = [holder \in Procs |-> FALSE]
     /\ directoryLive = 0 /\ directoryDurable = InitialDirectoryDebt
+    /\ directoryTorn = FALSE
     /\ runDirectories = [holder \in Procs |-> 0]
     /\ unitIntervened = [holder \in Procs |-> FALSE]
     /\ writes = 0
@@ -231,13 +329,14 @@ SRunStart(holder) ==
                       THEN "dirSync" ELSE "dirClear"
                       [] phase = "claims" -> "claimsDone"
                       [] phase = "completion" -> "txDone"
-                      [] phase = "collection" -> IF txnDoc = 0 THEN "txDone" ELSE "rvCollRead"
+                      [] phase = "collection" -> IF prep = NoPrep THEN "txDone" ELSE "rvCollRead"
                       [] OTHER -> "none"
-          /\ wdoc' = IF phase = "collection" THEN txnDoc ELSE 0
+          /\ txnDoc' = IF phase = "collection" /\ prep # NoPrep THEN 1 ELSE txnDoc
+          /\ wdoc' = IF phase = "collection" /\ prep # NoPrep THEN prep[1].doc ELSE 0
     /\ wix' = 1 /\ wkeep' = {}
     /\ fence' = IF Control = "fence-cleared-at-recovery-start" THEN FALSE ELSE fence
     /\ UNCHANGED <<adm, req, lockHolder, owner, trusted, count, gen,
-                   store, handle, reader, terminatedIn, counts, docs>>
+                   store, handle, reader, terminatedIn, counts, docs, prep>>
 
 RunUnitEnd(holder) ==
     /\ W(holder) /\ RunUnitFinished(holder)
@@ -248,22 +347,22 @@ RunUnitEnd(holder) ==
 DirectorySync(holder) ==
     /\ W(holder) /\ wph = "dirSync"
     /\ wph' = "dirDone"
-    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep, prep, txnDoc>>
 
 DirectoryClear(holder) ==
     /\ W(holder) /\ wph = "dirClear"
     /\ wph' = "dirClearSync"
-    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep, prep, txnDoc>>
 
 DirectoryClearSync(holder) ==
     /\ W(holder) /\ wph = "dirClearSync"
     /\ wph' = "dirDone"
-    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep, prep, txnDoc>>
 
 -----------------------------------------------------------------------------
 (* The contract's steps that touch no document.                            *)
 
-Quiet(A) == A /\ UNCHANGED <<docs, work>>
+Quiet(A) == A /\ UNCHANGED <<docs, work, txnDoc>>
 
 \* Every record rolled forward and cleared at once, which only the control does.
 SettleAll ==
@@ -279,7 +378,7 @@ SettleAll ==
 SAdmit(p) ==
     /\ Admit(p)
     /\ IF PubControl = "open-settles" THEN SettleAll ELSE UNCHANGED docs
-    /\ UNCHANGED work
+    /\ UNCHANGED <<work, txnDoc>>
 
 -----------------------------------------------------------------------------
 (* The contract's steps that end or fail the work.                         *)
@@ -288,53 +387,75 @@ SAdmit(p) ==
 SEndEmpty(p) ==
     /\ EndEmpty(p)
     /\ wph' = "done" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
-    /\ UNCHANGED docs
+    /\ UNCHANGED <<docs, txnDoc>>
 
 SAbort(p) ==
     /\ Abort(p)
     /\ wph = "rbDone"
+    /\ prep' = NoPrep /\ txnDoc' = 0
     /\ wph' = "done" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
-    /\ UNCHANGED docs
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record>>
 
 SFailUnresolved(p) == FailUnresolved(p) /\ NoWork /\ UNCHANGED docs
 
 \* The closing raise begins once the work, collection included, is over.
-SBeginClose(p) == BeginClose(p) /\ wph = "done" /\ NoWork /\ UNCHANGED docs
+SBeginClose(p) ==
+    /\ BeginClose(p) /\ wph = "done"
+    /\ prep' = NoPrep /\ txnDoc' = 0
+    /\ wph' = "none" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record>>
 
-\* The prepare record names the document and version; one whose append failed
-\* may or may not be in the log, and the record says the same as the log.
+\* The prepare record names every staged document and version; one whose append
+\* failed may or may not be in the log, and the record says the same as the log.
+ApplyTargetPhase(index, replica) ==
+    IF prep[index].effect = "write" /\ ~nodeLive[prep[index].doc][replica]
+    THEN IF directoryTorn THEN "dirAppendRepair" ELSE "dirAppend"
+    ELSE "txRen"
+
 SPrepare(p) ==
     /\ Prepare(p)
-    /\ wph = "staged"
-    /\ prep' = [doc |-> wdoc, ver |-> V(p)]
-    /\ wph' = "ptrRen" /\ wix' = 1
-    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record, wdoc, wkeep>>
+    /\ wph = "staged" /\ (prep # NoPrep \/ removeNodes # NoPrep)
+    /\ wph' = IF prep = NoPrep THEN "nodeRen" ELSE ApplyTargetPhase(1, 1)
+    /\ txnDoc' = 1
+    /\ wdoc' = IF prep = NoPrep THEN 0 ELSE prep[1].doc
+    /\ wix' = 1
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record, prep, wkeep>>
 
 SPrepareFails(p) ==
     /\ PrepareFails(p)
     /\ wph = "staged"
-    /\ prep' = IF log' = "prepared" THEN [doc |-> wdoc, ver |-> V(p)] ELSE prep
     /\ NoWork
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record, prep>>
+
+\* Phase 1 accepts every transaction precondition before Begin writes a log record.
+IngestPhase(index) == IF prep[index].effect = "write" THEN "ingRen" ELSE "skipIng"
+
+TransactionPreconditionsHold == PreconditionsHold /\ SwapSetPreconditionsHold
+
+SBegin(p) ==
+    /\ Begin(p) /\ wph = "planned" /\ TransactionPreconditionsHold
+    /\ txnDoc' = IF prep = NoPrep THEN 0 ELSE 1
+    /\ wdoc' = IF prep = NoPrep THEN 0 ELSE prep[1].doc
+    /\ wix' = 1 /\ wph' = IF prep = NoPrep THEN "staged" ELSE IngestPhase(1)
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record, prep, wkeep>>
+
+SReject(p) ==
+    /\ EndEmpty(p) /\ wph = "planned" /\ ~TransactionPreconditionsHold
+    /\ prep' = NoPrep /\ txnDoc' = 0
+    /\ wph' = "done" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
     /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record>>
 
-\* A transaction begins before its write picks a document.
-SBegin(p) == Begin(p) /\ wph = "none" /\ UNCHANGED <<docs, work>>
+SIngest(p) == Ingest(p) /\ wph = "staged" /\ UNCHANGED <<docs, work, txnDoc>>
 
-SIngest(p) == Ingest(p) /\ wph = "staged" /\ UNCHANGED <<docs, work>>
-
-SEnd(p) ==
-    /\ End(p)
-    /\ prep' = NoPrep
-    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record, work>>
+SEnd(p) == End(p) /\ UNCHANGED <<docs, work, txnDoc>>
 
 SRecSwap1(p) == RecSwap1(p) /\ wph = "txDone" /\ NoWork /\ UNCHANGED docs
 
 SRecEnd(p) ==
     /\ RecEnd(p)
     /\ runPhase[p] = "transaction" /\ wph = "none"
-    /\ prep' = NoPrep
     /\ NoWork
-    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record>>
+    /\ UNCHANGED docs
 
 SRecStop(p) == RecStop(p) /\ NoWork /\ UNCHANGED docs
 
@@ -342,20 +463,25 @@ SRecSweep(holder) ==
     /\ RecSweep(holder)
     /\ runPhase[holder] = "transaction"
     /\ wph' = "unitTxnDone"
-    /\ wdoc' = 0 /\ wix' = 1
+    /\ txnDoc' = 0 /\ wdoc' = 0 /\ wix' = 1
     /\ UNCHANGED <<docs, wkeep>>
 
 SRecReset(holder) ==
     /\ RecReset(holder) /\ wph = "txDone"
     /\ runPhase[holder] = "completion"
-    /\ NoWork /\ UNCHANGED docs
+    /\ prep' = NoPrep /\ txnDoc' = 0
+    /\ wph' = "none" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {}
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record>>
 
 \* EXTERNAL: a process dies. The documents stay as the live filesystem has them,
 \* and its work in progress is gone with it.
 STerminate(p) ==
     /\ Terminate(p)
-    /\ IF lockHolder = p THEN NoWork ELSE UNCHANGED work
-    /\ UNCHANGED docs
+    /\ IF lockHolder = p
+       THEN /\ prep' = IF log = "prepared" THEN prep ELSE NoPrep
+            /\ wph' = "none" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {} /\ txnDoc' = 0
+       ELSE UNCHANGED <<work, prep, txnDoc>>
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record>>
 
 \* EXTERNAL: power loss. Every document reverts to what was durable.
 SCrash ==
@@ -363,36 +489,98 @@ SCrash ==
     /\ ptrLive' = ptrDur
     /\ blobLive' = blobDur
     /\ record' = [d \in Docs |-> [live |-> record[d].dur, dur |-> record[d].dur]]
-    /\ NoWork
-    /\ UNCHANGED <<ptrDur, blobDur, prep>>
+    /\ prep' = IF log = "prepared" THEN prep ELSE NoPrep
+    /\ wph' = "none" /\ wdoc' = 0 /\ wix' = 1 /\ wkeep' = {} /\ txnDoc' = 0
+    /\ UNCHANGED <<ptrDur, blobDur>>
 
 -----------------------------------------------------------------------------
 (* A write's work on its document.                                         *)
 
+PlanTxn(p, d, precondition, matches, effect) ==
+    /\ W(p) /\ Txn /\ pc[p] = "open" /\ wph \in {"none", "planned"}
+    /\ d \notin StagedDocuments
+    /\ prep' = Append(prep, [doc |-> d, ver |-> V(p), effect |-> effect,
+                           precondition |-> precondition,
+                           expected |-> CASE precondition = "unconditional" -> NoVal
+                                        [] precondition = "digest" ->
+                                             IF matches THEN Majority(ptrLive[d]) ELSE ExpectedMismatch(p, d)
+                                        [] OTHER -> NoVal])
+    /\ (precondition # "absent" \/ ~matches)
+    /\ wph' = "planned" /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record,
+                                       removeNodes, nodeLive, nodeDur,
+                                       wdoc, wix, wkeep, txnDoc>>
+
+PlanSwapCollision(p, d) ==
+    /\ W(p) /\ Txn /\ pc[p] = "open" /\ wph = "planned"
+    /\ SwapSetHasUniqueTargets
+    /\ d \in StagedDocuments
+    /\ prep' = Append(prep, [doc |-> d, ver |-> V(p), effect |-> "remove",
+                           precondition |-> "unconditional", expected |-> NoVal])
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record,
+                   removeNodes, nodeLive, nodeDur, wph, wdoc, wix, wkeep, txnDoc>>
+
+PlannedPath(marker) ==
+    CASE marker = "planRemove" -> NamespaceRoot
+      [] marker = "planRemoveAtDocument" -> DocumentEntry(1)
+      [] OTHER -> DocumentBelow(1)
+
+PlanNodeRemoval(p, marker) ==
+    /\ W(p) /\ Txn /\ pc[p] = "open" /\ wph \in {"none", "planned"}
+    /\ marker \in {"planRemove", "planRemoveAtDocument", "planRemoveBelowDocument"}
+    /\ PlannedPath(marker) \notin PlannedRemovalTargets
+    /\ wph' = marker
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   nodeLive, nodeDur, wdoc, wix, wkeep, txnDoc>>
+
+FinishNodePlan(p) ==
+    /\ W(p) /\ wph \in {"planRemove", "planRemoveAtDocument", "planRemoveBelowDocument"}
+    /\ wph' = "planned" /\ wdoc' = 0
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   removeNodes, nodeLive, nodeDur, wix, wkeep, txnDoc>>
+
 Pick(p, d) ==
-    /\ W(p) /\ wph = "none"
-    /\ pc[p] \in (IF Txn THEN {"begun"}
-                  ELSE IF MixedWrites THEN {"begun", "open"} ELSE {"open"})
+    /\ W(p) /\ ~Txn /\ pc[p] = "open" /\ wph = "none"
+    /\ d \notin StagedDocuments
     /\ wdoc' = d /\ wph' = "ingRen" /\ wix' = 1
-    /\ UNCHANGED <<vars, docs, wkeep>>
+    /\ UNCHANGED <<vars, docs, wkeep, txnDoc>>
 
 IngRen(p) ==
     /\ W(p) /\ wph = "ingRen"
     /\ blobLive' = [blobLive EXCEPT ![wdoc][wix] = @ \cup {V(p)}]
     /\ wph' = "ingSync"
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 \* A transaction's write ingests while it is begun.
 AfterIngest(p) ==
     IF pc[p] = "begun" THEN "staged" ELSE IF Fix = "record" THEN "recWrite" ELSE "ptrRen"
+
+SkipIng(p) ==
+    /\ W(p) /\ wph = "skipIng"
+    /\ IF txnDoc < Len(prep)
+       THEN txnDoc' = txnDoc + 1 /\ wdoc' = prep[txnDoc + 1].doc
+            /\ wix' = 1 /\ wph' = IngestPhase(txnDoc + 1)
+       ELSE wph' = "staged" /\ UNCHANGED <<txnDoc, wdoc, wix>>
+    /\ UNCHANGED <<vars, docs, wkeep>>
 
 IngSync(p) ==
     /\ W(p) /\ wph = "ingSync"
     /\ blobDur' = [blobDur EXCEPT ![wdoc][wix] = blobLive[wdoc][wix]]
     /\ IF wix < NBlob
           THEN wix' = wix + 1 /\ wph' = "ingRen"
-          ELSE wix' = 1 /\ wph' = AfterIngest(p)
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, record, prep, wdoc, wkeep>>
+               /\ UNCHANGED <<prep, txnDoc, wdoc>>
+          ELSE IF Txn /\ txnDoc < Len(prep)
+               THEN txnDoc' = txnDoc + 1 /\ wdoc' = prep[txnDoc + 1].doc
+                    /\ wix' = 1 /\ wph' = IngestPhase(txnDoc + 1) /\ UNCHANGED prep
+               ELSE wix' = 1 /\ wph' = AfterIngest(p)
+                    /\ IF Txn
+                       THEN UNCHANGED <<prep, txnDoc, wdoc>>
+                       ELSE prep' = Append(prep, [doc |-> wdoc, ver |-> V(p),
+                                                   effect |-> "write",
+                                                   precondition |-> "unconditional",
+                                                   expected |-> NoVal])
+                            /\ txnDoc' = 0 /\ UNCHANGED wdoc
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, record, wkeep>>
 
 \* "record": the append decides the outcome, so it is the first effect.
 RecWrite(p) ==
@@ -400,13 +588,15 @@ RecWrite(p) ==
     /\ FirstEffect(p)
     /\ record' = [record EXCEPT ![wdoc].live = V(p)]
     /\ wph' = "recSync"
-    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 RecSync(p) ==
     /\ W(p) /\ wph = "recSync"
     /\ record' = [record EXCEPT ![wdoc].dur = record[wdoc].live]
     /\ wph' = "ptrRen"
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 \* The first rename is the first effect when nothing before it was.
 PtrRen(p) ==
@@ -414,7 +604,8 @@ PtrRen(p) ==
     /\ IF pc[p] \in {"open", "prepared"} THEN FirstEffect(p) ELSE UNCHANGED vars
     /\ ptrLive' = [ptrLive EXCEPT ![wdoc][wix] = V(p)]
     /\ wph' = "ptrSync"
-    /\ UNCHANGED <<ptrDur, blobLive, blobDur, record, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<ptrDur, blobLive, blobDur, record, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 PtrSync(p) ==
     /\ W(p) /\ wph = "ptrSync"
@@ -424,13 +615,15 @@ PtrSync(p) ==
        ELSE IF Fix = "record" /\ ~TxnOp
           THEN wix' = 1 /\ wph' = "recClr" /\ UNCHANGED vars
           ELSE wix' = 1 /\ wph' = "collRead" /\ LastEffect(p)
-    /\ UNCHANGED <<ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep>>
+    /\ UNCHANGED <<ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep,
+                   prep, txnDoc>>
 
 RecClr(p) ==
     /\ W(p) /\ wph = "recClr"
     /\ record' = [record EXCEPT ![wdoc].live = NoVal]
     /\ wph' = "recClrSync"
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 \* The clear is durable: the write's work is complete.
 RecClrSync(p) ==
@@ -438,54 +631,61 @@ RecClrSync(p) ==
     /\ LastEffect(p)
     /\ record' = [record EXCEPT ![wdoc].dur = NoVal]
     /\ wph' = "collRead"
-    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 -----------------------------------------------------------------------------
 (* Collection of what the write superseded, once its operation is done.    *)
 
+CollNext ==
+    IF txnDoc < Len(prep)
+    THEN txnDoc' = txnDoc + 1 /\ wdoc' = prep[txnDoc + 1].doc
+         /\ wix' = 1 /\ wph' = "collRead"
+    ELSE txnDoc' = 0 /\ wdoc' = 0 /\ wix' = 1 /\ wph' = "done"
+
 CollRead(p) ==
     /\ W(p) /\ pc[p] = "wrote" /\ wph = "collRead"
     /\ LET m == Majority(ptrLive[wdoc])
-       IN  IF m \in Vers
-           THEN wkeep' = {m} /\ wph' = "collSync" /\ wix' = 1
-           ELSE wph' = "done" /\ UNCHANGED <<wkeep, wix>>
-    /\ UNCHANGED <<vars, docs, wdoc>>
-
-\* The entry is synced on every replica before anything is removed.
+       IN  /\ wkeep' = IF m \in Vers THEN {m} ELSE {}
+           /\ wph' = "collSync" /\ wix' = 1
+           /\ UNCHANGED <<wdoc, txnDoc>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   removeNodes, nodeLive, nodeDur>>
 CollSync(p) ==
     /\ W(p) /\ wph = "collSync"
     /\ ptrDur' = [ptrDur EXCEPT ![wdoc][wix] = ptrLive[wdoc][wix]]
     /\ IF wix < NPtr
           THEN wix' = wix + 1 /\ wph' = "collSync"
           ELSE wix' = 1 /\ wph' = "collRem"
-    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep, txnDoc>>
 
-CollNext ==
+CollReplicaNext ==
     IF wix < NBlob
     THEN wix' = wix + 1 /\ wph' = "collRem"
-    ELSE wix' = 1 /\ wph' = "done"
+         /\ UNCHANGED <<txnDoc, wdoc>>
+    ELSE CollNext
 
 CollRem(p) ==
     /\ W(p) /\ wph = "collRem"
     /\ IF blobLive[wdoc][wix] \subseteq wkeep
-          THEN CollNext /\ UNCHANGED blobLive
+          THEN CollReplicaNext /\ UNCHANGED blobLive
           ELSE /\ blobLive' = [blobLive EXCEPT ![wdoc][wix] = @ \cap wkeep]
                /\ wph' = "collFsync"
-               /\ UNCHANGED wix
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wdoc, wkeep>>
+               /\ UNCHANGED <<wix, txnDoc, wdoc>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wkeep>>
 
 CollFsync(p) ==
     /\ W(p) /\ wph = "collFsync"
     /\ blobDur' = [blobDur EXCEPT ![wdoc][wix] = blobLive[wdoc][wix]]
-    /\ CollNext
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, record, prep, wdoc, wkeep>>
+    /\ CollReplicaNext
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, record, prep, wkeep>>
 
 \* A collection that fails leaves the rest of the garbage behind.
 CollFails(p) ==
     /\ W(p) /\ wph \in {"collRead", "collSync", "collRem", "collFsync"}
     /\ pc[p] = "wrote"
     /\ wph' = "done"
-    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep, prep, txnDoc>>
 
 -----------------------------------------------------------------------------
 (* Recovery's work on the documents, before it ends the log.               *)
@@ -500,13 +700,15 @@ RvBegin(p) ==
     /\ W(p) /\ pc[p] = "recEnd" /\ wph = "none"
     /\ runPhase[p] = "publication"
     /\ wph' = FirstRecoveryPhase /\ wdoc' = 1 /\ wix' = 1
-    /\ UNCHANGED <<vars, docs, wkeep>>
+    /\ UNCHANGED <<vars, docs, wkeep, prep, txnDoc>>
 
 \* The document after this one, or the end of recovery's work on them.
 NextDoc ==
     IF wdoc < (IF PubControl = "recovery-skips-a-document" THEN 1 ELSE LastDoc)
     THEN wdoc' = wdoc + 1 /\ wix' = 1 /\ wph' = FirstRecoveryPhase
-        ELSE wdoc' = 0 /\ wix' = 1 /\ wph' = "rvDone"
+         /\ UNCHANGED <<prep, txnDoc>>
+    ELSE wdoc' = 0 /\ wix' = 1 /\ wph' = "rvDone"
+         /\ UNCHANGED <<prep, txnDoc>>
 
 \* "record": the record file is synced first, so a failed clear is seen, then
 \* what it names is rolled forward and the record cleared.
@@ -514,7 +716,8 @@ RvRecSync(p) ==
     /\ W(p) /\ wph = "rvRecSync"
     /\ record' = [record EXCEPT ![wdoc].dur = record[wdoc].live]
     /\ IF record[wdoc].live # NoVal
-          THEN wph' = "rvRen" /\ wix' = 1 /\ UNCHANGED wdoc
+          THEN wph' = "rvRen" /\ wix' = 1
+               /\ UNCHANGED <<wdoc, prep, txnDoc>>
           ELSE NextDoc
     /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wkeep>>
 
@@ -522,7 +725,8 @@ RvRen(p) ==
     /\ W(p) /\ wph = "rvRen"
     /\ ptrLive' = [ptrLive EXCEPT ![wdoc][wix] = record[wdoc].live]
     /\ wph' = "rvSync"
-    /\ UNCHANGED <<vars, ptrDur, blobLive, blobDur, record, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, ptrDur, blobLive, blobDur, record, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 RvSync(p) ==
     /\ W(p) /\ wph = "rvSync"
@@ -530,23 +734,29 @@ RvSync(p) ==
     /\ IF wix < NPtr
           THEN wix' = wix + 1 /\ wph' = "rvRen"
           ELSE wix' = 1 /\ wph' = "rvClr"
-    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep,
+                   prep, txnDoc>>
 
 RvClr(p) ==
     /\ W(p) /\ wph = "rvClr"
     /\ record' = [record EXCEPT ![wdoc].live = NoVal]
     /\ wph' = "rvClrSync"
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 RvClrSync(p) ==
     /\ W(p) /\ wph = "rvClrSync"
     /\ record' = [record EXCEPT ![wdoc].dur = NoVal]
-    /\ wph' = "rvCollRead" /\ UNCHANGED <<wdoc, wix>>
+    /\ wph' = "rvCollRead" /\ UNCHANGED <<wdoc, wix, prep, txnDoc>>
     /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, prep, wkeep>>
 
 RvCollected ==
     IF runPhase[lockHolder] = "collection"
-    THEN wph' = "txDone" /\ wix' = 1 /\ UNCHANGED wdoc
+    THEN IF txnDoc < Len(prep)
+         THEN wph' = "rvCollRead" /\ txnDoc' = txnDoc + 1
+              /\ wdoc' = prep[txnDoc + 1].doc /\ wix' = 1 /\ UNCHANGED prep
+         ELSE wph' = "txDone" /\ txnDoc' = 0 /\ wdoc' = 0 /\ wix' = 1
+              /\ UNCHANGED prep
     ELSE NextDoc
 
 \* What the roll-forward superseded is collected as a write's collection is: the
@@ -555,7 +765,8 @@ RvCollRead(p) ==
     /\ W(p) /\ wph = "rvCollRead"
     /\ LET m == Majority(ptrLive[wdoc])
        IN  IF m \in Vers
-           THEN wkeep' = {m} /\ wph' = "rvCollSync" /\ wix' = 1 /\ UNCHANGED wdoc
+           THEN wkeep' = {m} /\ wph' = "rvCollSync" /\ wix' = 1
+                /\ UNCHANGED <<wdoc, prep, txnDoc>>
             ELSE RvCollected /\ UNCHANGED wkeep
     /\ UNCHANGED <<vars, docs>>
 
@@ -565,11 +776,13 @@ RvCollSync(p) ==
     /\ IF wix < NPtr
           THEN wix' = wix + 1 /\ wph' = "rvCollSync"
           ELSE wix' = 1 /\ wph' = "rvCollRem"
-    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep,
+                   prep, txnDoc>>
 
 RvCollNext ==
     IF wix < NBlob
-    THEN wix' = wix + 1 /\ wph' = "rvCollRem" /\ UNCHANGED wdoc
+    THEN wix' = wix + 1 /\ wph' = "rvCollRem"
+         /\ UNCHANGED <<wdoc, prep, txnDoc>>
     ELSE RvCollected
 
 RvCollRem(p) ==
@@ -578,7 +791,7 @@ RvCollRem(p) ==
           THEN RvCollNext /\ UNCHANGED blobLive
           ELSE /\ blobLive' = [blobLive EXCEPT ![wdoc][wix] = @ \cap wkeep]
                /\ wph' = "rvCollFsync"
-               /\ UNCHANGED <<wix, wdoc>>
+               /\ UNCHANGED <<wix, wdoc, txnDoc>>
     /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wkeep>>
 
 RvCollFsync(p) ==
@@ -592,22 +805,30 @@ RbBegin(holder) ==
     /\ wph \in {"none", "ingRen", "ingSync", "staged"}
     /\ stage' = 0
     /\ pc' = Set(pc, holder, "begun")
-    /\ wph' = IF txnDoc = 0 THEN "rbDone" ELSE "rbCollRead"
-    /\ wdoc' = txnDoc /\ wix' = 1
-    /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt,
-                   handle, reader, terminatedIn, counts, docs, wkeep>>
-
-RbCollected ==
-    /\ wph' = IF pc[lockHolder] = "recEnd" THEN "rvDone" ELSE "rbDone"
+    /\ IF prep = NoPrep
+          THEN wph' = "rbDone" /\ txnDoc' = 0 /\ wdoc' = 0
+          ELSE wph' = "rbCollRead" /\ txnDoc' = 1 /\ wdoc' = prep[1].doc
     /\ wix' = 1
+    /\ UNCHANGED <<adm, req, coord, a, b, shared, log, ptgt,
+                   handle, reader, terminatedIn, counts, docs, wkeep, prep>>
+
+RbNext ==
+    IF txnDoc < Len(prep)
+    THEN wph' = "rbCollRead" /\ txnDoc' = txnDoc + 1
+         /\ wdoc' = prep[txnDoc + 1].doc /\ wix' = 1
+    ELSE /\ wph' = (IF pc[lockHolder] = "recEnd" THEN "rvDone" ELSE "rbDone")
+         /\ txnDoc' = 0 /\ wdoc' = 0 /\ wix' = 1
+
+RbCollected == RbNext
 
 RbCollRead(holder) ==
     /\ W(holder) /\ wph = "rbCollRead"
     /\ LET majority == Majority(ptrLive[wdoc])
        IN IF majority \in Vers
           THEN wkeep' = {majority} /\ wph' = "rbCollSync" /\ wix' = 1
+               /\ UNCHANGED <<wdoc, prep, txnDoc>>
           ELSE RbCollected /\ UNCHANGED wkeep
-    /\ UNCHANGED <<vars, docs, wdoc>>
+    /\ UNCHANGED <<vars, docs>>
 
 RbCollSync(holder) ==
     /\ W(holder) /\ wph = "rbCollSync"
@@ -615,12 +836,14 @@ RbCollSync(holder) ==
     /\ IF wix < NPtr
           THEN wix' = wix + 1 /\ wph' = "rbCollSync"
           ELSE wix' = 1 /\ wph' = "rbCollRem"
-    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep,
+                   prep, txnDoc>>
 
 RbCollNext ==
     IF wix < NBlob
     THEN wix' = wix + 1 /\ wph' = "rbCollRem"
-    ELSE RbCollected
+         /\ UNCHANGED <<txnDoc, wdoc>>
+    ELSE RbNext
 
 RbCollRem(holder) ==
     /\ W(holder) /\ wph = "rbCollRem"
@@ -628,14 +851,14 @@ RbCollRem(holder) ==
           THEN RbCollNext /\ UNCHANGED blobLive
           ELSE /\ blobLive' = [blobLive EXCEPT ![wdoc][wix] = @ \cap wkeep]
                /\ wph' = "rbCollFsync"
-               /\ UNCHANGED wix
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wdoc, wkeep>>
+               /\ UNCHANGED <<wix, txnDoc, wdoc>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobDur, record, prep, wkeep>>
 
 RbCollFsync(holder) ==
     /\ W(holder) /\ wph = "rbCollFsync"
     /\ blobDur' = [blobDur EXCEPT ![wdoc][wix] = blobLive[wdoc][wix]]
     /\ RbCollNext
-    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, record, prep, wdoc, wkeep>>
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, record, prep, wkeep>>
 
 RbCollFails(holder) ==
     /\ W(holder) /\ pc[holder] \in {"begun", "ingested"}
@@ -651,7 +874,7 @@ RsRen(p) ==
     /\ LET m == Majority(ptrLive[wdoc])
        IN  IF m \in Vers
            THEN ptrLive' = [ptrLive EXCEPT ![wdoc][wix] = m] /\ wph' = "rsSync"
-                /\ UNCHANGED <<wdoc, wix>>
+                /\ UNCHANGED <<wdoc, wix, prep, txnDoc>>
            ELSE UNCHANGED ptrLive /\ NextDoc
     /\ UNCHANGED <<vars, ptrDur, blobLive, blobDur, record, prep, wkeep>>
 
@@ -659,7 +882,8 @@ RsSync(p) ==
     /\ W(p) /\ wph = "rsSync"
     /\ ptrDur' = [ptrDur EXCEPT ![wdoc][wix] = ptrLive[wdoc][wix]]
     /\ IF wix < NPtr
-          THEN wix' = wix + 1 /\ wph' = "rsRen" /\ UNCHANGED wdoc
+          THEN wix' = wix + 1 /\ wph' = "rsRen"
+               /\ UNCHANGED <<wdoc, prep, txnDoc>>
           ELSE NextDoc
     /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wkeep>>
 
@@ -667,32 +891,119 @@ RsSync(p) ==
 \* contract makes its swaps.
 TxBegin(p) ==
     /\ W(p) /\ pc[p] = "recSwap1" /\ wph = "none"
-    /\ wph' = "txRen" /\ wdoc' = prep.doc /\ wix' = 1
+    /\ (prep # NoPrep \/ removeNodes # NoPrep)
+    /\ txnDoc' = 1
+    /\ wph' = IF prep = NoPrep THEN "nodeRen" ELSE ApplyTargetPhase(1, 1)
+    /\ wdoc' = IF prep = NoPrep THEN 0 ELSE prep[1].doc
+    /\ wix' = 1
     /\ UNCHANGED <<vars, docs, wkeep>>
 
 TxRen(p) ==
     /\ W(p) /\ wph = "txRen"
-    /\ ptrLive' = [ptrLive EXCEPT ![wdoc][wix] = prep.ver]
+    /\ ptrLive' = [ptrLive EXCEPT ![wdoc][wix] =
+                       IF prep[txnDoc].effect = "write" THEN prep[txnDoc].ver ELSE NoVal]
     /\ wph' = "txSync"
-    /\ UNCHANGED <<vars, ptrDur, blobLive, blobDur, record, prep, wdoc, wix, wkeep>>
+    /\ UNCHANGED <<vars, ptrDur, blobLive, blobDur, record, prep, wdoc, wix, wkeep,
+                   prep, txnDoc>>
 
 TxSync(p) ==
     /\ W(p) /\ wph = "txSync"
     /\ ptrDur' = [ptrDur EXCEPT ![wdoc][wix] = ptrLive[wdoc][wix]]
     /\ IF wix < NPtr
-          THEN wix' = wix + 1 /\ wph' = "txRen"
-              ELSE wix' = 1 /\ wph' = "txDone"
-    /\ UNCHANGED <<vars, ptrLive, blobLive, blobDur, record, prep, wdoc, wkeep>>
+          THEN wix' = wix + 1 /\ wph' = ApplyTargetPhase(txnDoc, wix + 1)
+               /\ UNCHANGED <<txnDoc, wdoc>> /\ UNCHANGED vars
+          ELSE IF txnDoc < Len(prep)
+               THEN txnDoc' = txnDoc + 1 /\ wdoc' = prep[txnDoc + 1].doc
+                    /\ wix' = 1 /\ wph' = ApplyTargetPhase(txnDoc + 1, 1) /\ UNCHANGED vars
+               ELSE IF removeNodes # NoPrep
+                    THEN wph' = "nodeRen" /\ txnDoc' = 1 /\ wdoc' = 0 /\ wix' = 1
+                         /\ UNCHANGED vars
+                    ELSE IF pc[p] = "prepared"
+                         THEN /\ LastEffect(p)
+                              /\ txnDoc' = 1 /\ wdoc' = prep[1].doc /\ wix' = 1 /\ wph' = "collRead"
+                         ELSE /\ wph' = "txDone" /\ txnDoc' = 1 /\ wdoc' = prep[1].doc
+                              /\ wix' = 1 /\ UNCHANGED vars
+    /\ UNCHANGED <<ptrLive, blobLive, blobDur, record, prep, wkeep>>
+
+DirectoryIntentAppend(p) ==
+    /\ W(p) /\ wph \in {"dirAppend", "dirAppendRepair"}
+    /\ wph' = "dirAppendSync"
+    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep, txnDoc>>
+
+DirectoryIntentTorn(p) ==
+    /\ FailUnresolved(p) /\ wph = "dirAppend"
+    /\ NoWork
+    /\ UNCHANGED docs
+
+DirectoryIntentSync(p) ==
+    /\ W(p) /\ wph = "dirAppendSync"
+    /\ wph' = "dirCreate"
+    /\ UNCHANGED <<vars, docs, wdoc, wix, wkeep, txnDoc>>
+
+DirectoryCreate(p) ==
+    /\ W(p) /\ wph = "dirCreate"
+    /\ wph' = "dirRename"
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   removeNodes, nodeDur, wdoc, wix, wkeep, txnDoc>>
+
+DirectoryRename(p) ==
+    /\ W(p) /\ wph = "dirRename"
+    /\ wph' = "txRen"
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   removeNodes, nodeLive, wdoc, wix, wkeep, txnDoc>>
+
+NodeRen(p) ==
+    /\ W(p) /\ wph = "nodeRen"
+    /\ wph' = "nodeSync"
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   removeNodes, nodeDur, wdoc, wix, wkeep, txnDoc>>
+
+NodeSync(p) ==
+    /\ W(p) /\ wph = "nodeSync"
+    /\ IF wix < NPtr
+       THEN wix' = wix + 1 /\ wph' = "nodeRen"
+            /\ UNCHANGED <<txnDoc, wdoc>>
+       ELSE IF txnDoc < Len(removeNodes)
+            THEN txnDoc' = txnDoc + 1 /\ wix' = 1 /\ wph' = "nodeRen"
+                 /\ UNCHANGED wdoc
+            ELSE wph' = "nodeDone" /\ txnDoc' = 0 /\ wdoc' = 0 /\ wix' = 1
+    /\ UNCHANGED <<vars, ptrLive, ptrDur, blobLive, blobDur, record, prep,
+                   removeNodes, nodeLive, wkeep>>
+
+NodeDone(p) ==
+    /\ W(p) /\ wph = "nodeDone"
+    /\ IF pc[p] = "prepared"
+       THEN LastEffect(p)
+            /\ IF prep = NoPrep
+               THEN wph' = "done" /\ txnDoc' = 0 /\ wdoc' = 0 /\ wix' = 1
+               ELSE wph' = "collRead" /\ txnDoc' = 1 /\ wdoc' = prep[1].doc /\ wix' = 1
+       ELSE wph' = "txDone" /\ txnDoc' = 1 /\ wdoc' = 0
+            /\ wix' = 1 /\ UNCHANGED vars
+    /\ UNCHANGED <<ptrLive, ptrDur, blobLive, blobDur, record, prep, wkeep>>
 
 -----------------------------------------------------------------------------
 
 \* Records, under MixedWrites, each kind of write whose residue recovery has rolled forward.
 TxnTargets ==
-    txnDoc' = IF log' = "empty" THEN 0
-              ELSE IF lockHolder # None /\ pc[lockHolder] = "begun"
-                      /\ wph = "none" /\ wph' = "ingRen"
-                   THEN wdoc'
-              ELSE txnDoc
+    /\ removeNodes' = CASE wph # "planRemove" /\ wph' = "planRemove" -> Append(removeNodes, NamespaceRoot)
+                       [] wph # "planRemoveAtDocument" /\ wph' = "planRemoveAtDocument" -> Append(removeNodes, DocumentEntry(1))
+                       [] wph # "planRemoveBelowDocument" /\ wph' = "planRemoveBelowDocument" -> Append(removeNodes, DocumentBelow(1))
+                       [] wph = "planned" /\ wph' = "done" -> NoPrep
+                       [] wph = "rbDone" /\ wph' = "done" -> NoPrep
+                       [] wph = "done" /\ wph' = "none" -> NoPrep
+                       [] wph = "txDone" /\ wph' = "none" -> NoPrep
+                       [] OTHER -> removeNodes
+    /\ nodeLive' = IF crashes' # crashes THEN nodeDur
+                   ELSE IF wph = "dirCreate" /\ wph' = "dirRename"
+                        THEN [d \in Docs |-> [r \in Ptr |-> IF r = wix THEN TRUE ELSE nodeLive[d][r]]]
+                   ELSE IF wph = "nodeRen" /\ wph' = "nodeSync"
+                        THEN [d \in Docs |-> [r \in Ptr |-> IF r = wix THEN FALSE ELSE nodeLive[d][r]]]
+                   ELSE nodeLive
+    /\ nodeDur' = IF wph = "dirRename" /\ wph' = "txRen"
+                  THEN [d \in Docs |-> [r \in Ptr |-> IF r = wix THEN nodeLive[d][r] ELSE nodeDur[d][r]]]
+                  ELSE IF wph = "nodeSync" /\ wph' \in {"nodeRen", "nodeDone"}
+                       THEN [d \in Docs |-> [r \in Ptr |-> IF r = wix THEN nodeLive[d][r] ELSE nodeDur[d][r]]]
+                       ELSE nodeDur
 
     NextRunPhase(holder) ==
         IF crashes' # crashes \/ pc'[holder] = "terminated" THEN "none"
@@ -739,10 +1050,17 @@ DirectoryState ==
     /\ unitIntervened' = [holder \in Procs |->
           IF pc[holder] = "locked" /\ pc'[holder] \in {"held", "told"}
           THEN mygen[holder] # gen ELSE unitIntervened[holder]]
+    /\ directoryTorn' = CASE wph = "dirAppend" /\ wph' = "none" -> TRUE
+                         [] wph \in {"dirAppend", "dirAppendRepair"} /\ wph' = "dirAppendSync" -> FALSE
+                         [] OTHER -> directoryTorn
     /\ directoryLive' = IF crashes' # crashes THEN directoryDurable
+                         ELSE IF wph \in {"dirAppend", "dirAppendRepair"} /\ wph' = "dirAppendSync"
+                              THEN directoryLive + 1
+                         ELSE IF wph = "dirRename" /\ wph' = "txRen" THEN 0
                          ELSE IF wph = "dirClear" /\ wph' = "dirClearSync" THEN 0
                          ELSE directoryLive
-    /\ directoryDurable' = IF wph = "dirClearSync" /\ wph' = "dirDone" THEN directoryLive
+    /\ directoryDurable' = IF wph = "dirAppendSync" /\ wph' = "dirCreate" THEN directoryLive
+                            ELSE IF wph = "dirClearSync" /\ wph' = "dirDone" THEN directoryLive
                             ELSE directoryDurable
     /\ runDirectories' = [holder \in Procs |->
           IF crashes' # crashes \/ pc'[holder] = "terminated" THEN 0
@@ -763,7 +1081,15 @@ SpNextCore ==
           \/ SEndEmpty(p) \/ SFailUnresolved(p) \/ SBeginClose(p)
           \/ Quiet(EndClose(p)) \/ Quiet(CloseFails(p))
           \/ Quiet(Release(p)) \/ Quiet(Unlock(p))
-          \/ SBegin(p) \/ SIngest(p) \/ SPrepare(p) \/ SPrepareFails(p)
+          \/ \E d \in Docs, condition \in PreconditionChoices, matches \in BOOLEAN,
+                effect \in {"write", "remove"} :
+                PlanTxn(p, d, condition, matches, effect)
+          \/ \E d \in Docs : PlanSwapCollision(p, d)
+          \/ \E marker \in {"planRemove", "planRemoveAtDocument", "planRemoveBelowDocument"} :
+                PlanNodeRemoval(p, marker)
+          \/ FinishNodePlan(p)
+          \/ SBegin(p) \/ SReject(p) \/ SIngest(p) \/ SkipIng(p)
+              \/ SPrepare(p) \/ SPrepareFails(p)
           \/ SAbort(p) \/ SEnd(p) \/ Quiet(Sweep(p)) \/ (Quiet(Quiesce(p)) /\ ~requestRecovery[p])
             \/ SRunStart(p) \/ RunUnitEnd(p) \/ Quiet(RecWhole(p)) \/ SRecSwap1(p)
               \/ DirectorySync(p) \/ DirectoryClear(p) \/ DirectoryClearSync(p)
@@ -778,7 +1104,10 @@ SpNextCore ==
           \/ RvBegin(p) \/ RvRecSync(p) \/ RvRen(p) \/ RvSync(p) \/ RvClr(p)
           \/ RvClrSync(p) \/ RsRen(p) \/ RsSync(p)
           \/ RvCollRead(p) \/ RvCollSync(p) \/ RvCollRem(p) \/ RvCollFsync(p)
-          \/ TxBegin(p) \/ TxRen(p) \/ TxSync(p)
+          \/ TxBegin(p) \/ DirectoryIntentAppend(p) \/ DirectoryIntentTorn(p)
+          \/ DirectoryIntentSync(p) \/ DirectoryCreate(p) \/ DirectoryRename(p)
+          \/ TxRen(p) \/ TxSync(p)
+          \/ NodeRen(p) \/ NodeSync(p) \/ NodeDone(p)
             \/ RbBegin(p) \/ RbCollRead(p) \/ RbCollSync(p)
             \/ RbCollRem(p) \/ RbCollFsync(p) \/ RbCollFails(p)
     \/ SCrash
@@ -847,6 +1176,14 @@ LivePointerHasBlob ==
     \A d \in Docs :
         Majority(ptrLive[d]) \in Vers => \E k \in Blob : Majority(ptrLive[d]) \in blobLive[d][k]
 
+\* Audience: internal.
+LivePointersHaveTheirNode ==
+    \A d \in Docs, replica \in Ptr : ptrLive[d][replica] \in Vers => nodeLive[d][replica]
+
+\* Audience: internal.
+DurablePointersHaveTheirNode ==
+    \A d \in Docs, replica \in Ptr : ptrDur[d][replica] \in Vers => nodeDur[d][replica]
+
 \* Audience: client. A read is never told to wait for a writer that does not exist. Shows through:
 \* the outcome of a read.
 \* STRANDED-VOTE: with nobody holding writer exclusion, every document has a majority.
@@ -873,14 +1210,55 @@ AHealthyHolderFindsEveryDocumentSettled ==
                                  /\ ptrLive[d] = ptrDur[d]
                                  /\ Unanimous(ptrLive[d])
 
+OnlyAHolderChangesADocumentStep ==
+    (docs' # docs /\ crashes' = crashes) => \E p \in Procs : W(p)
+
 \* Audience: internal.
 \* Only the holder of writer exclusion changes a document; a crash only loses what was not
 \* durable. Attaching, the open of a handle, changes nothing.
-OnlyAHolderChangesADocument ==
-    [][(docs' # docs /\ crashes' = crashes) => \E p \in Procs : W(p)]_spvars
+OnlyAHolderChangesADocument == [][OnlyAHolderChangesADocumentStep]_spvars
 
 -----------------------------------------------------------------------------
 (* Witnesses: each is violated by a reachable state or step it names.      *)
+
+ATransactionRejectsDigestMismatch ==
+    \E p \in Procs :
+        /\ pc[p] = "open" /\ pc'[p] = "wrote" /\ wph = "planned" /\ wph' = "done"
+        /\ \E index \in DOMAIN prep :
+             prep[index].precondition = "digest" /\ ~SwapPreconditionHolds(prep[index])
+        /\ log' = log
+        /\ ptrLive' = ptrLive /\ ptrDur' = ptrDur
+        /\ blobLive' = blobLive /\ blobDur' = blobDur /\ record' = record
+
+Witness_ATransactionRejectsDigestMismatch ==
+    [][~ATransactionRejectsDigestMismatch]_spvars
+
+ATransactionRejectsExpectedAbsent ==
+    \E p \in Procs :
+        /\ pc[p] = "open" /\ pc'[p] = "wrote" /\ wph = "planned" /\ wph' = "done"
+        /\ \E index \in DOMAIN prep : prep[index].precondition = "absent"
+        /\ log' = log
+        /\ ptrLive' = ptrLive /\ ptrDur' = ptrDur
+        /\ blobLive' = blobLive /\ blobDur' = blobDur /\ record' = record
+
+Witness_ATransactionRejectsExpectedAbsent ==
+    [][~ATransactionRejectsExpectedAbsent]_spvars
+
+Witness_ATransactionPlansDigestPreconditions ==
+    ~(Len(prep) = 2 /\ \A index \in DOMAIN prep : prep[index].precondition = "digest")
+
+Witness_ATransactionAcceptsDigestPreconditions ==
+    ~(Len(prep) = 2 /\ log = "prepared"
+      /\ \A index \in DOMAIN prep : prep[index].precondition = "digest")
+
+Witness_ATransactionPreparesTwoDocuments ==
+    ~(Len(prep) = 2 /\ log = "prepared")
+
+Witness_ACrashLeavesTwoTransactionSwapsPrepared ==
+    ~(crashes = 1 /\ Len(prep) = 2)
+
+Witness_ARecoveryAppliesTheSecondTransactionSwap ==
+    ~(\E p \in Procs : pc[p] = "recSwap1" /\ wph = "txRen" /\ txnDoc = 2)
 
 Witness_ARecoverySettlesARecordOfTheSecondDocument ==
     ~(wph = "rvRen" /\ wdoc = 2)
@@ -896,24 +1274,37 @@ Witness_ARecoveryCompletesAllUnits ==
 
 Witness_ADirectoryDebtUnitRuns == ~(wph = "dirSync")
 
-Witness_ADirectoryClearSurvivesOnlyLive ==
-    [][~(wph = "dirClearSync" /\ crashes' # crashes /\ directoryLive' > 0)]_spvars
+ADirectoryClearSurvivesOnlyLive ==
+    wph = "dirClearSync" /\ crashes' # crashes /\ directoryLive' > 0
 
-Witness_ALiveRollbackCollects ==
-    [][~(wph = "rbCollRem" /\ blobLive' # blobLive)]_spvars
+Witness_ADirectoryClearSurvivesOnlyLive == [][~ADirectoryClearSurvivesOnlyLive]_spvars
 
-Witness_AWriteCollects ==
-    [][~(wph = "collRem" /\ blobLive' # blobLive)]_spvars
+ALiveRollbackCollects == wph = "rbCollRem" /\ blobLive' # blobLive
+
+Witness_ALiveRollbackCollects == [][~ALiveRollbackCollects]_spvars
+
+AWriteCollects == wph = "collRem" /\ blobLive' # blobLive
+
+Witness_AWriteCollects == [][~AWriteCollects]_spvars
+
+ARecoveryCollectsARolledBackTransaction ==
+    wph = "rvCollRem" /\ log = "begun" /\ blobLive' # blobLive
 
 Witness_ARecoveryCollectsARolledBackTransaction ==
-    [][~(wph = "rvCollRem" /\ log = "begun" /\ blobLive' # blobLive)]_spvars
+    [][~ARecoveryCollectsARolledBackTransaction]_spvars
+
+ARecoveryCollectsACommittedTransaction ==
+    wph = "rvCollRem" /\ log = "ended" /\ blobLive' # blobLive
 
 Witness_ARecoveryCollectsACommittedTransaction ==
-    [][~(wph = "rvCollRem" /\ log = "ended" /\ blobLive' # blobLive)]_spvars
+    [][~ARecoveryCollectsACommittedTransaction]_spvars
+
+ARollbackCollectionFailureRequiresRecovery ==
+    /\ wph \in {"rbCollRead", "rbCollSync", "rbCollRem", "rbCollFsync"}
+    /\ \E holder \in Procs : pc'[holder] = "told" /\ pc[holder] # "told"
 
 Witness_ARollbackCollectionFailureRequiresRecovery ==
-    [][~(wph \in {"rbCollRead", "rbCollSync", "rbCollRem", "rbCollFsync"}
-          /\ \E holder \in Procs : pc'[holder] = "told" /\ pc[holder] # "told") ]_spvars
+    [][~ARollbackCollectionFailureRequiresRecovery]_spvars
 
 Witness_AWriterIsRefusedBetweenRecoveryUnits ==
     ~(\E writer, recoverer \in Procs :
@@ -921,12 +1312,14 @@ Witness_AWriterIsRefusedBetweenRecoveryUnits ==
         /\ runPhase[writer] = "none"
         /\ runPhase[recoverer] # "none" /\ pc[recoverer] = "idle")
 
-Witness_AStaleRecoveryRestarts ==
-    [][~(\E holder \in Procs :
+AStaleRecoveryRestarts ==
+    \E holder \in Procs :
         /\ runPhase[holder] \notin {"none", "publication"}
         /\ count # runCount[holder]
         /\ pc[holder] \in {"held", "told"} /\ pc'[holder] \in RecStates
-        /\ runPhase'[holder] = "publication")]_spvars
+        /\ runPhase'[holder] = "publication"
+
+Witness_AStaleRecoveryRestarts == [][~AStaleRecoveryRestarts]_spvars
 
 Witness_AHolderTerminatesWithARecordPending ==
     ~(\E p \in Procs : pc[p] = "terminated" /\ \E d \in Docs : record[d].dur # NoVal)
@@ -936,5 +1329,55 @@ Witness_RecoveryRollsForwardBothKindsOfWrite ==
 
 Witness_ARestartLosesTheFenceWithARecordPending ==
     ~(terminatedIn = "crash" /\ ~fence /\ \E d \in Docs : record[d].dur # NoVal)
+
+AWriteRemoveCollisionIsRejected ==
+    /\ lockHolder \in Procs
+    /\ pc'[lockHolder] = "wrote" /\ pc[lockHolder] = "open"
+    /\ wph = "planned" /\ ~SwapSetHasUniqueTargets
+
+Witness_AWriteRemoveCollisionIsRejected ==
+    [][~AWriteRemoveCollisionIsRejected]_spvars
+
+AWriteBeneathRemovedNodeIsRejected ==
+    /\ lockHolder \in Procs
+    /\ pc'[lockHolder] = "wrote" /\ pc[lockHolder] = "open"
+    /\ wph = "planned" /\ \E path \in PlannedRemovalTargets : RemovalIsBelowWrite(path)
+
+Witness_AWriteBeneathRemovedNodeIsRejected ==
+    [][~AWriteBeneathRemovedNodeIsRejected]_spvars
+
+ARemovalAtExistingDocumentIsRejected ==
+    /\ lockHolder \in Procs
+    /\ pc'[lockHolder] = "wrote" /\ pc[lockHolder] = "open"
+    /\ wph = "planned" /\ DocumentEntry(1) \in PlannedRemovalTargets
+    /\ DocumentAfterTransaction(1)
+
+Witness_ARemovalAtExistingDocumentIsRejected ==
+    [][~ARemovalAtExistingDocumentIsRejected]_spvars
+
+ARemovalBeneathExistingDocumentIsRejected ==
+    /\ lockHolder \in Procs
+    /\ pc'[lockHolder] = "wrote" /\ pc[lockHolder] = "open"
+    /\ wph = "planned" /\ DocumentBelow(1) \in PlannedRemovalTargets
+    /\ DocumentAfterTransaction(1)
+
+Witness_ARemovalBeneathExistingDocumentIsRejected ==
+    [][~ARemovalBeneathExistingDocumentIsRejected]_spvars
+
+Witness_ATransactionRemovesANode == ~(wph = "nodeDone" /\ log = "prepared")
+Witness_ARecoveryRemovesANode ==
+    ~(\E p \in Procs : pc[p] = "recSwap1" /\ wph = "nodeDone")
+
+ADirectoryIntentTears == wph = "dirAppend" /\ wph' = "none" /\ directoryTorn'
+Witness_ADirectoryIntentTears == [][~ADirectoryIntentTears]_spvars
+
+ADirectoryIntentIsRepaired == wph = "dirAppendRepair" /\ wph' = "dirAppendSync"
+Witness_ADirectoryIntentIsRepaired == [][~ADirectoryIntentIsRepaired]_spvars
+
+Witness_ADirectoryIsCreatedAndRenamed ==
+    ~(wph = "txRen" /\ nodeDur[1][1])
+
+Witness_ARecoveryCreatesADirectory ==
+    ~(\E p \in Procs : pc[p] = "recSwap1" /\ wph = "dirAppend")
 
 =============================================================================

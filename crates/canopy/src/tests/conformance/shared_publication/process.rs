@@ -16,7 +16,7 @@ use super::super::pointer_publication::class as publication;
 use super::super::recorder::{Recorder, Verdict, Watcher};
 use super::projection::World;
 use crate::tests::test_agent;
-use crate::{Recovery, RecoveryPhase, Store, StoreOptions, Swap, SwapSet};
+use crate::{ContentDigest, Recovery, RecoveryPhase, Store, StoreOptions, Swap, SwapSet};
 
 pub(super) use contract::Implementation;
 
@@ -27,13 +27,43 @@ pub(super) enum Class {
     Contract(contract::Class),
     Document(publication::Class),
     DirectoryRead,
+    DirectoryIntentAppend,
     DirectorySync,
+    DirectoryCreate,
     DirectoryClear,
     DirectoryClearSync,
+    NodeRemove(usize),
     Other,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PlannedPrecondition {
+    Unconditional,
+    ExpectedDigest(usize),
+    ExpectedAbsent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PlannedEffect {
+    Write,
+    Remove,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PlannedSwap {
+    pub(super) document: usize,
+    pub(super) effect: PlannedEffect,
+    pub(super) precondition: PlannedPrecondition,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PlannedNodeRemoval {
+    Node,
+    AtDocument,
+    BelowDocument,
+}
+
+#[derive(Clone, Debug)]
 pub(super) enum Command {
     Open,
     Write {
@@ -42,7 +72,8 @@ pub(super) enum Command {
         logged: bool,
     },
     BracketedWrite {
-        document: usize,
+        swaps: Vec<PlannedSwap>,
+        node_removals: Vec<PlannedNodeRemoval>,
         version: usize,
         logged: bool,
         quiesce_before: bool,
@@ -121,13 +152,24 @@ impl Watcher for Turnstile {
         if path == self.world.directory_record() {
             let class = match op {
                 FaultOp::Read => Class::DirectoryRead,
+                FaultOp::Append => Class::DirectoryIntentAppend,
                 FaultOp::Truncate => Class::DirectoryClear,
                 FaultOp::Fsync => Class::DirectoryClearSync,
                 _ => Class::Other,
             };
             return self.check(class, false);
         }
-        if op == FaultOp::Fsync && self.world.directory_target().parent() == Some(path) {
+        if let Some(replica) = self.world.node_replica(path) {
+            let class = match op {
+                FaultOp::CreateDir => Class::DirectoryCreate,
+                FaultOp::RemoveDir => Class::NodeRemove(replica),
+                _ => Class::Other,
+            };
+            if class != Class::Other {
+                return self.check(class, false);
+            }
+        }
+        if op == FaultOp::Fsync && self.world.node_parent(path).is_some() {
             return self.check(Class::DirectorySync, false);
         }
         let class = match contract::classify(self.implementation, op, path) {
@@ -336,7 +378,8 @@ fn serve(
             let store = store.as_ref().ok_or("a Store call needs an open handle")?;
             match command {
                 Command::BracketedWrite {
-                    document,
+                    swaps,
+                    node_removals,
                     version,
                     logged,
                     quiesce_before,
@@ -348,7 +391,15 @@ fn serve(
                             .quiesce_commit_log()
                             .map_err(|error| error.to_string())?;
                     }
-                    write(store, &turnstile.world, actor, document, version, logged)?;
+                    write_many(
+                        store,
+                        &turnstile.world,
+                        actor,
+                        &swaps,
+                        &node_removals,
+                        version,
+                        logged,
+                    )?;
                     if quiesce_after {
                         store
                             .quiesce_commit_log()
@@ -438,20 +489,83 @@ fn write(
     version: usize,
     logged: bool,
 ) -> Result<Reply, String> {
-    let document = &world.documents[document - 1];
+    write_many(
+        store,
+        world,
+        actor,
+        &[PlannedSwap {
+            document,
+            effect: PlannedEffect::Write,
+            precondition: PlannedPrecondition::Unconditional,
+        }],
+        &[],
+        version,
+        logged,
+    )
+}
+
+fn write_many(
+    store: &Store,
+    world: &World,
+    actor: usize,
+    planned: &[PlannedSwap],
+    node_removals: &[PlannedNodeRemoval],
+    version: usize,
+    logged: bool,
+) -> Result<Reply, String> {
     let nonce = world.nonce(actor);
     if logged {
-        store
-            .apply_transaction_as(
-                &SwapSet::single(Swap::new(
+        let swaps = planned.iter().map(|planned| {
+            let document = &world.documents[planned.document - 1];
+            match (planned.effect, &planned.precondition) {
+                (PlannedEffect::Remove, PlannedPrecondition::Unconditional) => {
+                    Ok(Swap::remove(document.node.clone(), document.name.clone()))
+                }
+                (PlannedEffect::Remove, PlannedPrecondition::ExpectedDigest(expected)) => {
+                    Ok(Swap::remove_conditional(
+                        document.node.clone(),
+                        document.name.clone(),
+                        ContentDigest::of(World::body(*expected).as_bytes()),
+                    ))
+                }
+                (PlannedEffect::Remove, PlannedPrecondition::ExpectedAbsent) => {
+                    Err("a removal cannot carry an absence precondition".to_owned())
+                }
+                (PlannedEffect::Write, PlannedPrecondition::Unconditional) => Ok(Swap::new(
                     document.node.clone(),
                     document.name.clone(),
                     World::body(version),
                 )),
-                &nonce,
-            )
+                (PlannedEffect::Write, PlannedPrecondition::ExpectedDigest(expected)) => {
+                    Ok(Swap::conditional(
+                        document.node.clone(),
+                        document.name.clone(),
+                        World::body(version),
+                        ContentDigest::of(World::body(*expected).as_bytes()),
+                    ))
+                }
+                (PlannedEffect::Write, PlannedPrecondition::ExpectedAbsent) => {
+                    Ok(Swap::conditional_absent(
+                        document.node.clone(),
+                        document.name.clone(),
+                        World::body(version),
+                    ))
+                }
+            }
+        });
+        let swaps = swaps.collect::<Result<Vec<_>, _>>()?;
+        let removals = node_removals.iter().map(|removal| match removal {
+            PlannedNodeRemoval::Node => world.model_node(),
+            PlannedNodeRemoval::AtDocument => world.model_node_at_document(),
+            PlannedNodeRemoval::BelowDocument => world.model_node_below_document(),
+        });
+        let swaps =
+            SwapSet::with_node_removals(swaps, removals).map_err(|error| error.to_string())?;
+        store
+            .apply_transaction_as(&swaps, &nonce)
             .map_err(|error| error.to_string())?;
     } else {
+        let document = &world.documents[planned[0].document - 1];
         store
             .write_document_replicated_as(
                 &document.node,

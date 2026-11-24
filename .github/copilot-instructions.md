@@ -559,7 +559,9 @@ configuration of a spec this tool covers states its outcome in one of those thre
 [tools/gen-creation-cfgs.ps1](../tools/gen-creation-cfgs.ps1), every `PointerPublication*.cfg` by
 [tools/gen-pointer-publication-cfgs.ps1](../tools/gen-pointer-publication-cfgs.ps1), every
 `SharedPublication*.cfg` by
-[tools/gen-shared-publication-cfgs.ps1](../tools/gen-shared-publication-cfgs.ps1) and every
+[tools/gen-shared-publication-cfgs.ps1](../tools/gen-shared-publication-cfgs.ps1), every
+`QuotientSoundness*.cfg`, and the generated `QuotientSoundnessPair.tla`, by
+[tools/gen-quotient-soundness.ps1](../tools/gen-quotient-soundness.ps1) and every
 `Doorbell*.cfg` by [tools/gen-doorbell-cfgs.ps1](../tools/gen-doorbell-cfgs.ps1), from tables --
 the parts under `tools/gen-coordination-cfgs/` for Coordination -- that carry each configuration's
 constants, its required outcome and its tier. Change a configuration by changing its table and
@@ -602,6 +604,25 @@ leaves it out and names it as not run. It is run with `-Tier evidence` (and a `-
 a change touches what its finding rests on, which the table that tags it says; a work item whose
 change does names those configurations in its `Verify:` line with `-Tier evidence`. `-Tier all`
 runs every tier.
+
+**Do not start a multi-hour or multi-day exhaustive TLC closure without approval.** Before
+launching one, state the exact decision or finding the result will establish, estimate its cost from
+smaller bounds or prior runs, identify which upcoming model changes could invalidate it, and show why
+bounded reference runs, controls, witnesses, reduction proofs, or deterministic simulation cannot
+answer the question. Obtain the engineer's explicit approval for the cost; while a work stream is
+still changing the reached model, a multi-day positive closure is an exception rather than the
+normal gate. Reserve it for a frozen milestone, release candidate, or other durable evidence point.
+If a run's queue and reachable depth keep growing beyond the estimate, stop and reassess rather than
+letting calendar time substitute for a decision to continue.
+
+**Counters are normalized by a view; budgets bound faults.** When a spec models a counter the
+implementation keeps unbounded -- a modification count, a generation, a content version -- check it
+through a `VIEW` that keeps only the relations the protocol reads (equality, order, parity,
+successor, current-or-stale against a saved value), and keeps a value nothing can name again only
+as present or absent. Do not bound a counter's history with a budget to make TLC stop. A budget
+constant bounds the operations or faults the checks are scoped to; say which in the configuration's
+header. The decision and its measurements are in
+[DESIGN-NOTES.md](../crates/canopy/DESIGN-NOTES.md) "Views normalize counters; budgets bound faults".
 
 **Cadence: guardrails, not a lawyer for every adjustment.** A work item that changes a spec ends
 with a `Verify:` line naming the `-Filter` patterns of the configurations that show it -- its

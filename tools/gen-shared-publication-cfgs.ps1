@@ -36,19 +36,43 @@ $milestoneTier = @('SharedPublication-ThreeDocs', 'SharedPublication-ThreeReques
     'SharedPublication-ThreeWriters', 'SharedPublication-ResolveThreeWriters', 'SharedPublication-Mixed',
     'SharedPublication-MixedResolve', 'SharedPublication', 'SharedPublication-RecordTxn',
     'SharedPublication-Resolve', 'SharedPublication-ResolveTxn',
+    'SharedPublication-HealthyPublication', 'SharedPublication-HealthyTransactions',
+    'SharedPublication-SharedPublication', 'SharedPublication-SharedTransactions',
+    'SharedPublication-DirectoryDebt', 'SharedPublication-UnitMultiWriterPublication',
+    'SharedPublication-UnitMultiWriterResolve', 'SharedPublication-UnitMultiWriterTransaction',
+    'SharedPublication-NamespaceTransactions',
+    'SharedPublication-Control-NoGuard', 'SharedPublication-Control-PreparedTransactionRolledBack',
+    'SharedPublication-Control-RecoveryLeavesTheDocumentsRecord',
+    'SharedPublication-Control-RecoveryLeavesTheDocumentsResolve',
+    'SharedPublication-Control-RecoverySkipsADocument',
+    'SharedPublication-Witness-ARecoveryAppliesTheSecondTransactionSwap',
     'SharedPublication-Witness-RecoveryRollsForwardBothKindsOfWrite')
+
+# Positive configurations whose unreduced closure waits for a frozen boundary
+# (DESIGN-NOTES "Unreduced closures wait for a frozen boundary").
+$boundaryClosure = @('SharedPublication-HealthyPublication', 'SharedPublication-HealthyTransactions',
+    'SharedPublication-SharedPublication', 'SharedPublication-SharedTransactions',
+    'SharedPublication-UnitMultiWriterPublication', 'SharedPublication-UnitMultiWriterTransaction',
+    'SharedPublication-UnitMultiWriterResolve', 'SharedPublication-StaleRecoverySchedule',
+    'SharedPublication', 'SharedPublication-Resolve', 'SharedPublication-RecordTxn',
+    'SharedPublication-ResolveTxn', 'SharedPublication-Mixed', 'SharedPublication-MixedResolve',
+    'SharedPublication-ThreeRequests', 'SharedPublication-ResolveThreeRequests',
+    'SharedPublication-ThreeWriters', 'SharedPublication-ResolveThreeWriters', 'SharedPublication-ThreeDocs')
 
 function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn,
                       [string[]]$invariants, [string[]]$properties = @(), [string]$control = 'none',
                       [int]$procs = 2, [int]$docs = 2, [int]$requests = 2, [int]$terminations = 1,
                       [int]$crashes = 1, [string]$coordControl = 'none', [bool]$mixed = $false,
                       [string]$recoverySchedule = 'all', [bool]$reference = $false,
-                      [int]$directoryDebt = 0, [bool]$shared = $false) {
+                      [int]$directoryDebt = 0, [bool]$shared = $false,
+                      [string]$preconditionMode = 'unconditional', [bool]$initialNodeRemoved = $false) {
     $baseName = $name
     $name = $name -replace '^SharedPublication', $family
     $lines = @('\* Copyright (c) Michael Grier.')
     foreach ($h in $header) { $lines += '\* ' + $h }
-    if ($milestoneTier -contains $baseName) { $lines += '\* Tier: milestone.' }
+    if ($RawUnits -and $boundaryClosure -contains $baseName) { $lines += '\* Pair closure: boundary.' }
+    if ($RawUnits) { $lines += '\* Tier: evidence.' }
+    elseif ($milestoneTier -contains $baseName) { $lines += '\* Tier: milestone.' }
     $flag = { param($b) if ($b) { 'TRUE' } else { 'FALSE' } }
     $lines += 'CONSTANTS'
     $lines += "    Procs = {$((1..$procs) -join ', ')}"
@@ -57,6 +81,8 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
         $lines += "    MaxWrites = $requests"
         $lines += "    RecoverySchedule = `"$recoverySchedule`""
         $lines += "    InitialDirectoryDebt = $directoryDebt"
+        $lines += "    InitialNodeRemoved = $(& $flag $initialNodeRemoved)"
+        $lines += "    TransactionPreconditions = `"$preconditionMode`""
     }
     $lines += "    MaxTerminations = $terminations"
     $lines += "    MaxCrashes = $crashes"
@@ -99,7 +125,8 @@ function Write-Config([string]$name, [string[]]$header, [string]$fix, [bool]$txn
     [System.IO.File]::WriteAllText((Join-Path $spec "$name.cfg"), $text, $utf8)
 }
 
-$all = @('SpTypeOK', 'DurablePointerHasBlob', 'LivePointerHasBlob', 'EveryDocumentHasAMajority',
+$all = @('SpTypeOK', 'DurablePointerHasBlob', 'LivePointerHasBlob',
+         'LivePointersHaveTheirNode', 'DurablePointersHaveTheirNode', 'EveryDocumentHasAMajority',
          'OutcomeIsFixedOnceRecovered', 'AHealthyHolderFindsEveryDocumentSettled')
 $props = @('OnlyAHolderChangesADocument')
 
@@ -120,6 +147,7 @@ if ($unitModel) {
     Write-Config 'SharedPublication-ReferenceTransaction' @('The bounded unreduced transaction reference: every invariant and property holds.') 'record' $true $all $props 'none' 1 1 1 0 0 -reference $true
     Write-Config 'SharedPublication-PublicationUnits' @('Publication recovery in separate exclusion units: every invariant and property holds.') 'record' $false ($all + @('CountIsOddWhileAnOperationIsUnresolved', 'AFinishedOperationLeavesTheStoreSettled')) $props 'none' 1 1 1 0 0
     Write-Config 'SharedPublication-TransactionUnits' @('Transaction recovery in separate exclusion units: every invariant and property holds.') 'record' $true $all $props 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-NamespaceTransactions' @('One namespace tree supports remove, recreate and recovery: every invariant and property holds.') 'record' $true $all $props 'none' 1 1 2 1 1
     Write-Config 'SharedPublication-Witness-RecoveryCompletesAllUnits' @('TLC must report Witness_ARecoveryCompletesAllUnits violated.') 'record' $true @('Witness_ARecoveryCompletesAllUnits') @() 'none' 1 1 1 0 0
     Write-Config 'SharedPublication-Witness-AWriteCollects' @('TLC must report Witness_AWriteCollects violated.') 'record' $false @('SpTypeOK') @('Witness_AWriteCollects') 'none' 1 1 1 0 0
     Write-Config 'SharedPublication-Witness-WriterRefusedBetweenUnits' @('TLC must report Witness_AWriterIsRefusedBetweenRecoveryUnits violated.') 'record' $false @('Witness_AWriterIsRefusedBetweenRecoveryUnits') @() 'none' 2 1 2 0 0
@@ -130,6 +158,23 @@ if ($unitModel) {
                           'ARecoveryCollectsACommittedTransaction', 'ARollbackCollectionFailureRequiresRecovery')) {
         Write-Config "SharedPublication-Witness-$witness" @("TLC must report Witness_$witness violated.") 'record' $true @('SpTypeOK') @("Witness_$witness") 'none' 1 1 1 0 0
     }
+    Write-Config 'SharedPublication-Witness-ATransactionPreparesTwoDocuments' @('TLC must report Witness_ATransactionPreparesTwoDocuments violated.') 'record' $true @('SpTypeOK', 'Witness_ATransactionPreparesTwoDocuments') @() 'none' 1 2 1 0 0
+    Write-Config 'SharedPublication-Witness-ATransactionPlansDigestPreconditions' @('TLC must report Witness_ATransactionPlansDigestPreconditions violated.') 'record' $true @('SpTypeOK', 'Witness_ATransactionPlansDigestPreconditions') @() 'none' 1 2 1 0 0 -preconditionMode all
+    Write-Config 'SharedPublication-Witness-ATransactionAcceptsDigestPreconditions' @('TLC must report Witness_ATransactionAcceptsDigestPreconditions violated.') 'record' $true @('SpTypeOK', 'Witness_ATransactionAcceptsDigestPreconditions') @() 'none' 1 2 1 0 0 -preconditionMode all
+    Write-Config 'SharedPublication-Witness-ATransactionRejectsDigestMismatch' @('TLC must report Witness_ATransactionRejectsDigestMismatch violated.') 'record' $true @('SpTypeOK') @('Witness_ATransactionRejectsDigestMismatch') 'none' 1 2 1 0 0 -preconditionMode all
+    Write-Config 'SharedPublication-Witness-ATransactionRejectsExpectedAbsent' @('TLC must report Witness_ATransactionRejectsExpectedAbsent violated.') 'record' $true @('SpTypeOK') @('Witness_ATransactionRejectsExpectedAbsent') 'none' 1 2 1 0 0 -preconditionMode all
+    Write-Config 'SharedPublication-Witness-ACrashLeavesTwoTransactionSwapsPrepared' @('TLC must report Witness_ACrashLeavesTwoTransactionSwapsPrepared violated.') 'record' $true @('SpTypeOK', 'Witness_ACrashLeavesTwoTransactionSwapsPrepared') @() 'none' 1 2 1 0 1
+    Write-Config 'SharedPublication-Witness-ARecoveryAppliesTheSecondTransactionSwap' @('TLC must report Witness_ARecoveryAppliesTheSecondTransactionSwap violated.') 'record' $true @('SpTypeOK', 'Witness_ARecoveryAppliesTheSecondTransactionSwap') @() 'none' 2 2 2 0 1 -shared $true
+    Write-Config 'SharedPublication-Witness-AWriteRemoveCollisionIsRejected' @('TLC must report Witness_AWriteRemoveCollisionIsRejected violated.') 'record' $true @('SpTypeOK') @('Witness_AWriteRemoveCollisionIsRejected') 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-AWriteBeneathRemovedNodeIsRejected' @('TLC must report Witness_AWriteBeneathRemovedNodeIsRejected violated.') 'record' $true @('SpTypeOK') @('Witness_AWriteBeneathRemovedNodeIsRejected') 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-ARemovalAtExistingDocumentIsRejected' @('TLC must report Witness_ARemovalAtExistingDocumentIsRejected violated.') 'record' $true @('SpTypeOK') @('Witness_ARemovalAtExistingDocumentIsRejected') 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-ARemovalBeneathExistingDocumentIsRejected' @('TLC must report Witness_ARemovalBeneathExistingDocumentIsRejected violated.') 'record' $true @('SpTypeOK') @('Witness_ARemovalBeneathExistingDocumentIsRejected') 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-ATransactionRemovesANode' @('TLC must report Witness_ATransactionRemovesANode violated.') 'record' $true @('SpTypeOK', 'Witness_ATransactionRemovesANode') @() 'none' 1 1 1 0 0
+    Write-Config 'SharedPublication-Witness-ARecoveryRemovesANode' @('TLC must report Witness_ARecoveryRemovesANode violated.') 'record' $true @('SpTypeOK', 'Witness_ARecoveryRemovesANode') @() 'none' 2 1 1 1 1
+    Write-Config 'SharedPublication-Witness-ADirectoryIntentTears' @('TLC must report Witness_ADirectoryIntentTears violated.') 'record' $true @('SpTypeOK') @('Witness_ADirectoryIntentTears') 'none' 1 1 1 0 0 -initialNodeRemoved $true
+    Write-Config 'SharedPublication-Witness-ADirectoryIntentIsRepaired' @('TLC must report Witness_ADirectoryIntentIsRepaired violated.') 'record' $true @('SpTypeOK') @('Witness_ADirectoryIntentIsRepaired') 'none' 1 1 1 0 0 -initialNodeRemoved $true
+    Write-Config 'SharedPublication-Witness-ADirectoryIsCreatedAndRenamed' @('TLC must report Witness_ADirectoryIsCreatedAndRenamed violated.') 'record' $true @('SpTypeOK', 'Witness_ADirectoryIsCreatedAndRenamed') @() 'none' 1 1 1 0 0 -initialNodeRemoved $true
+    Write-Config 'SharedPublication-Witness-ARecoveryCreatesADirectory' @('TLC must report Witness_ARecoveryCreatesADirectory violated.') 'record' $true @('SpTypeOK', 'Witness_ARecoveryCreatesADirectory') @() 'none' 2 1 1 1 1 -initialNodeRemoved $true
 }
 
 # Both guards, each with unlogged and with logged writes, two writers, a death and a host crash:
