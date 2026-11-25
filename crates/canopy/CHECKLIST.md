@@ -75,136 +75,104 @@ Each item here names the event it waits on; it joins a milestone once that event
   and recovery path. **Verify:** the namespace, directory-debt and transaction filters, audience
   tags, replay corpus and the in-scope crate's tests.
 
-### M12-2 parallel directory-soundness execution
+### M12-2 distributed verification and completion
 
-Run this operational plan from one committed source snapshot. Do not edit the model, generator,
-base configurations, generated quotient configurations, or this plan while either machine is
-running. `burpy` is the publishing machine; `condor-1` is the consuming clone.
+The quotient soundness closure is complete on `burpy` at source commit
+`f6e618aef5e317d4ffb83c3c1ca70a0a7f01fecf`. Condor's old quotient runs from
+`f78f8c66a6baf904a8a81078e84cf6e31b6707e4` are obsolete and must not be counted. Do not rerun the
+quotient partition. The remaining independent work is the formal/replay gate on `condor-1` and the
+build/reconciliation gate on `burpy`.
 
-1. **Publish the frozen source checkpoint from `burpy`.** Before either machine starts TLC, finish
-   and validate the source snapshot, generate the quotient inputs, commit it, and push it to origin.
-   This is an execution checkpoint, not an M12 completion commit; M12 remains open until every
-   proof and milestone gate passes.
-
-   ```powershell
-   Set-Location Q:\github\canopy
-   pwsh -NoProfile -File tools/gen-quotient-soundness.ps1
-   git --no-pager diff --check
-   git add -A
-   git commit -m "Checkpoint M12-2 distributed TLC execution"
-   $proofCommit = git --no-pager rev-parse HEAD
-   git push origin mikegrier/coord
-   $proofCommit
-   ```
-
-   Record the full `$proofCommit` value. Do not begin either proof run unless `git push` succeeds.
-   Both machines use that commit, not a file bundle and not independently regenerated quotient
-   files. Do not move, amend, or rewrite this commit while the distributed run is active. Each
-   machine needs at least 120 GB free for its own `.scratch/tlc/states`; TLC spill state is local and
-   is never transferred. The M12 milestone completion commit remains a later, separate action.
-
-2. **Reproduce the toolchain.** Both machines must report the same Java implementation and version,
-   and both must use the same TLC jar. The current `burpy` proof identity is Microsoft OpenJDK
-   21.0.13.1, 64-bit, using
-   `C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin\java.exe`; `condor-1` must install or
-   select that same implementation and version. Verify the jar and Java before starting:
-
-   ```powershell
-   java -version
-   $jar = Join-Path $env:USERPROFILE '.tla\1.8.0\tla2tools.jar'
-   (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash
-   ```
-
-   The jar hash must be
+1. **Freeze the execution source on both machines.** Use commit
+   `f6e618aef5e317d4ffb83c3c1ca70a0a7f01fecf`. `condor-1` may put that commit on a temporary local
+   branch; detached HEAD is not required. This planning-only checklist commit is not part of the
+   model input and follows that proof source. Do not regenerate model inputs, edit source, or merge
+   another revision while either machine is running. Verify the toolchain on both machines:
+   Microsoft OpenJDK 21.0.13.1 and the TLC 1.8.0 jar with SHA-256
    `fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713`.
 
-3. **Prepare `condor-1` from the pushed checkpoint.** Clone `origin` or update an existing clone,
-   fetch the publishing branch, and check out the exact full commit hash recorded by `burpy`.
-   Replace the placeholder with that full hash before running the commands. Do not regenerate the
-   quotient files after checkout; the committed bytes are the evidence inputs.
-
-   ```powershell
-   $proofCommit = '<full commit hash copied from burpy>'
-   $root = 'C:\src\canopy-m12-2'
-   if (-not (Test-Path (Join-Path $root '.git'))) {
-       git clone https://github.com/MikeGrier/canopy.git $root
-   }
-   Set-Location $root
-   git fetch origin
-   git checkout --detach $proofCommit
-   if ((git --no-pager rev-parse HEAD) -ne $proofCommit) {
-       throw 'condor-1 is not at the burpy proof commit'
-   }
-   pwsh -NoProfile -File tools/run-tlc-all.ps1 -Spec crates/canopy/spec/QuotientSoundness.tla `
-       -Tier evidence -Filter '*DirectoryCreation-*' -List
-   ```
-
-   `HEAD` must equal `$proofCommit`. The list must contain exactly these eight evidence
-   configurations: `AppendPlan`, `AppendRepair`, `AppendSync`, `Complete`, `Create`, `Recovery`,
-   `Sync`, and `Transaction`. If either check differs, stop; `condor-1` is not using the same
-   frozen source snapshot as `burpy`.
-
-4. **Run the largest closure on `burpy`.** After both machines have passed the commit, Java, jar,
-   and configuration checks, start this command at the agreed common start time. Use one 24 GB TLC
-   heap and eight workers. Direct the runner's summary and impact record to `burpy`-specific files
-   so nothing can be confused with the other machine.
-
-   ```powershell
-   Set-Location Q:\github\canopy
-   $env:Path = 'C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin;' + $env:Path
-   $record = '.scratch/tlc/record/m12-2-burpy.json'
-   $summary = '.scratch/tlc/m12-2-burpy-terminal.out'
-   pwsh -NoProfile -File tools/run-tlc-all.ps1 `
-       -Spec crates/canopy/spec/QuotientSoundness.tla `
-       -Tier evidence `
-       -Filter '*DirectoryCreation-Transaction*' `
-       -Workers 8 -HeapGB 24 -Record $record 2>&1 | Tee-Object -FilePath $summary
-   if ($LASTEXITCODE -ne 0) { throw "burpy directory proof failed with exit $LASTEXITCODE" }
-   ```
-
-5. **Run the seven smaller closures on `condor-1`.** Start this at the same agreed time as `burpy`.
-   Run at most three configurations at once, each with an 8 GB heap and four workers. This uses
-   roughly 12 TLC workers and 24 GB heap aggregate. The runner advances to the remaining
-   configurations as slots become free.
+2. **Run the M12 formal and replay evidence on `condor-1`.** Use the following exact filter; it
+   selects 15 raw and 15 reduced configurations covering namespace transactions, directory debt,
+   transaction units, torn and repaired directory intent, directory creation, node recovery,
+   removal rejection, and write/remove collisions.
 
    ```powershell
    Set-Location C:\src\canopy-m12-2
+   $proofCommit = 'f6e618aef5e317d4ffb83c3c1ca70a0a7f01fecf'
+   git fetch origin
+   git switch -C m12-2-condor $proofCommit
+   if ((git --no-pager rev-parse HEAD) -ne $proofCommit) {
+       throw 'condor-1 is not at the M12 proof commit'
+   }
    $env:Path = 'C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin;' + $env:Path
-   $record = '.scratch/tlc/record/m12-2-condor-1.json'
-   $summary = '.scratch/tlc/m12-2-condor-1-terminal.out'
+   $filter = '*NamespaceTransactions*,*DirectoryDebt*,*TransactionUnits*,*ADirectoryIntent*,*ADirectoryIsCreatedAndRenamed*,*ARecoveryCreatesADirectory*,*ARecoveryRemovesANode*,*ARemovalAtExistingDocument*,*ARemovalBeneathExistingDocument*,*ATransactionRemovesANode*,*AWriteBeneathRemovedNode*,*AWriteRemoveCollision*,*DirectoryClearSurvivesOnlyLive*,*DirectoryDebtUnitRuns*'
    pwsh -NoProfile -File tools/run-tlc-all.ps1 `
-       -Spec crates/canopy/spec/QuotientSoundness.tla `
-       -Tier evidence `
-       -Filter '*DirectoryCreation-AppendPlan*,*DirectoryCreation-AppendRepair*,*DirectoryCreation-AppendSync*,*DirectoryCreation-Complete*,*DirectoryCreation-Create*,*DirectoryCreation-Recovery*,*DirectoryCreation-Sync*' `
-       -Parallel 3 -Workers 4 -HeapGB 8 -Record $record 2>&1 | Tee-Object -FilePath $summary
-   if ($LASTEXITCODE -ne 0) { throw "condor-1 directory proof failed with exit $LASTEXITCODE" }
+       -Spec crates/canopy/spec/SharedPublication.tla -Tier all -Filter $filter `
+       -Parallel 3 -Workers 4 -HeapGB 8 `
+       -Record .scratch/tlc/record/m12-2-condor-raw.json 2>&1 |
+       Tee-Object -FilePath .scratch/tlc/m12-2-condor-raw-terminal.out
+   if ($LASTEXITCODE -ne 0) { throw "condor-1 raw model gate failed: $LASTEXITCODE" }
+   pwsh -NoProfile -File tools/run-tlc-all.ps1 `
+       -Spec crates/canopy/spec/SharedPublicationCheck.tla -Tier all -Filter $filter `
+       -Parallel 3 -Workers 4 -HeapGB 8 `
+       -Record .scratch/tlc/record/m12-2-condor-reduced.json 2>&1 |
+       Tee-Object -FilePath .scratch/tlc/m12-2-condor-reduced-terminal.out
+   if ($LASTEXITCODE -ne 0) { throw "condor-1 reduced model gate failed: $LASTEXITCODE" }
+   pwsh -NoProfile -File tools/run-tlc-all.ps1 `
+       -Spec crates/canopy/spec/ReplaySharedPublication.tla -Tier all `
+       -Record .scratch/tlc/record/m12-2-condor-replay.json 2>&1 |
+       Tee-Object -FilePath .scratch/tlc/m12-2-condor-replay-terminal.out
+   if ($LASTEXITCODE -ne 0) { throw "condor-1 replay gate failed: $LASTEXITCODE" }
    ```
 
-6. **Return only results from `condor-1`.** Package the seven named TLC output files, the summary,
-   and the `condor-1` record; do not package `.scratch/tlc/states`.
+   The three summaries must report `checked: 15, mismatched: 0`, `checked: 15, mismatched: 0`, and
+   `checked: 1, mismatched: 0` respectively.
+
+3. **Run the M12 audience and conformance gates on `condor-1`.** These are independent of the Burpy
+   build work and complete the remaining model-to-implementation evidence.
 
    ```powershell
-   $names = 'AppendPlan','AppendRepair','AppendSync','Complete','Create','Recovery','Sync'
-   $results = @('.scratch/tlc/m12-2-condor-1-terminal.out',
-                '.scratch/tlc/record/m12-2-condor-1.json')
-   $results += foreach ($name in $names) {
-       ".scratch/tlc/QuotientSoundness-DirectoryCreation-$name.out"
-   }
-   Compress-Archive -Path $results -DestinationPath .scratch/m12-2-condor-1-results.zip
-   Get-FileHash -LiteralPath .scratch/m12-2-condor-1-results.zip -Algorithm SHA256
+   pwsh -NoProfile -File tools/check-audience-tags.ps1 `
+       -Spec crates/canopy/spec/SharedPublication.tla
+   pwsh -NoProfile -File tools/check-audience-tags.ps1 `
+       -Spec crates/canopy/spec/SharedPublicationCheck.tla
+   pwsh -NoProfile -File tools/check-audience-tags.ps1 `
+       -Spec crates/canopy/spec/QuotientSoundness.tla
+   cargo test -p canopy 2>&1 |
+       Tee-Object -FilePath .scratch/tlc/m12-2-condor-canopy-tests.out
+   if ($LASTEXITCODE -ne 0) { throw "condor-1 canopy tests failed: $LASTEXITCODE" }
    ```
 
-   Transfer that archive to `burpy` and record its SHA-256. The result archive should be far below
-   1 MB unless TLC emitted a counterexample trace.
+   Audience-tag checks must report zero problems. The `canopy` suite must exit zero; that suite is
+   the conformance replay gate for the checked-in M12 trace corpus.
 
-7. **Reconcile on `burpy`.** Extract the `condor-1` results under a separate directory so its record
-   cannot overwrite the `burpy` record. Each machine's terminal summary must report
-   `mismatched: 0`: `burpy` reports `checked: 1`; `condor-1` reports `checked: 7`. Each of the eight
-   configuration logs must end with `Model checking completed. No error has been found.` Missing,
-   interrupted, stale, deadlocked, invariant-violating, or out-of-memory output is not a pass.
-   Preserve `$proofCommit`, both result hashes, both terminal summaries, both impact records, and
-   all eight `.out` files as the M12-2 evidence set. After every other M12 item and the required
-   milestone gates pass, create the M12 completion commit and push the resulting branch to origin.
+4. **Run build and documentation gates on `burpy` in parallel with Condor.** This work is scoped to
+   the current M12-2 completion check; the full milestone boundary is still gated by M12-3.
+
+   ```powershell
+   Set-Location Q:\github\canopy
+   cargo check --all-targets 2>&1 | Tee-Object -FilePath .scratch/m12-2-burpy-check-debug.out
+   if ($LASTEXITCODE -ne 0) { throw "burpy debug check failed: $LASTEXITCODE" }
+   cargo check --all-targets --release 2>&1 |
+       Tee-Object -FilePath .scratch/m12-2-burpy-check-release.out
+   if ($LASTEXITCODE -ne 0) { throw "burpy release check failed: $LASTEXITCODE" }
+   cargo doc -p canopy --no-deps 2>&1 |
+       Tee-Object -FilePath .scratch/m12-2-burpy-doc.out
+   if ($LASTEXITCODE -ne 0) { throw "burpy canopy docs failed: $LASTEXITCODE" }
+   ```
+
+5. **Return Condor evidence and reconcile on `burpy`.** Condor packages only terminal summaries,
+   impact records, selected TLC `.out` files, and the `canopy` test output. Do not transfer
+   `.scratch/tlc/states`. On `burpy`, require every Condor summary to have `mismatched: 0`, every
+   selected TLC log to end with `Model checking completed. No error has been found.`, and the test
+   output to show a successful exit. Preserve both machines' source revision, toolchain identity,
+   summaries, records, and logs with the M12-2 evidence set.
+
+6. **Finish M12-2 on `burpy`.** Once Condor's formal/replay/test evidence and Burpy's
+   build/documentation evidence pass, check M12-2, move its completed body to
+   [COMPLETED-CHECKLIST.md](COMPLETED-CHECKLIST.md) per the completed-item stub rule, leave M12-3
+   pending, commit the M12-2 completion as a WIP milestone item, and push the branch. Do not run or
+   claim the full M12 milestone boundary until M12-3 is complete.
 
 - [ ] **M12-3** (was `FM-4.3`) -- Add repair and scrub to the publication composition. Model the
   writer exclusion and modification count a repair holds odd, the live and durable replica checks,
