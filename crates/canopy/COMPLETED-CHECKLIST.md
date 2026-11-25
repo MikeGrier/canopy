@@ -2736,3 +2736,23 @@ replays multi-swap commands and binds the new planning/rejection actions; the co
 accepted and rejected traces, and a focused crash-restart test applies every prepared swap.
 The recovery collection witnesses and raw/reduced pair gate agree, and the slow configuration
 measurements moved the exhaustive cases to milestone tier.
+
+## Moved 2026-11-25 -- Namespace removal and directory intent
+
+### <a id="m12-2"></a>M12-2 -- Extended publication swap sets with namespace removal, directory creation and torn directory intent recovery. *(completed 2026-11-25 13:26:47 -05:00)*
+
+[SharedPublication.tla](spec/SharedPublication.tla) now models paths and node removal in one
+namespace, rejects write/remove and descendant collisions, creates and renames directories, and
+repairs the `.dir-sync-debt` intent record after torn appends through the existing directory-debt
+phase. [SharedPublicationCheck.tla](spec/SharedPublicationCheck.tla) owns the reduced namespace
+and directory view, while [QuotientSoundness.tla](spec/QuotientSoundness.tla) partitions one-step
+soundness by namespace region. The soundness scope constrains the first copy to type-valid quotient
+states, keeping the perturbed copy free to test state the view forgets without admitting unreachable
+counter values.
+
+The Store conformance bridge projects the node and directory work, replays the generated namespace
+and directory corpus, and carries witnesses for every collision and recovery path. The raw and
+reduced M12 configuration sets, all directory and node-removal quotient soundness regions, the T27
+replay, audience tags, the full shared-publication conformance module, and the full in-scope crate
+suite provide the completion evidence. Burpy and Condor-1 used the published `mikegrier/coord`
+checkpoint so the formal and implementation gates reconciled against one source revision.
