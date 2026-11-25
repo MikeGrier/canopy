@@ -110,18 +110,19 @@ build/reconciliation gate on `burpy`.
    $filter = '*NamespaceTransactions*,*DirectoryDebt*,*TransactionUnits*,*ADirectoryIntent*,*ADirectoryIsCreatedAndRenamed*,*ARecoveryCreatesADirectory*,*ARecoveryRemovesANode*,*ARemovalAtExistingDocument*,*ARemovalBeneathExistingDocument*,*ATransactionRemovesANode*,*AWriteBeneathRemovedNode*,*AWriteRemoveCollision*,*DirectoryClearSurvivesOnlyLive*,*DirectoryDebtUnitRuns*'
    pwsh -NoProfile -File tools/run-tlc-all.ps1 `
        -Spec crates/canopy/spec/SharedPublication.tla -Tier all -Filter $filter `
-       -Parallel 3 -Workers 4 -HeapGB 8 `
+       -Parallel 3 -Workers 4 -HeapGB 12 `
        -Record .scratch/tlc/record/m12-2-condor-raw.json 2>&1 |
        Tee-Object -FilePath .scratch/tlc/m12-2-condor-raw-terminal.out
    if ($LASTEXITCODE -ne 0) { throw "condor-1 raw model gate failed: $LASTEXITCODE" }
    pwsh -NoProfile -File tools/run-tlc-all.ps1 `
        -Spec crates/canopy/spec/SharedPublicationCheck.tla -Tier all -Filter $filter `
-       -Parallel 3 -Workers 4 -HeapGB 8 `
+       -Parallel 3 -Workers 4 -HeapGB 12 `
        -Record .scratch/tlc/record/m12-2-condor-reduced.json 2>&1 |
        Tee-Object -FilePath .scratch/tlc/m12-2-condor-reduced-terminal.out
    if ($LASTEXITCODE -ne 0) { throw "condor-1 reduced model gate failed: $LASTEXITCODE" }
    pwsh -NoProfile -File tools/run-tlc-all.ps1 `
        -Spec crates/canopy/spec/ReplaySharedPublication.tla -Tier all `
+       -Workers 8 -HeapGB 24 `
        -Record .scratch/tlc/record/m12-2-condor-replay.json 2>&1 |
        Tee-Object -FilePath .scratch/tlc/m12-2-condor-replay-terminal.out
    if ($LASTEXITCODE -ne 0) { throw "condor-1 replay gate failed: $LASTEXITCODE" }
