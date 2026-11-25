@@ -83,11 +83,12 @@ The quotient soundness closure is complete on `burpy` at source commit
 quotient partition. The remaining independent work is the formal/replay gate on `condor-1` and the
 build/reconciliation gate on `burpy`.
 
-1. **Freeze the execution source on both machines.** Use commit
-   `f6e618aef5e317d4ffb83c3c1ca70a0a7f01fecf`. `condor-1` may put that commit on a temporary local
-   branch; detached HEAD is not required. This planning-only checklist commit is not part of the
-   model input and follows that proof source. Do not regenerate model inputs, edit source, or merge
-   another revision while either machine is running. Verify the toolchain on both machines:
+1. **Freeze the execution source on both machines.** Use the same `mikegrier/coord` branch on both
+   machines. `burpy` records the full hash of the pushed branch tip and sends that hash to
+   `condor-1`; both machines reset `mikegrier/coord` to that exact commit. The model fix is in
+   `f6e618aef5e317d4ffb83c3c1ca70a0a7f01fecf`; the later planning-only checklist commit does not
+   change its model inputs. Do not edit source or merge another revision while either machine is
+   running. Verify the toolchain on both machines:
    Microsoft OpenJDK 21.0.13.1 and the TLC 1.8.0 jar with SHA-256
    `fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713`.
 
@@ -98,11 +99,12 @@ build/reconciliation gate on `burpy`.
 
    ```powershell
    Set-Location C:\src\canopy-m12-2
-   $proofCommit = 'f6e618aef5e317d4ffb83c3c1ca70a0a7f01fecf'
+   $proofCommit = '<full pushed mikegrier/coord hash from burpy>'
    git fetch origin
-   git switch -C m12-2-condor $proofCommit
+   git switch mikegrier/coord
+   git reset --hard $proofCommit
    if ((git --no-pager rev-parse HEAD) -ne $proofCommit) {
-       throw 'condor-1 is not at the M12 proof commit'
+       throw 'condor-1 is not at the pinned M12 commit'
    }
    $env:Path = 'C:\Program Files\Microsoft\jdk-21.0.13.102-hotspot\bin;' + $env:Path
    $filter = '*NamespaceTransactions*,*DirectoryDebt*,*TransactionUnits*,*ADirectoryIntent*,*ADirectoryIsCreatedAndRenamed*,*ARecoveryCreatesADirectory*,*ARecoveryRemovesANode*,*ARemovalAtExistingDocument*,*ARemovalBeneathExistingDocument*,*ATransactionRemovesANode*,*AWriteBeneathRemovedNode*,*AWriteRemoveCollision*,*DirectoryClearSurvivesOnlyLive*,*DirectoryDebtUnitRuns*'
