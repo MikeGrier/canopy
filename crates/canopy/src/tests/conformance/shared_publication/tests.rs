@@ -297,7 +297,7 @@ fn alternating_document_writes_project_every_version() {
         .into_iter()
         .find(|trace| trace.states[0]["ptrLive"].as_array().unwrap().len() == 2)
         .unwrap();
-    let world = World::new(2, 3, 1, 10, true);
+    let world = World::of(&trace).with_maximum_version(10);
     let (mem, store) = initialized(&world);
     let mut expected = trace.states[0].clone();
     for version in 1..=10 {

@@ -112,6 +112,13 @@ impl World {
         world
     }
 
+    pub(super) fn with_maximum_version(mut self, maximum: usize) -> World {
+        self.versions = (0..=maximum)
+            .map(|version| ContentDigest::of(Self::body(version).as_bytes()))
+            .collect();
+        self
+    }
+
     pub(super) fn body(version: usize) -> DocumentBody {
         DocumentBody::new(format!("version-{version}").into_bytes())
     }
